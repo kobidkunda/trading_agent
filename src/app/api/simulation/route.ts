@@ -1,100 +1,57 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { runSimulation } from '@/lib/engine/simulation';
-import { db } from '@/lib/db';
-import type { SimulationConfig, SimulationReport } from '@/lib/engine/simulation';
-import { DEFAULT_STRATEGY } from '@/lib/engine/risk';
-import type { Venue } from '@/lib/types';
+import { getSimState, startSimulation, stopSimulation, updateConfig } from '@/lib/engine/live-simulation';
 
-// GET: Retrieve simulation results from the latest run
+// GET: Get current simulation state (poll this for live updates)
 export async function GET() {
-  try {
-    // Get the most recent decisions created by simulation (dry-run=true)
-    const [recentDecisions, recentJobs, recentOrders] = await Promise.all([
-      db.decision.findMany({
-        where: { dryRun: true },
-        include: {
-          market: { select: { id: true, title: true, venue: true, category: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 50,
-      }),
-      db.job.findMany({
-        orderBy: { createdAt: 'desc' },
-        take: 100,
-      }),
-      db.order.findMany({
-        orderBy: { createdAt: 'desc' },
-        take: 50,
-        include: {
-          market: { select: { id: true, title: true } },
-        },
-      }),
-    ]);
-
-    return NextResponse.json({
-      recentDecisions,
-      recentJobs,
-      recentOrders,
-      totalSimulatedDecisions: await db.decision.count({ where: { dryRun: true } }),
-      totalSimulatedOrders: await db.order.count(),
-      totalJobs: await db.job.count(),
-    });
-  } catch (error) {
-    return NextResponse.json(
-      { error: 'Failed to fetch simulation data' },
-      { status: 500 },
-    );
-  }
+  return NextResponse.json(getSimState());
 }
 
-// POST: Start a new simulation run
+// POST: Start, stop, or reconfigure the live simulation
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    const action = body.action as string;
 
-    // Parse configuration from request body
-    const marketCount = Math.min(Math.max(body.marketCount ?? 5, 1), 20);
-    const venues: Venue[] = body.venues?.length > 0
-      ? body.venues
-      : DEFAULT_STRATEGY.enabledVenues as Venue[];
-    const categories: string[] = body.categories?.length > 0
-      ? body.categories
-      : DEFAULT_STRATEGY.enabledCategories;
+    if (action === 'start') {
+      const config = body.config ? {
+        venues: body.config.venues,
+        categories: body.config.categories,
+        scanIntervalSec: body.config.scanIntervalSec,
+        marketsPerScan: body.config.marketsPerScan,
+        maxPortfolioExposure: body.config.maxPortfolioExposure,
+      } : undefined;
+      const newState = startSimulation(config);
+      return NextResponse.json(newState);
+    }
 
-    const config: SimulationConfig = {
-      marketCount,
-      venues,
-      categories,
-      strategy: DEFAULT_STRATEGY,
-      speed: body.speed ?? 'normal',
-    };
+    if (action === 'stop') {
+      const newState = stopSimulation();
+      return NextResponse.json(newState);
+    }
 
-    // Log simulation start
-    await db.auditLog.create({
-      data: {
-        action: 'START_SIMULATION',
-        entityType: 'Simulation',
-        entityId: `sim_${Date.now()}`,
-        details: `Starting dry-run simulation: ${marketCount} markets, venues=[${venues.join(',')}], categories=[${categories.join(',')}]`,
-      },
-    });
+    if (action === 'config') {
+      const newState = updateConfig(body.config ?? {});
+      return NextResponse.json(newState);
+    }
 
-    // Run the simulation
-    const report = await runSimulation(config);
+    // Legacy: single-run simulation still supported
+    if (action === 'run') {
+      const { runSimulation } = await import('@/lib/engine/simulation');
+      const { DEFAULT_STRATEGY } = await import('@/lib/engine/risk');
+      const marketCount = Math.min(Math.max(body.marketCount ?? 5, 1), 20);
+      const report = await runSimulation({
+        marketCount,
+        venues: body.venues?.length > 0 ? body.venues : DEFAULT_STRATEGY.enabledVenues as any,
+        categories: body.categories?.length > 0 ? body.categories : DEFAULT_STRATEGY.enabledCategories,
+        strategy: DEFAULT_STRATEGY,
+        speed: body.speed ?? 'normal',
+      });
+      return NextResponse.json(report, { status: 201 });
+    }
 
-    // Log simulation completion
-    await db.auditLog.create({
-      data: {
-        action: 'COMPLETE_SIMULATION',
-        entityType: 'Simulation',
-        entityId: report.id,
-        details: `Simulation completed: ${report.summary.executed} executed, ${report.summary.totalEstimatedPnl.toFixed(2)} est. PnL, ${report.summary.totalDurationMs}ms`,
-      },
-    });
-
-    return NextResponse.json(report, { status: 201 });
+    return NextResponse.json({ error: 'Unknown action. Use: start, stop, config, or run' }, { status: 400 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Simulation failed';
+    const message = error instanceof Error ? error.message : 'Request failed';
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

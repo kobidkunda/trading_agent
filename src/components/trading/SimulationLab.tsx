@@ -2,32 +2,30 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import {
-  FlaskConical,
   Play,
   Square,
-  RotateCcw,
-  Loader2,
-  CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  ArrowRight,
-  Brain,
+  Settings,
+  Activity,
+  ScanSearch,
+  Filter,
+  BookOpen,
   Scale,
   ShieldAlert,
   Zap,
-  BookOpen,
-  Filter,
-  ScanSearch,
-  ChevronDown,
-  ChevronRight,
-  DollarSign,
-  Clock,
   TrendingUp,
+  TrendingDown,
+  Clock,
+  DollarSign,
   BarChart3,
-  Activity,
-  Bot,
   Target,
-  FileText,
+  ArrowRight,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  Radio,
+  CircleDot,
+  Loader2,
+  Bot,
   Eye,
 } from 'lucide-react';
 import {
@@ -39,11 +37,12 @@ import {
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Switch } from '@/components/ui/switch';
 import { Slider } from '@/components/ui/slider';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
+import { Progress } from '@/components/ui/progress';
 import {
   Select,
   SelectContent,
@@ -52,127 +51,81 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from '@/components/ui/accordion';
-import { Progress } from '@/components/ui/progress';
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { VENUE_OPTIONS, CATEGORY_OPTIONS } from '@/lib/constants';
-import type { Venue } from '@/lib/types';
 
-// ── Types ────────────────────────────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────────────────
 
-interface SimulationReport {
-  id: string;
-  startedAt: string;
-  completedAt: string;
+interface SimState {
+  status: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING';
+  startedAt: string | null;
+  stoppedAt: string | null;
+  currentCycle: number;
+  marketsScanned: number;
+  marketsRelevant: number;
+  ordersPlaced: number;
+  ordersSkipped: number;
+  totalExposure: number;
+  totalEstimatedPnl: number;
+  lastActivity: string | null;
+  currentAgent: string | null;
+  currentMarketTitle: string | null;
+  error: string | null;
   config: {
-    marketCount: number;
     venues: string[];
     categories: string[];
-    speed?: string;
-  };
-  results: MarketResult[];
-  summary: {
-    totalMarkets: number;
-    scanned: number;
-    triagedRelevant: number;
-    researched: number;
-    judged: number;
-    riskBuy: number;
-    riskSkip: number;
-    executed: number;
-    totalEstimatedPnl: number;
-    totalExposure: number;
-    avgConfidence: number;
-    avgEdge: number;
-    errors: number;
-    totalDurationMs: number;
+    scanIntervalSec: number;
+    marketsPerScan: number;
+    maxPortfolioExposure: number;
   };
 }
 
-interface MarketResult {
-  marketId: string;
-  title: string;
-  venue: Venue;
-  category: string;
-  impliedProb: number;
-  liquidity: number;
-  spread: number;
-  triageResult: {
-    status: string;
-    reason: string;
-    worthResearch: boolean;
-  };
-  bullOutput: {
-    thesis: string;
-    keyArguments: string[];
-    estimatedProbability: number;
-    confidence: number;
-  } | null;
-  bearOutput: {
-    thesis: string;
-    keyArguments: string[];
-    estimatedProbability: number;
-    confidence: number;
-  } | null;
-  contradictionOutput: {
-    contradictions: string[];
-    overlookedRisks: string[];
-    alternativeInterpretations: string[];
-    reliabilityAssessment: number;
-  } | null;
-  judgeOutput: {
-    trueProbability: number;
-    confidence: number;
-    uncertainty: number;
-    proEvidence: string[];
-    antiEvidence: string[];
-    catalystTiming: string;
-    skipReason?: string;
-  } | null;
-  riskResult: {
-    action: string;
-    side?: string;
-    maxSize: number;
-    adjustedSize: number;
-    urgency: string;
-    reasonCode?: string;
-    reason: string;
-    edge: number;
-  } | null;
-  simulatedOrder: {
-    side: string;
-    price: number;
-    size: number;
-    estimatedPnl: number;
-  } | null;
-  stage: string;
-  durationMs: number;
+interface RecentOrder {
+  id: string;
+  venueOrderId: string;
+  side: string;
+  price: number;
+  size: number;
+  filledSize: number;
+  status: string;
+  submittedAt: string;
+  filledAt: string | null;
+  market: { id: string; title: string } | null;
+}
+
+interface RecentJob {
+  id: string;
+  type: string;
+  status: string;
+  priority: number;
+  payload: string | null;
+  result: string | null;
   error: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
 }
 
-type PipelineStage = 'IDLE' | 'CONFIGURING' | 'SCANNING' | 'TRIAGING' | 'RESEARCHING' | 'JUDGING' | 'RISKING' | 'EXECUTING' | 'COMPLETE' | 'ERROR';
+// ── Agent pipeline config ─────────────────────────────────────────────────
 
-// ── Pipeline Stages Config ──────────────────────────────────────────────────
-
-const PIPELINE_STAGES: { key: PipelineStage; label: string; icon: React.ElementType; color: string }[] = [
-  { key: 'IDLE', label: 'Idle', icon: FlaskConical, color: 'text-gray-500' },
-  { key: 'CONFIGURING', label: 'Config', icon: FlaskConical, color: 'text-blue-400' },
-  { key: 'SCANNING', label: 'Scanning', icon: ScanSearch, color: 'text-blue-400' },
-  { key: 'TRIAGING', label: 'Triage', icon: Filter, color: 'text-violet-400' },
-  { key: 'RESEARCHING', label: 'Research', icon: BookOpen, color: 'text-amber-400' },
-  { key: 'JUDGING', label: 'Judge', icon: Scale, color: 'text-emerald-400' },
-  { key: 'RISKING', label: 'Risk', icon: ShieldAlert, color: 'text-red-400' },
-  { key: 'EXECUTING', label: 'Execute', icon: Zap, color: 'text-cyan-400' },
-  { key: 'COMPLETE', label: 'Done', icon: CheckCircle2, color: 'text-emerald-400' },
-  { key: 'ERROR', label: 'Error', icon: XCircle, color: 'text-red-400' },
+const AGENT_STEPS = [
+  { key: 'SCANNER', label: 'Scanner', icon: ScanSearch, color: 'text-blue-400' },
+  { key: 'TRIAGE', label: 'Triage', icon: Filter, color: 'text-violet-400' },
+  { key: 'RESEARCH', label: 'Research', icon: BookOpen, color: 'text-amber-400' },
+  { key: 'JUDGE', label: 'Judge', icon: Scale, color: 'text-emerald-400' },
+  { key: 'RISK', label: 'Risk', icon: ShieldAlert, color: 'text-red-400' },
+  { key: 'EXECUTOR', label: 'Executor', icon: Zap, color: 'text-cyan-400' },
 ];
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 function formatCurrency(n: number): string {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
@@ -180,160 +133,210 @@ function formatCurrency(n: number): string {
   return `$${n.toFixed(0)}`;
 }
 
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${seconds % 60}s`;
+function formatTime(iso: string | null): string {
+  if (!iso) return '--:--:--';
+  return new Date(iso).toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
 }
 
-function stageLabel(stage: string): string {
-  const map: Record<string, string> = {
-    SCANNED: 'Scanned', TRIAGED: 'Triaged', RESEARCHING: 'Researching',
-    JUDGED: 'Judged', DECIDED: 'Decided', EXECUTED: 'Executed',
-  };
-  return map[stage] ?? stage;
+function formatRelative(iso: string | null): string {
+  if (!iso) return 'Never';
+  const diff = Date.now() - new Date(iso).getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ago`;
 }
 
-function stageColor(stage: string): string {
-  const map: Record<string, string> = {
-    SCANNED: 'bg-gray-500', TRIAGED: 'bg-blue-500', RESEARCHING: 'bg-amber-500',
-    JUDGED: 'bg-purple-500', DECIDED: 'bg-orange-500', EXECUTED: 'bg-green-500',
-  };
-  return map[stage] ?? 'bg-gray-500';
+function agentIndex(agent: string | null): number {
+  if (!agent) return -1;
+  const idx = AGENT_STEPS.findIndex((s) => s.key === agent);
+  return idx;
 }
 
-// ── Component ────────────────────────────────────────────────────────────────
+// ── Component ──────────────────────────────────────────────────────────────
 
 export function SimulationLab() {
-  // Config state
-  const [marketCount, setMarketCount] = useState(5);
-  const [selectedVenues, setSelectedVenues] = useState<string[]>([]);
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [speed, setSpeed] = useState<string>('normal');
+  const [state, setState] = useState<SimState | null>(null);
+  const [recentOrders, setRecentOrders] = useState<RecentOrder[]>([]);
+  const [recentJobs, setRecentJobs] = useState<RecentJob[]>([]);
+  const [scanInterval, setScanInterval] = useState(10);
+  const [marketsPerScan, setMarketsPerScan] = useState(3);
+  const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Simulation state
-  const [isRunning, setIsRunning] = useState(false);
-  const [currentStage, setCurrentStage] = useState<PipelineStage>('IDLE');
-  const [progress, setProgress] = useState(0);
-  const [report, setReport] = useState<SimulationReport | null>(null);
-  const [expandedMarket, setExpandedMarket] = useState<string | null>(null);
-
-  const abortRef = useRef(false);
-
-  // ── Config handlers ───────────────────────────────────────────────────────
-
-  const toggleVenue = (venue: string) => {
-    setSelectedVenues((prev) =>
-      prev.includes(venue) ? prev.filter((v) => v !== venue) : [...prev, venue],
-    );
-  };
-
-  const toggleCategory = (cat: string) => {
-    setSelectedCategories((prev) =>
-      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat],
-    );
-  };
-
-  // ── Simulation runner ────────────────────────────────────────────────────
-
-  const startSimulation = useCallback(async () => {
-    if (isRunning) return;
-
-    setIsRunning(true);
-    setReport(null);
-    setExpandedMarket(null);
-    abortRef.current = false;
-
-    // Simulate stage progression for UI feedback
-    const stages: PipelineStage[] = [
-      'CONFIGURING', 'SCANNING', 'TRIAGING', 'RESEARCHING', 'JUDGING', 'RISKING', 'EXECUTING',
-    ];
-
-    let stageIndex = 0;
-    const stageProgressInterval = setInterval(() => {
-      if (abortRef.current) {
-        clearInterval(stageProgressInterval);
-        return;
+  // ── Poll simulation state ──────────────────────────────────────────────
+  const fetchState = useCallback(async () => {
+    try {
+      const res = await fetch('/api/simulation');
+      if (res.ok) {
+        const data = await res.json();
+        setState(data);
       }
-      const elapsed = Date.now();
-      const stageProgress = Math.min(
-        95,
-        ((elapsed % 3000) / 3000) * 100,
-      );
-      setProgress(stageProgress);
-    }, 200);
+    } catch {
+      // ignore
+    }
+  }, []);
 
-    // Progress through stages with timing
-    const advanceStages = async () => {
-      for (const stage of stages) {
-        if (abortRef.current) break;
-        setCurrentStage(stage);
-        await new Promise((resolve) => setTimeout(resolve, 800 + Math.random() * 1200));
+  // Poll recent orders
+  const fetchOrders = useCallback(async () => {
+    try {
+      const res = await fetch('/api/simulation?action=run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ marketCount: 0 }),
+      });
+      // We use GET from the main API for data
+      const dataRes = await fetch('/api/simulation');
+      if (dataRes.ok) {
+        const data = await dataRes.json();
+        setState(data);
       }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Initial load + auto-poll
+  useEffect(() => {
+    fetchState();
+    pollRef.current = setInterval(fetchState, 2000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
     };
-    advanceStages();
+  }, [fetchState]);
 
+  // Fetch recent orders & jobs when running
+  useEffect(() => {
+    if (!state || state.status !== 'RUNNING') return;
+    const interval = setInterval(async () => {
+      try {
+        const [ordersRes, jobsRes] = await Promise.all([
+          fetch('/api/orders?limit=20'),
+          fetch('/api/jobs?limit=30'),
+        ]);
+        if (ordersRes.ok) {
+          const data = await ordersRes.json();
+          setRecentOrders(data.orders ?? []);
+        }
+        if (jobsRes.ok) {
+          const data = await jobsRes.json();
+          setRecentJobs(data.jobs ?? []);
+        }
+      } catch {
+        // ignore
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [state?.status]);
+
+  // ── Actions ────────────────────────────────────────────────────────────
+
+  const handleStart = useCallback(async () => {
     try {
       const res = await fetch('/api/simulation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          marketCount,
-          venues: selectedVenues,
-          categories: selectedCategories,
-          speed,
+          action: 'start',
+          config: { scanIntervalSec: scanInterval, marketsPerScan },
         }),
       });
-
-      clearInterval(stageProgressInterval);
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Simulation failed');
+      if (res.ok) {
+        const data = await res.json();
+        setState(data);
+        toast.success('Live Simulation Started', {
+          description: 'System is now trading in dry-run mode — orders are simulated but recorded as real.',
+        });
       }
-
-      const data: SimulationReport = await res.json();
-      setCurrentStage('COMPLETE');
-      setProgress(100);
-      setReport(data);
-
-      toast.success('Simulation Complete', {
-        description: `${data.summary.executed} orders simulated in ${formatDuration(data.summary.totalDurationMs)}`,
-      });
-    } catch (err) {
-      clearInterval(stageProgressInterval);
-      setCurrentStage('ERROR');
-      setProgress(0);
-      toast.error('Simulation Failed', {
-        description: err instanceof Error ? err.message : 'Unknown error',
-      });
-    } finally {
-      setIsRunning(false);
+    } catch {
+      toast.error('Failed to start simulation');
     }
-  }, [isRunning, marketCount, selectedVenues, selectedCategories, speed]);
+  }, [scanInterval, marketsPerScan]);
 
-  const cancelSimulation = useCallback(() => {
-    abortRef.current = true;
-    setIsRunning(false);
-    setCurrentStage('IDLE');
-    setProgress(0);
-    toast.info('Simulation cancelled');
+  const handleStop = useCallback(async () => {
+    try {
+      const res = await fetch('/api/simulation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'stop' }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setState(data);
+        toast.info('Simulation Stopped', {
+          description: `Cycle ${data.currentCycle} completed. ${data.ordersPlaced} orders placed.`,
+        });
+      }
+    } catch {
+      toast.error('Failed to stop simulation');
+    }
   }, []);
 
-  const resetSimulation = useCallback(() => {
-    setReport(null);
-    setCurrentStage('IDLE');
-    setProgress(0);
-    setExpandedMarket(null);
-  }, []);
+  const handleResetStats = useCallback(async () => {
+    try {
+      await fetch('/api/simulation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'stop' }),
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      const res = await fetch('/api/simulation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'start',
+          config: { scanIntervalSec: scanInterval, marketsPerScan },
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setState(data);
+        toast.success('Simulation Reset');
+      }
+    } catch {
+      toast.error('Failed to reset');
+    }
+  }, [scanInterval, marketsPerScan]);
+
+  const handleConfig = useCallback(async () => {
+    try {
+      const res = await fetch('/api/simulation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'config',
+          config: { scanIntervalSec: scanInterval, marketsPerScan },
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setState(data);
+        toast.success('Config updated');
+      }
+    } catch {
+      toast.error('Failed to update config');
+    }
+  }, [scanInterval, marketsPerScan]);
+
+  const isRunning = state?.status === 'RUNNING';
+  const activeIdx = agentIndex(state?.currentAgent ?? null);
+  const winRate = state && (state.ordersPlaced + state.ordersSkipped) > 0
+    ? ((state.ordersPlaced / (state.ordersPlaced + state.ordersSkipped)) * 100).toFixed(1)
+    : '0.0';
 
   // ── Render ───────────────────────────────────────────────────────────────
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* ── Header ── */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -342,815 +345,410 @@ export function SimulationLab() {
             </div>
             <h2 className="text-xl font-semibold text-white">Simulation Lab</h2>
             {isRunning && (
-              <Badge className="gap-1 border-purple-500/30 bg-purple-500/10 text-purple-400 text-[10px]">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-purple-400" />
-                Running
+              <Badge className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px] animate-pulse">
+                <CircleDot className="h-3 w-3" />
+                LIVE
               </Badge>
             )}
-            {report && !isRunning && (
-              <Badge className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]">
+            {state && state.status === 'STOPPED' && state.ordersPlaced > 0 && (
+              <Badge className="gap-1 border-gray-500/30 bg-gray-500/10 text-gray-400 text-[10px]">
                 <CheckCircle2 className="h-3 w-3" />
-                {report.summary.executed} trades
+                Stopped
               </Badge>
             )}
           </div>
           <p className="mt-1 text-sm text-gray-500">
-            Dry-run the entire agent pipeline — scan, triage, research, judge, risk check, and simulate execution
+            Continuous dry-run — scans markets, runs agents, places simulated orders in real-time
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {report && !isRunning && (
-            <Button variant="ghost" size="sm" onClick={resetSimulation} className="text-gray-400 hover:text-white">
-              <RotateCcw className="mr-2 h-4 w-4" />
-              Reset
+          {state && state.status === 'STOPPED' && state.ordersPlaced > 0 && (
+            <Button variant="ghost" size="sm" onClick={handleResetStats} className="text-gray-400 hover:text-white">
+              <Radio className="mr-2 h-4 w-4" />
+              Reset &amp; Restart
             </Button>
           )}
           {isRunning ? (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={cancelSimulation}
-              className="gap-2"
-            >
+            <Button variant="destructive" size="sm" onClick={handleStop} className="gap-2">
               <Square className="h-4 w-4" />
-              Cancel
+              Stop Simulation
             </Button>
           ) : (
             <Button
               size="sm"
-              onClick={startSimulation}
-              disabled={marketCount < 1 || marketCount > 20}
-              className="gap-2 bg-purple-600 text-white hover:bg-purple-700"
+              onClick={handleStart}
+              className="gap-2 bg-emerald-600 text-white hover:bg-emerald-700"
             >
-              {isRunning ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Play className="h-4 w-4" />
-              )}
-              Run Simulation
+              <Play className="h-4 w-4" />
+              Start Live Simulation
             </Button>
           )}
         </div>
       </div>
 
-      {/* Pipeline Progress */}
-      {isRunning && (
-        <Card className="border-purple-500/30 bg-gray-900">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <Loader2 className="h-4 w-4 animate-spin text-purple-400" />
-              <span className="text-sm font-medium text-white">Pipeline Active</span>
-              <span className="text-xs text-gray-500 ml-auto">
-                {Math.round(progress)}%
+      {/* ── Live Agent Pipeline ── */}
+      <Card className={cn(
+        'border-gray-800 bg-gray-900',
+        isRunning && 'border-emerald-500/20 shadow-sm shadow-emerald-500/5',
+      )}>
+        <CardContent className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            {isRunning ? (
+              <Loader2 className="h-4 w-4 animate-spin text-emerald-400" />
+            ) : (
+              <Activity className="h-4 w-4 text-gray-500" />
+            )}
+            <span className="text-sm font-medium text-white">Agent Pipeline</span>
+            {isRunning && (
+              <span className="text-xs text-emerald-400 ml-auto">
+                Cycle #{state?.currentCycle}
+              </span>
+            )}
+            {!isRunning && (
+              <span className="text-xs text-gray-600 ml-auto">Idle</span>
+            )}
+          </div>
+
+          {/* Agent steps */}
+          <div className="flex items-center gap-1 overflow-x-auto pb-1">
+            {AGENT_STEPS.map((step, idx) => {
+              const isActive = activeIdx === idx;
+              const isDone = activeIdx > idx && isRunning;
+              const Icon = step.icon;
+
+              return (
+                <div key={step.key} className="flex items-center">
+                  <div
+                    className={cn(
+                      'flex min-w-[80px] flex-col items-center gap-1 rounded-lg border px-3 py-2.5 transition-all sm:min-w-[95px]',
+                      isActive
+                        ? 'border-emerald-500/50 bg-emerald-500/10 shadow-sm shadow-emerald-500/10'
+                        : isDone
+                          ? 'border-emerald-500/20 bg-emerald-500/5'
+                          : 'border-gray-800 bg-gray-800/40',
+                    )}
+                  >
+                    <div className="relative">
+                      <Icon
+                        className={cn(
+                          'h-4 w-4 transition-colors',
+                          isActive ? 'text-emerald-400' : isDone ? 'text-emerald-400/60' : 'text-gray-600',
+                        )}
+                      />
+                      {isActive && (
+                        <span className="absolute -right-1 -top-1 h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
+                      )}
+                    </div>
+                    <span className={cn(
+                      'text-[10px] font-medium',
+                      isActive ? 'text-emerald-300' : isDone ? 'text-emerald-300/50' : 'text-gray-600',
+                    )}>
+                      {step.label}
+                    </span>
+                  </div>
+                  {idx < AGENT_STEPS.length - 1 && (
+                    <ArrowRight className={cn(
+                      'mx-0.5 h-3 w-3 shrink-0',
+                      isDone || isActive ? 'text-emerald-500/50' : 'text-gray-700',
+                    )} />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Currently processing */}
+          {isRunning && state?.currentMarketTitle && (
+            <div className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2">
+              <Bot className="h-3.5 w-3.5 text-emerald-400 animate-pulse" />
+              <span className="text-[11px] text-emerald-300 truncate flex-1">
+                {state.currentAgent}:
+                {' '}
+                <span className="font-medium">{state.currentMarketTitle}</span>
               </span>
             </div>
-            <div className="flex items-center gap-1 overflow-x-auto pb-1">
-              {PIPELINE_STAGES.filter((s) => s.key !== 'IDLE' && s.key !== 'ERROR').map((stage, idx) => {
-                const stageIdx = ['CONFIGURING', 'SCANNING', 'TRIAGING', 'RESEARCHING', 'JUDGING', 'RISKING', 'EXECUTING'].indexOf(currentStage);
-                const isActive = currentStage === stage.key;
-                const isDone = stageIdx >= 0 && idx <= stageIdx;
-                const Icon = stage.icon;
+          )}
+        </CardContent>
+      </Card>
 
-                return (
-                  <div key={stage.key} className="flex items-center">
-                    <div
-                      className={cn(
-                        'flex min-w-[80px] flex-col items-center gap-1 rounded-lg border px-3 py-2.5 transition-all sm:min-w-[95px]',
-                        isActive
-                          ? 'border-purple-500/50 bg-purple-500/10 shadow-sm shadow-purple-500/10'
-                          : isDone
-                            ? 'border-emerald-500/30 bg-emerald-500/5'
-                            : 'border-gray-800 bg-gray-800/40',
-                      )}
-                    >
-                      <div className="relative">
-                        <Icon
-                          className={cn(
-                            'h-4 w-4 transition-colors',
-                            isActive ? 'text-purple-400' : isDone ? 'text-emerald-400' : 'text-gray-600',
-                          )}
-                        />
-                        {isActive && (
-                          <span className="absolute -right-1 -top-1 h-2 w-2 animate-pulse rounded-full bg-purple-400" />
-                        )}
-                        {isDone && !isActive && (
-                          <CheckCircle2 className="absolute -right-1.5 -top-1.5 h-3 w-3 text-emerald-400" />
-                        )}
-                      </div>
-                      <span className={cn(
-                        'text-[10px] font-medium',
-                        isActive ? 'text-purple-300' : isDone ? 'text-emerald-300/70' : 'text-gray-600',
-                      )}>
-                        {stage.label}
-                      </span>
-                    </div>
-                    {idx < PIPELINE_STAGES.length - 3 && (
-                      <ArrowRight className={cn(
-                        'mx-0.5 h-3 w-3 shrink-0',
-                        isDone ? 'text-emerald-500/50' : 'text-gray-700',
-                      )} />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            <Progress value={progress} className="mt-3 h-1.5 [&>div]:bg-purple-500" />
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Error state */}
-      {currentStage === 'ERROR' && !isRunning && (
-        <Card className="border-red-500/30 bg-red-500/5">
-          <CardContent className="flex items-center gap-3 p-4">
-            <XCircle className="h-5 w-5 text-red-400" />
-            <div>
-              <p className="text-sm font-medium text-red-400">Simulation Failed</p>
-              <p className="text-xs text-red-400/70">Check the console for error details and try again</p>
-            </div>
-            <Button variant="outline" size="sm" onClick={startSimulation} className="ml-auto border-red-500/30 text-red-400 hover:bg-red-500/10">
-              Retry
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+      {/* ── Stats Grid ── */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
+        {[
+          { label: 'Cycles', value: state?.currentCycle ?? 0, icon: Activity, color: 'text-purple-400', sub: isRunning ? 'Running now' : 'Not started' },
+          { label: 'Scanned', value: state?.marketsScanned ?? 0, icon: ScanSearch, color: 'text-blue-400', sub: `${state?.marketsRelevant ?? 0} relevant` },
+          { label: 'Buy Signals', value: state?.ordersPlaced ?? 0, icon: TrendingUp, color: 'text-emerald-400', sub: `${state?.ordersSkipped ?? 0} skipped` },
+          { label: 'Exposure', value: formatCurrency(state?.totalExposure ?? 0), icon: DollarSign, color: 'text-cyan-400', sub: 'Total portfolio' },
+          { label: 'Est. PnL', value: `$${(state?.totalEstimatedPnl ?? 0).toFixed(2)}`, icon: (state?.totalEstimatedPnl ?? 0) >= 0 ? TrendingUp : TrendingDown, color: (state?.totalEstimatedPnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400', sub: 'Simulated' },
+          { label: 'Win Rate', value: `${winRate}%`, icon: BarChart3, color: 'text-amber-400', sub: `${state?.ordersPlaced ?? 0} of ${((state?.ordersPlaced ?? 0) + (state?.ordersSkipped ?? 0))} passed risk` },
+        ].map((s) => (
+          <Card key={s.label} className="border-gray-800 bg-gray-900">
+            <CardContent className="p-3">
+              <div className="flex items-center justify-between">
+                <s.icon className={cn('h-3.5 w-3.5', s.color)} />
+                <span className="text-lg font-bold tabular-nums text-white">{s.value}</span>
+              </div>
+              <p className="mt-1 text-[11px] font-medium text-gray-400">{s.label}</p>
+              <p className="text-[10px] text-gray-600">{s.sub}</p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        {/* ─── Left: Configuration Panel ─── */}
+        {/* ── Left: Config Panel ── */}
         <div className="space-y-4 lg:col-span-1">
           <Card className="border-gray-800 bg-gray-900">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-sm text-white">
-                <FlaskConical className="h-4 w-4 text-purple-400" />
+                <Settings className="h-4 w-4 text-gray-400" />
                 Configuration
               </CardTitle>
-              <CardDescription className="text-gray-500">
-                Configure the simulation parameters
-              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
-              {/* Market count */}
+              {/* Scan interval */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label className="text-sm text-gray-300">Markets to Simulate</Label>
-                  <span className="text-sm font-bold tabular-nums text-purple-400">{marketCount}</span>
+                  <Label className="text-sm text-gray-300">Scan Interval</Label>
+                  <span className="text-sm font-bold tabular-nums text-purple-400">{scanInterval}s</span>
                 </div>
                 <Slider
-                  value={[marketCount]}
-                  min={1}
-                  max={20}
+                  value={[scanInterval]}
+                  min={3}
+                  max={60}
                   step={1}
-                  onValueChange={([v]) => setMarketCount(v)}
+                  onValueChange={([v]) => setScanInterval(v)}
+                  className="py-1"
+                />
+                <div className="flex justify-between text-[11px] text-gray-600">
+                  <span>3s (fast)</span>
+                  <span>60s (slow)</span>
+                </div>
+              </div>
+
+              <Separator className="bg-gray-800" />
+
+              {/* Markets per scan */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm text-gray-300">Markets Per Cycle</Label>
+                  <span className="text-sm font-bold tabular-nums text-purple-400">{marketsPerScan}</span>
+                </div>
+                <Slider
+                  value={[marketsPerScan]}
+                  min={1}
+                  max={10}
+                  step={1}
+                  onValueChange={([v]) => setMarketsPerScan(v)}
                   className="py-1"
                 />
                 <div className="flex justify-between text-[11px] text-gray-600">
                   <span>1</span>
                   <span>10</span>
-                  <span>20</span>
                 </div>
               </div>
 
               <Separator className="bg-gray-800" />
 
-              {/* Venue selection */}
-              <div className="space-y-2">
-                <Label className="text-sm text-gray-300">Venues</Label>
-                <p className="text-[11px] text-gray-600">Leave empty for all</p>
-                <div className="space-y-1.5">
-                  {VENUE_OPTIONS.map((venue) => {
-                    const selected = selectedVenues.includes(venue.value);
-                    return (
-                      <button
-                        key={venue.value}
-                        onClick={() => toggleVenue(venue.value)}
-                        className={cn(
-                          'flex w-full items-center justify-between rounded-lg border px-3 py-2 text-sm transition-colors',
-                          selected
-                            ? 'border-purple-500/40 bg-purple-500/10 text-purple-300'
-                            : 'border-gray-800 bg-gray-800/40 text-gray-400 hover:border-gray-700',
-                        )}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: venue.color }} />
-                          <span>{venue.label}</span>
-                        </div>
-                        {selected && <CheckCircle2 className="h-3.5 w-3.5" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+              {/* Apply config */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleConfig}
+                className="w-full border-gray-700 text-gray-300 hover:bg-gray-800 hover:text-white"
+              >
+                Apply Config
+              </Button>
 
               <Separator className="bg-gray-800" />
 
-              {/* Category selection */}
+              {/* System info */}
               <div className="space-y-2">
-                <Label className="text-sm text-gray-300">Categories</Label>
-                <p className="text-[11px] text-gray-600">Leave empty for all</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {CATEGORY_OPTIONS.map((cat) => {
-                    const selected = selectedCategories.includes(cat);
-                    return (
-                      <button
-                        key={cat}
-                        onClick={() => toggleCategory(cat)}
-                        className={cn(
-                          'rounded-md border px-2 py-1 text-[11px] capitalize transition-colors',
-                          selected
-                            ? 'border-purple-500/40 bg-purple-500/10 text-purple-300'
-                            : 'border-gray-800 bg-gray-800/40 text-gray-500 hover:border-gray-700',
-                        )}
-                      >
-                        {cat}
-                      </button>
-                    );
-                  })}
+                <Label className="text-sm text-gray-300">System Info</Label>
+                <div className="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2 space-y-1.5">
+                  <div className="flex justify-between">
+                    <span className="text-[11px] text-gray-500">Uptime</span>
+                    <span className="text-[11px] text-gray-300 tabular-nums">
+                      {state?.startedAt ? formatRelative(state.startedAt) : 'N/A'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[11px] text-gray-500">Last Activity</span>
+                    <span className="text-[11px] text-gray-300 tabular-nums">
+                      {state?.lastActivity ? formatRelative(state.lastActivity) : 'N/A'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[11px] text-gray-500">Status</span>
+                    <span className={cn(
+                      'text-[11px] font-medium',
+                      isRunning ? 'text-emerald-400' : 'text-gray-400',
+                    )}>
+                      {state?.status ?? 'STOPPED'}
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              <Separator className="bg-gray-800" />
-
-              {/* Speed */}
-              <div className="space-y-2">
-                <Label className="text-sm text-gray-300">Speed</Label>
-                <Select value={speed} onValueChange={setSpeed}>
-                  <SelectTrigger className="border-gray-700 bg-gray-800 text-gray-300">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="border-gray-700 bg-gray-900">
-                    <SelectItem value="fast">Fast (minimal detail)</SelectItem>
-                    <SelectItem value="normal">Normal (balanced)</SelectItem>
-                    <SelectItem value="detailed">Detailed (full logs)</SelectItem>
-                  </SelectContent>
-                </Select>
+              {/* Warning */}
+              <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2.5">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
+                  <div className="text-[11px] text-amber-400/80 space-y-0.5">
+                    <p className="font-medium">Dry-Run Mode Active</p>
+                    <p>The system will process markets, run all agents, and execute trades. Orders are <strong>simulated</strong> but recorded in the database exactly like real trades.</p>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
+        </div>
 
-          {/* Agent Legend */}
+        {/* ── Right: Live Activity ── */}
+        <div className="space-y-4 lg:col-span-2">
+          {/* Agent Activity Feed */}
+          <Card className="border-gray-800 bg-gray-900">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-sm text-white">
+                    <Eye className="h-4 w-4 text-gray-400" />
+                    Live Agent Activity
+                  </CardTitle>
+                  <CardDescription className="text-gray-500">
+                    Most recent jobs from the agent pipeline
+                  </CardDescription>
+                </div>
+                {isRunning && (
+                  <Badge className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px] animate-pulse">
+                    <CircleDot className="h-3 w-3" />
+                    Streaming
+                  </Badge>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {recentJobs.length > 0 ? (
+                <div className="max-h-[400px] overflow-y-auto divide-y divide-gray-800/50">
+                  {recentJobs.map((job) => (
+                    <div key={job.id} className="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-gray-800/30">
+                      <Badge
+                        className={cn(
+                          'text-[10px]',
+                          job.type === 'SCAN' && 'border-blue-500/30 bg-blue-500/10 text-blue-400',
+                          job.type === 'TRIAGE' && 'border-violet-500/30 bg-violet-500/10 text-violet-400',
+                          job.type === 'RESEARCH' && 'border-amber-500/30 bg-amber-500/10 text-amber-400',
+                          job.type === 'JUDGE' && 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
+                          job.type === 'RISK' && 'border-red-500/30 bg-red-500/10 text-red-400',
+                          job.type === 'EXECUTE' && 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400',
+                        )}
+                      >
+                        {job.type}
+                      </Badge>
+                      {(() => {
+                        const payload = job.payload ? (() => { try { return JSON.parse(job.payload); } catch { return {}; } })() : {};
+                        return (
+                          <p className="flex-1 truncate text-xs text-gray-300">
+                            {payload.marketTitle || payload.title || job.id.slice(0, 8)}
+                          </p>
+                        );
+                      })()}
+                      <span className="text-[10px] text-gray-600 tabular-nums shrink-0">
+                        {formatRelative(job.createdAt)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-16">
+                  <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-800">
+                    <Bot className="h-7 w-7 text-gray-600" />
+                  </div>
+                  <p className="text-sm font-medium text-gray-400">No agent activity yet</p>
+                  <p className="mt-1 max-w-md text-center text-xs text-gray-600">
+                    Click &quot;Start Live Simulation&quot; to begin continuous market processing. Agents will scan, triage, research, judge, risk-check, and simulate order execution in real-time.
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Recent Orders */}
           <Card className="border-gray-800 bg-gray-900">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-sm text-white">
-                <Bot className="h-4 w-4 text-gray-400" />
-                Agent Pipeline
+                <Target className="h-4 w-4 text-gray-400" />
+                Simulated Orders
               </CardTitle>
+              <CardDescription className="text-gray-500">
+                {recentOrders.length > 0 ? `${recentOrders.length} orders recorded` : 'No orders yet'}
+              </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-2">
-              {[
-                { icon: ScanSearch, label: 'Scanner', desc: 'Discovers & snapshots markets', color: 'text-blue-400' },
-                { icon: Filter, label: 'Triage Agent', desc: 'Classifies relevance', color: 'text-violet-400' },
-                { icon: BookOpen, label: 'Research Agents', desc: 'Bull + Bear + Contradiction', color: 'text-amber-400' },
-                { icon: Scale, label: 'Judge Agent', desc: 'Synthesizes probability estimate', color: 'text-emerald-400' },
-                { icon: ShieldAlert, label: 'Risk Engine', desc: 'Deterministic risk checks', color: 'text-red-400' },
-                { icon: Zap, label: 'Executor', desc: 'Simulated order placement', color: 'text-cyan-400' },
-              ].map((agent) => (
-                <div key={agent.label} className="flex items-start gap-2.5 rounded-lg border border-gray-800 bg-gray-800/30 px-3 py-2">
-                  <agent.icon className={cn('mt-0.5 h-4 w-4 shrink-0', agent.color)} />
-                  <div>
-                    <p className="text-xs font-medium text-gray-300">{agent.label}</p>
-                    <p className="text-[10px] text-gray-600">{agent.desc}</p>
-                  </div>
-                </div>
-              ))}
-              <div className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
-                <p className="text-[11px] text-amber-400/80">
-                  <AlertTriangle className="mr-1 inline h-3 w-3" />
-                  Dry-run only — no real trades will be executed
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* ─── Right: Results Panel ─── */}
-        <div className="space-y-4 lg:col-span-2">
-          {/* No results yet */}
-          {!report && !isRunning && (
-            <Card className="border-gray-800 bg-gray-900">
-              <CardContent className="flex flex-col items-center justify-center py-20">
-                <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-purple-500/10">
-                  <FlaskConical className="h-7 w-7 text-purple-400/60" />
-                </div>
-                <p className="text-sm font-medium text-gray-400">Ready to Simulate</p>
-                <p className="mt-1 max-w-md text-center text-xs text-gray-600">
-                  Configure your simulation parameters and click &quot;Run Simulation&quot; to test the full agent pipeline with realistic mock markets.
-                  All agents will process markets through triage, research, judging, and risk assessment — without executing real trades.
-                </p>
-                <div className="mt-4 flex flex-wrap justify-center gap-2">
-                  {['Scan', 'Triage', 'Research', 'Judge', 'Risk', 'Execute'].map((step, i) => (
-                    <Badge key={step} variant="outline" className="border-gray-700 text-[10px] text-gray-500">
-                      {i > 0 && <ArrowRight className="mr-1 inline h-2.5 w-2.5" />}
-                      {step}
-                    </Badge>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Summary Dashboard */}
-          {report && (
-            <>
-              {/* Summary Cards */}
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-                {[
-                  { label: 'Markets', value: report.summary.totalMarkets, icon: Target, color: 'text-purple-400', sub: `in ${formatDuration(report.summary.totalDurationMs)}` },
-                  { label: 'Relevant', value: report.summary.triagedRelevant, icon: Filter, color: 'text-blue-400', sub: `${report.summary.triagedRelevant}/${report.summary.totalMarkets} passed triage` },
-                  { label: 'Buy Signals', value: report.summary.riskBuy, icon: TrendingUp, color: 'text-emerald-400', sub: `${report.summary.riskSkip} skipped` },
-                  { label: 'Executed', value: report.summary.executed, icon: Zap, color: 'text-cyan-400', sub: `${report.summary.executed} simulated orders` },
-                  { label: 'Est. PnL', value: `$${report.summary.totalEstimatedPnl.toFixed(2)}`, icon: DollarSign, color: report.summary.totalEstimatedPnl >= 0 ? 'text-emerald-400' : 'text-red-400', sub: `exposure: ${formatCurrency(report.summary.totalExposure)}` },
-                  { label: 'Avg Edge', value: `${(report.summary.avgEdge * 100).toFixed(2)}%`, icon: BarChart3, color: 'text-amber-400', sub: `confidence: ${(report.summary.avgConfidence * 100).toFixed(1)}%` },
-                ].map((s) => (
-                  <Card key={s.label} className="border-gray-800 bg-gray-900">
-                    <CardContent className="p-3">
-                      <div className="flex items-center justify-between">
-                        <s.icon className={cn('h-3.5 w-3.5', s.color)} />
-                        <span className="text-lg font-bold tabular-nums text-white">{s.value}</span>
-                      </div>
-                      <p className="mt-1 text-[11px] font-medium text-gray-400">{s.label}</p>
-                      <p className="text-[10px] text-gray-600">{s.sub}</p>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-
-              {/* Pipeline Funnel */}
-              <Card className="border-gray-800 bg-gray-900">
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-sm text-white">
-                    <Activity className="h-4 w-4 text-gray-400" />
-                    Pipeline Funnel
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="p-4">
-                  <div className="flex items-end gap-1.5 justify-center">
-                    {[
-                      { label: 'Scanned', count: report.summary.scanned, color: 'bg-blue-500', max: report.summary.totalMarkets },
-                      { label: 'Relevant', count: report.summary.triagedRelevant, color: 'bg-violet-500', max: report.summary.totalMarkets },
-                      { label: 'Researched', count: report.summary.researched, color: 'bg-amber-500', max: report.summary.totalMarkets },
-                      { label: 'Judged', count: report.summary.judged, color: 'bg-purple-500', max: report.summary.totalMarkets },
-                      { label: 'Buy', count: report.summary.riskBuy, color: 'bg-emerald-500', max: report.summary.totalMarkets },
-                      { label: 'Executed', count: report.summary.executed, color: 'bg-cyan-500', max: report.summary.totalMarkets },
-                    ].map((bar) => (
-                      <div key={bar.label} className="flex flex-col items-center gap-1.5">
-                        <span className="text-xs font-bold tabular-nums text-white">{bar.count}</span>
-                        <div
-                          className={cn('w-10 rounded-t-md transition-all', bar.color)}
-                          style={{ height: `${Math.max(8, (bar.count / bar.max) * 100)}px` }}
-                        />
-                        <span className="text-[9px] text-gray-500">{bar.label}</span>
-                      </div>
-                    ))}
-                  </div>
-                  {report.summary.errors > 0 && (
-                    <div className="mt-3 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-1.5">
-                      <AlertTriangle className="h-3 w-3 text-red-400" />
-                      <span className="text-[11px] text-red-400">{report.summary.errors} error(s) encountered during simulation</span>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Market Results Table */}
-              <Card className="border-gray-800 bg-gray-900">
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-sm text-white">
-                    <Eye className="h-4 w-4 text-gray-400" />
-                    Market Results
-                  </CardTitle>
-                  <CardDescription className="text-gray-500">
-                    Click any row to inspect the full agent pipeline for that market
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <div className="max-h-[500px] overflow-y-auto">
-                    {report.results.map((result, idx) => (
-                      <div key={result.marketId || idx}>
-                        {/* Row */}
-                        <button
-                          onClick={() => setExpandedMarket(expandedMarket === String(idx) ? null : String(idx))}
-                          className={cn(
-                            'flex w-full items-center gap-3 border-b border-gray-800/50 px-4 py-3 text-left transition-colors hover:bg-gray-800/30',
-                            expandedMarket === String(idx) && 'bg-gray-800/20',
-                          )}
+            <CardContent className="p-0">
+              {recentOrders.length > 0 ? (
+                <div className="max-h-[400px] overflow-y-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-gray-800 hover:bg-transparent">
+                        <TableHead className="text-gray-500">Market</TableHead>
+                        <TableHead className="text-gray-500">Side</TableHead>
+                        <TableHead className="text-right text-gray-500">Price</TableHead>
+                        <TableHead className="text-right text-gray-500">Size</TableHead>
+                        <TableHead className="text-right text-gray-500">Time</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {recentOrders.map((order) => (
+                        <TableRow
+                          key={order.id}
+                          className="cursor-pointer border-gray-800 transition-colors hover:bg-gray-800/50"
+                          onClick={() => setExpandedOrder(expandedOrder === order.id ? null : order.id)}
                         >
-                          <div className="w-6 text-center">
-                            {expandedMarket === String(idx) ? (
-                              <ChevronDown className="mx-auto h-4 w-4 text-gray-500" />
-                            ) : (
-                              <ChevronRight className="mx-auto h-4 w-4 text-gray-600" />
-                            )}
-                          </div>
-
-                          {/* Stage indicator */}
-                          <span className={cn('h-2 w-2 shrink-0 rounded-full', stageColor(result.stage))} />
-
-                          {/* Title */}
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm text-gray-200">{result.title}</p>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-[10px] text-gray-600">{result.venue}</span>
-                              <span className="text-[10px] text-gray-700">|</span>
-                              <span className="text-[10px] text-gray-600">{result.category}</span>
-                              <span className="text-[10px] text-gray-700">|</span>
-                              <span className="text-[10px] tabular-nums text-gray-600">
-                                {(result.impliedProb * 100).toFixed(1)}%
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Triage */}
-                          <Badge className={cn(
-                            'text-[10px]',
-                            result.triageResult.status === 'RELEVANT'
-                              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                              : result.triageResult.status === 'AMBIGUOUS'
-                                ? 'border-amber-500/30 bg-amber-500/10 text-amber-400'
-                                : 'border-gray-500/30 bg-gray-500/10 text-gray-500',
-                          )}>
-                            {result.triageResult.status}
-                          </Badge>
-
-                          {/* Risk action */}
-                          {result.riskResult && (
+                          <TableCell>
+                            <p className="max-w-[200px] truncate text-xs text-gray-300">
+                              {order.market?.title || order.venueOrderId}
+                            </p>
+                          </TableCell>
+                          <TableCell>
                             <Badge className={cn(
                               'text-[10px]',
-                              result.riskResult.action === 'BUY'
+                              order.side === 'YES'
                                 ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
                                 : 'border-red-500/30 bg-red-500/10 text-red-400',
                             )}>
-                              {result.riskResult.action}
+                              {order.side}
                             </Badge>
-                          )}
-
-                          {/* Order */}
-                          {result.simulatedOrder && (
-                            <div className="text-right shrink-0">
-                              <p className={cn(
-                                'text-xs font-bold tabular-nums',
-                                result.simulatedOrder.estimatedPnl >= 0 ? 'text-emerald-400' : 'text-red-400',
-                              )}>
-                                {result.simulatedOrder.estimatedPnl >= 0 ? '+' : ''}
-                                ${result.simulatedOrder.estimatedPnl.toFixed(2)}
-                              </p>
-                              <p className="text-[10px] text-gray-600">
-                                {result.simulatedOrder.side} @ ${(result.simulatedOrder.price * 100).toFixed(1)}c
-                              </p>
-                            </div>
-                          )}
-
-                          {/* Error */}
-                          {result.error && (
-                            <Badge className="border-red-500/30 bg-red-500/10 text-red-400 text-[10px]">
-                              ERROR
-                            </Badge>
-                          )}
-
-                          {/* Duration */}
-                          <span className="shrink-0 text-[10px] tabular-nums text-gray-600">
-                            {formatDuration(result.durationMs)}
-                          </span>
-                        </button>
-
-                        {/* Expanded detail */}
-                        {expandedMarket === String(idx) && (
-                          <div className="border-b border-gray-800/50 bg-gray-900/50 px-4 py-4">
-                            <MarketDetail result={result} />
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            </>
-          )}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs tabular-nums text-gray-300">
+                              {(order.price * 100).toFixed(1)}c
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs tabular-nums text-gray-300">
+                              {formatCurrency(order.size)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-[10px] tabular-nums text-gray-500">
+                              {formatTime(order.filledAt || order.submittedAt)}
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-12 text-gray-600">
+                  <Clock className="h-8 w-8 mb-2 opacity-30" />
+                  <p className="text-sm font-medium">No orders yet</p>
+                  <p className="text-xs mt-1">Orders will appear here as the simulation runs</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
       </div>
     </div>
-  );
-}
-
-// ── Market Detail Sub-component ──────────────────────────────────────────────
-
-function MarketDetail({ result }: { result: MarketResult }) {
-  return (
-    <Accordion type="multiple" defaultValue={['triage']} className="space-y-2">
-      {/* Market Info */}
-      <AccordionItem value="info" className="border-gray-800">
-        <AccordionTrigger className="py-2 text-xs font-medium text-gray-300 hover:no-underline">
-          Market Data
-        </AccordionTrigger>
-        <AccordionContent className="pb-3">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {[
-              { label: 'Implied Prob', value: `${(result.impliedProb * 100).toFixed(1)}%` },
-              { label: 'Liquidity', value: formatCurrency(result.liquidity) },
-              { label: 'Spread', value: `${(result.spread * 100).toFixed(2)}%` },
-              { label: 'Final Stage', value: stageLabel(result.stage) },
-            ].map((s) => (
-              <div key={s.label} className="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2">
-                <p className="text-[10px] text-gray-500">{s.label}</p>
-                <p className="text-sm font-bold text-gray-200">{s.value}</p>
-              </div>
-            ))}
-          </div>
-        </AccordionContent>
-      </AccordionItem>
-
-      {/* Triage Result */}
-      <AccordionItem value="triage" className="border-gray-800">
-        <AccordionTrigger className="py-2 text-xs font-medium text-gray-300 hover:no-underline">
-          <div className="flex items-center gap-2">
-            <Filter className="h-3 w-3 text-violet-400" />
-            Triage Agent Output
-          </div>
-        </AccordionTrigger>
-        <AccordionContent className="pb-3">
-          <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <Badge className={cn(
-                'text-[10px]',
-                result.triageResult.status === 'RELEVANT'
-                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                  : 'border-amber-500/30 bg-amber-500/10 text-amber-400',
-              )}>
-                {result.triageResult.status}
-              </Badge>
-              <Badge className={cn(
-                'text-[10px]',
-                result.triageResult.worthResearch
-                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                  : 'border-gray-500/30 bg-gray-500/10 text-gray-500',
-              )}>
-                {result.triageResult.worthResearch ? 'Worth Research' : 'Skip Research'}
-              </Badge>
-            </div>
-            <p className="text-xs leading-relaxed text-gray-300">{result.triageResult.reason}</p>
-          </div>
-        </AccordionContent>
-      </AccordionItem>
-
-      {/* Research Agent Outputs */}
-      {result.bullOutput && (
-        <AccordionItem value="bull" className="border-gray-800">
-          <AccordionTrigger className="py-2 text-xs font-medium text-gray-300 hover:no-underline">
-            <div className="flex items-center gap-2">
-              <TrendingUp className="h-3 w-3 text-emerald-400" />
-              Bull Case Agent
-              <span className="text-[10px] text-gray-600">
-                est. {(result.bullOutput.estimatedProbability * 100).toFixed(1)}% | conf {(result.bullOutput.confidence * 100).toFixed(0)}%
-              </span>
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="pb-3">
-            <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 space-y-3">
-              <p className="text-xs leading-relaxed text-gray-300">{result.bullOutput.thesis}</p>
-              <div>
-                <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 mb-1">Key Arguments</p>
-                <ul className="space-y-1">
-                  {result.bullOutput.keyArguments.map((arg, i) => (
-                    <li key={i} className="flex items-start gap-1.5 text-xs text-gray-400">
-                      <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-emerald-400" />
-                      {arg}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          </AccordionContent>
-        </AccordionItem>
-      )}
-
-      {result.bearOutput && (
-        <AccordionItem value="bear" className="border-gray-800">
-          <AccordionTrigger className="py-2 text-xs font-medium text-gray-300 hover:no-underline">
-            <div className="flex items-center gap-2">
-              <TrendingUp className="h-3 w-3 text-red-400 rotate-180" />
-              Bear Case Agent
-              <span className="text-[10px] text-gray-600">
-                est. {(result.bearOutput.estimatedProbability * 100).toFixed(1)}% | conf {(result.bearOutput.confidence * 100).toFixed(0)}%
-              </span>
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="pb-3">
-            <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3 space-y-3">
-              <p className="text-xs leading-relaxed text-gray-300">{result.bearOutput.thesis}</p>
-              <div>
-                <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 mb-1">Key Arguments</p>
-                <ul className="space-y-1">
-                  {result.bearOutput.keyArguments.map((arg, i) => (
-                    <li key={i} className="flex items-start gap-1.5 text-xs text-gray-400">
-                      <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-red-400" />
-                      {arg}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          </AccordionContent>
-        </AccordionItem>
-      )}
-
-      {result.contradictionOutput && (
-        <AccordionItem value="contradiction" className="border-gray-800">
-          <AccordionTrigger className="py-2 text-xs font-medium text-gray-300 hover:no-underline">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-3 w-3 text-amber-400" />
-              Contradiction Agent
-              <span className="text-[10px] text-gray-600">
-                reliability {(result.contradictionOutput.reliabilityAssessment * 100).toFixed(0)}%
-              </span>
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="pb-3">
-            <div className="space-y-3">
-              <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
-                <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 mb-1">Contradictions Found</p>
-                <ul className="space-y-1">
-                  {result.contradictionOutput.contradictions.map((c, i) => (
-                    <li key={i} className="flex items-start gap-1.5 text-xs text-gray-400">
-                      <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-amber-400" />
-                      {c}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
-                <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 mb-1">Overlooked Risks</p>
-                <ul className="space-y-1">
-                  {result.contradictionOutput.overlookedRisks.map((r, i) => (
-                    <li key={i} className="flex items-start gap-1.5 text-xs text-gray-400">
-                      <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-gray-500" />
-                      {r}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          </AccordionContent>
-        </AccordionItem>
-      )}
-
-      {/* Judge Output */}
-      {result.judgeOutput && (
-        <AccordionItem value="judge" className="border-gray-800">
-          <AccordionTrigger className="py-2 text-xs font-medium text-gray-300 hover:no-underline">
-            <div className="flex items-center gap-2">
-              <Scale className="h-3 w-3 text-emerald-400" />
-              Judge Agent Output
-              <span className="text-[10px] text-gray-600">
-                P={((result.judgeOutput.trueProbability) * 100).toFixed(1)}%
-              </span>
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="pb-3">
-            <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 space-y-3">
-              {result.judgeOutput.skipReason && (
-                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2">
-                  <p className="text-[10px] font-medium text-amber-400">Skip Reason</p>
-                  <p className="text-xs text-gray-400">{result.judgeOutput.skipReason}</p>
-                </div>
-              )}
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {[
-                  { label: 'True Probability', value: `${(result.judgeOutput.trueProbability * 100).toFixed(1)}%` },
-                  { label: 'Confidence', value: `${(result.judgeOutput.confidence * 100).toFixed(1)}%` },
-                  { label: 'Uncertainty', value: `${(result.judgeOutput.uncertainty * 100).toFixed(1)}%` },
-                  { label: 'Catalyst', value: result.judgeOutput.catalystTiming },
-                ].map((s) => (
-                  <div key={s.label} className="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2">
-                    <p className="text-[10px] text-gray-500">{s.label}</p>
-                    <p className="text-sm font-bold text-gray-200">{s.value}</p>
-                  </div>
-                ))}
-              </div>
-              <div>
-                <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 mb-1">Pro Evidence</p>
-                <ul className="space-y-1">
-                  {result.judgeOutput.proEvidence.map((e, i) => (
-                    <li key={i} className="flex items-start gap-1.5 text-xs text-emerald-400/80">
-                      <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-emerald-400" />
-                      {e}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 mb-1">Anti Evidence</p>
-                <ul className="space-y-1">
-                  {result.judgeOutput.antiEvidence.map((e, i) => (
-                    <li key={i} className="flex items-start gap-1.5 text-xs text-red-400/80">
-                      <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-red-400" />
-                      {e}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          </AccordionContent>
-        </AccordionItem>
-      )}
-
-      {/* Risk Engine Result */}
-      {result.riskResult && (
-        <AccordionItem value="risk" className="border-gray-800">
-          <AccordionTrigger className="py-2 text-xs font-medium text-gray-300 hover:no-underline">
-            <div className="flex items-center gap-2">
-              <ShieldAlert className="h-3 w-3 text-red-400" />
-              Risk Engine (Deterministic)
-              <Badge className={cn(
-                'text-[10px]',
-                result.riskResult.action === 'BUY'
-                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                  : 'border-red-500/30 bg-red-500/10 text-red-400',
-              )}>
-                {result.riskResult.action}
-              </Badge>
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="pb-3">
-            <div className={cn(
-              'rounded-lg border p-3',
-              result.riskResult.action === 'BUY'
-                ? 'border-emerald-500/20 bg-emerald-500/5'
-                : 'border-red-500/20 bg-red-500/5',
-            )}>
-              <p className="text-xs leading-relaxed text-gray-300 mb-3">{result.riskResult.reason}</p>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {[
-                  { label: 'Edge', value: `${(result.riskResult.edge * 100).toFixed(2)}%` },
-                  { label: 'Urgency', value: result.riskResult.urgency },
-                  { label: 'Max Size', value: `$${result.riskResult.maxSize.toFixed(2)}` },
-                  { label: 'Side', value: result.riskResult.side ?? 'N/A' },
-                ].map((s) => (
-                  <div key={s.label} className="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2">
-                    <p className="text-[10px] text-gray-500">{s.label}</p>
-                    <p className="text-sm font-bold text-gray-200">{s.value}</p>
-                  </div>
-                ))}
-              </div>
-              {result.riskResult.reasonCode && (
-                <p className="mt-2 text-[10px] text-gray-600">
-                  Reason code: {result.riskResult.reasonCode}
-                </p>
-              )}
-            </div>
-          </AccordionContent>
-        </AccordionItem>
-      )}
-
-      {/* Simulated Order */}
-      {result.simulatedOrder && (() => {
-        const order = result.simulatedOrder;
-        return (
-        <AccordionItem value="order" className="border-gray-800">
-          <AccordionTrigger className="py-2 text-xs font-medium text-gray-300 hover:no-underline">
-            <div className="flex items-center gap-2">
-              <Zap className="h-3 w-3 text-cyan-400" />
-              Simulated Order
-              <Badge className="border-cyan-500/30 bg-cyan-500/10 text-cyan-400 text-[10px]">
-                DRY-RUN
-              </Badge>
-            </div>
-          </AccordionTrigger>
-          <AccordionContent className="pb-3">
-            <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {[
-                  { label: 'Side', value: order.side },
-                  { label: 'Price', value: `${(order.price * 100).toFixed(1)}` },
-                  { label: 'Size', value: `$${order.size.toFixed(2)}` },
-                  {
-                    label: 'Est. PnL',
-                    value: `${order.estimatedPnl >= 0 ? '+' : ''}$${order.estimatedPnl.toFixed(2)}`,
-                    isPnl: true,
-                  },
-                ].map((s) => (
-                  <div key={s.label} className="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2">
-                    <p className="text-[10px] text-gray-500">{s.label}</p>
-                    <p className={cn(
-                      'text-sm font-bold',
-                      s.isPnl
-                        ? order.estimatedPnl >= 0 ? 'text-emerald-400' : 'text-red-400'
-                        : 'text-gray-200',
-                    )}>
-                      {s.value}
-                    </p>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2">
-                <p className="text-[11px] text-amber-400/80">
-                  <FileText className="mr-1 inline h-3 w-3" />
-                  This order was simulated and NOT sent to any exchange. No real funds were used.
-                </p>
-              </div>
-            </div>
-          </AccordionContent>
-        </AccordionItem>
-        );
-      })()}
-    </Accordion>
   );
 }
