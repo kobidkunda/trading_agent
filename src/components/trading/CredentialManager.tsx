@@ -156,11 +156,9 @@ const SERVICES: ServiceDef[] = [
     defaultUrl: 'https://clob.polymarket.com',
     description: 'Crypto prediction market exchange',
     urlPlaceholder: 'https://clob.polymarket.com',
-    credentialLabel: 'API Key',
-    credentialPlaceholder: 'Enter Polymarket API key',
-    docsUrl: 'https://docs.polymarket.com/',
     credentialLabel: 'API Key + Secret',
     credentialPlaceholder: 'Enter API key (JSON with apiKey + apiSecret)',
+    docsUrl: 'https://docs.polymarket.com/',
   },
   {
     id: 'kalshi',
@@ -320,7 +318,7 @@ function AddCredentialDialog({
     }
   }, [selectedService, serviceDef]);
 
-  const canSave = selectedService && label.trim() && (serviceUrl.trim() || credentialValue.trim());
+  const canSave = selectedService && label.trim() && serviceUrl.trim();
 
   const handleSave = useCallback(async () => {
     if (!canSave || !serviceDef) return;
@@ -332,8 +330,8 @@ function AddCredentialDialog({
         body: JSON.stringify({
           service: serviceDef.label,
           label: label.trim(),
-          encryptedData: JSON.stringify({ apiKey: credentialValue }),
-          serviceUrl: serviceUrl.trim() || null,
+          encryptedData: credentialValue.trim() ? JSON.stringify({ apiKey: credentialValue.trim() }) : JSON.stringify({}),
+          serviceUrl: serviceUrl.trim(),
         }),
       });
       if (res.ok) {
@@ -642,8 +640,6 @@ export function CredentialManager() {
             )}
           </div>
 
-          <AddCredentialDialog open={addOpen} onOpenChange={setAddOpen} onAdded={addCredential} />
-
           <Dialog open={addOpen} onOpenChange={setAddOpen}>
             <DialogTrigger asChild>
               <Button
@@ -655,6 +651,8 @@ export function CredentialManager() {
               </Button>
             </DialogTrigger>
           </Dialog>
+
+          <AddCredentialDialog open={addOpen} onOpenChange={setAddOpen} onAdded={addCredential} />
         </div>
       </div>
 

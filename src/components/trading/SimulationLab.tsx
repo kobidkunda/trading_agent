@@ -1101,7 +1101,9 @@ function MarketDetail({ result }: { result: MarketResult }) {
       )}
 
       {/* Simulated Order */}
-      {result.simulatedOrder && (
+      {result.simulatedOrder && (() => {
+        const order = result.simulatedOrder;
+        return (
         <AccordionItem value="order" className="border-gray-800">
           <AccordionTrigger className="py-2 text-xs font-medium text-gray-300 hover:no-underline">
             <div className="flex items-center gap-2">
@@ -1116,20 +1118,21 @@ function MarketDetail({ result }: { result: MarketResult }) {
             <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 {[
-                  { label: 'Side', value: result.simulatedOrder.side },
-                  { label: 'Price', value: `${(result.simulatedOrder.price * 100).toFixed(1)}` },
-                  { label: 'Size', value: `$${result.simulatedOrder.size.toFixed(2)}` },
+                  { label: 'Side', value: order.side },
+                  { label: 'Price', value: `${(order.price * 100).toFixed(1)}` },
+                  { label: 'Size', value: `$${order.size.toFixed(2)}` },
                   {
                     label: 'Est. PnL',
-                    value: `${result.simulatedOrder.estimatedPnl >= 0 ? '+' : ''}$${result.simulatedOrder.estimatedPnl.toFixed(2)}`,
+                    value: `${order.estimatedPnl >= 0 ? '+' : ''}$${order.estimatedPnl.toFixed(2)}`,
+                    isPnl: true,
                   },
                 ].map((s) => (
                   <div key={s.label} className="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2">
                     <p className="text-[10px] text-gray-500">{s.label}</p>
                     <p className={cn(
                       'text-sm font-bold',
-                      s.label === 'Est. PnL'
-                        ? result.simulatedOrder.estimatedPnl >= 0 ? 'text-emerald-400' : 'text-red-400'
+                      s.isPnl
+                        ? order.estimatedPnl >= 0 ? 'text-emerald-400' : 'text-red-400'
                         : 'text-gray-200',
                     )}>
                       {s.value}
@@ -1146,7 +1149,8 @@ function MarketDetail({ result }: { result: MarketResult }) {
             </div>
           </AccordionContent>
         </AccordionItem>
-      )}
+        );
+      })()}
     </Accordion>
   );
 }

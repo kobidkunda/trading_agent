@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  # ── Core Database ──────────────────────────────────────────────────────────
+  # Not needed here since we use SQLite for the Next.js app
+
+  # ── Optional Self-Hosted Services ─────────────────────────────────────────
+  # Uncomment the services you want to run
+
+  # Qdrant - Vector Database for RAG memory and semantic search
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: tcc-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    profiles:
+      - services
+
+  # Ollama - Local LLM inference server for research agents
+  ollama:
+    image: ollama/ollama:latest
+    container_name: tcc-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    profiles:
+      - services
+
+  # SearXNG - Privacy-focused metasearch engine for web research
+  searxng:
+    image: searxng/searxng:latest
+    container_name: tcc-searxng
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888
+      - SEARXNG_SECRET=changeme
+    volumes:
+      - searxng_data:/etc/searxng
+    profiles:
+      - services
+
+  # Mem0 - Long-term memory layer for agent conversations
+  mem0:
+    image: mem0ai/mem0:latest
+    container_name: tcc-mem0
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MEM0_API_KEY=changeme
+    profiles:
+      - services
+
+volumes:
+  qdrant_data:
+  ollama_data:
+  searxng_data:

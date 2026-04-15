@@ -30,8 +30,8 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    if (!body.service || !body.label || !body.encryptedData) {
-      return NextResponse.json({ error: 'service, label, and encryptedData are required' }, { status: 400 });
+    if (!body.service || !body.label) {
+      return NextResponse.json({ error: 'service and label are required' }, { status: 400 });
     }
 
     // Generate a masked preview from the encrypted data

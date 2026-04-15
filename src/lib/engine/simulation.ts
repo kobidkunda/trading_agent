@@ -836,7 +836,7 @@ export async function runSimulation(config: SimulationConfig): Promise<Simulatio
       });
 
       // ── Step 6: Simulated Execution ──
-      let simulatedOrder = null;
+      let simulatedOrder: { side: string; price: number; size: number; estimatedPnl: number } | null = null;
       if (riskResult.action === 'BUY') {
         const execStart = Date.now();
         const orderSize = riskResult.adjustedSize || riskResult.maxSize;
