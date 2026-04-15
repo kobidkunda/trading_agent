@@ -38,6 +38,7 @@ import type { PromptState } from '@/lib/types';
 // ── types ────────────────────────────────────────────────────────────────────
 
 interface PromptVersion {
+  id?: string;
   version: number;
   body: string;
   state: PromptState;
@@ -170,6 +171,7 @@ function buildPromptTemplates(
     }
     const tmpl = grouped.get(item.name)!;
     tmpl.versions.push({
+      id: item.id,
       version: item.version,
       body: item.body,
       state: item.state,
@@ -285,18 +287,32 @@ export function PromptStudio() {
     if (!currentPrompt || !currentVersionData) return;
     setSaving(true);
     try {
-      await fetch('/api/prompts', {
-        method: 'POST',
+      // Try to update existing version via PUT, fall back to POST
+      const updateRes = await fetch('/api/prompts', {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          id: currentVersionData.id,  // Will be undefined if not from API
           name: currentPrompt.name,
           version: selectedVersion,
           body: editBody,
-          action: 'save_draft',
+          state: 'DRAFT',
         }),
       });
+      if (!updateRes.ok) {
+        // If PUT fails (e.g. no id), create new via POST
+        await fetch('/api/prompts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: currentPrompt.name,
+            body: editBody,
+            state: 'DRAFT',
+          }),
+        });
+      }
     } catch {
-      // ignore
+      // ignore - local state update is the fallback
     }
     // Update local state
     setPrompts((prev) =>
@@ -332,16 +348,30 @@ export function PromptStudio() {
     if (!currentPrompt || !currentVersionData) return;
     setSaving(true);
     try {
-      await fetch('/api/prompts', {
-        method: 'POST',
+      // Try PUT first to update existing version
+      const updateRes = await fetch('/api/prompts', {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          id: currentVersionData.id,
           name: currentPrompt.name,
           version: selectedVersion,
           body: editBody,
-          action: 'publish',
+          state: 'PUBLISHED',
         }),
       });
+      if (!updateRes.ok) {
+        // Fallback: create via POST
+        await fetch('/api/prompts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: currentPrompt.name,
+            body: editBody,
+            state: 'PUBLISHED',
+          }),
+        });
+      }
     } catch {
       // ignore
     }
@@ -397,15 +427,20 @@ export function PromptStudio() {
   const seedDefaults = useCallback(async () => {
     setSeeding(true);
     try {
+      // Check which prompts already exist to avoid duplicates
+      const existingRes = await fetch('/api/prompts');
+      const existingData = existingRes.ok ? await existingRes.json() : { prompts: [] };
+      const existingNames = new Set((existingData.prompts ?? []).map((p: { name: string }) => p.name));
+
       for (const name of PROMPT_NAMES) {
+        if (existingNames.has(name)) continue; // Skip already-seeded prompts
         await fetch('/api/prompts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name,
-            version: 1,
             body: DEFAULT_PROMPT_TEMPLATES[name],
-            action: 'publish',
+            state: 'PUBLISHED',
           }),
         });
       }

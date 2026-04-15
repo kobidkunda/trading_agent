@@ -42,6 +42,37 @@ import { VENUE_OPTIONS, STAGE_COLORS } from '@/lib/constants';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
+// Raw API response type (from /api/markets)
+interface MarketApiRecord {
+  id: string;
+  title: string;
+  venue: string;
+  description: string | null;
+  category: string;
+  status: string;
+  resolutionTime: string | null;
+  createdAt: string;
+  updatedAt: string;
+  snapshots: Array<{
+    id: string;
+    impliedProb: number;
+    liquidity: number;
+    spread: number;
+    volume24h: number;
+    bestBid: number | null;
+    bestAsk: number | null;
+    timestamp: string;
+  }>;
+  tradeCandidates: Array<{
+    id: string;
+    stage: string;
+    triageStatus: string | null;
+    triageReason: string | null;
+    researchQueued: boolean;
+  }>
+}
+
+// Flattened row used by the UI
 interface MarketRow {
   id: string;
   title: string;
@@ -56,6 +87,26 @@ interface MarketRow {
   description: string;
   snapshotAt: string;
   category: string;
+}
+
+function flattenMarketRecord(m: MarketApiRecord): MarketRow {
+  const snapshot = m.snapshots[0];
+  const candidate = m.tradeCandidates[0];
+  return {
+    id: m.id,
+    title: m.title,
+    venue: m.venue as Venue,
+    liquidity: snapshot?.liquidity ?? 0,
+    spread: snapshot?.spread ?? 0,
+    impliedProb: snapshot?.impliedProb ?? 0,
+    triageStatus: (candidate?.triageStatus as TriageStatus) ?? 'IRRELEVANT',
+    triageReason: candidate?.triageReason ?? '',
+    researchQueued: candidate?.researchQueued ?? false,
+    stage: (candidate?.stage as CandidateStage) ?? 'SCANNED',
+    description: m.description ?? '',
+    snapshotAt: snapshot?.timestamp ?? m.updatedAt,
+    category: m.category,
+  };
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -117,7 +168,8 @@ export function MarketTriage() {
         const res = await fetch('/api/markets');
         if (res.ok && !cancelled) {
           const data = await res.json();
-          setMarkets(data.markets ?? []);
+          const raw = data.markets ?? [];
+          setMarkets(raw.map(flattenMarketRecord));
         }
       } catch {
         // failed silently - no toast import
@@ -139,7 +191,8 @@ export function MarketTriage() {
       const res = await fetch('/api/markets');
       if (res.ok) {
         const data = await res.json();
-        setMarkets(data.markets ?? []);
+        const raw = data.markets ?? [];
+        setMarkets(raw.map(flattenMarketRecord));
       }
     } catch {
       // keep existing data

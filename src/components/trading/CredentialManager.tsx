@@ -59,9 +59,10 @@ interface Credential {
   id: string;
   service: string;
   label: string;
-  value: string;
-  status: ConnStatus;
-  lastTested: string | null;
+  maskedPreview: string | null;
+  isActive: boolean;
+  lastTestedAt: string | null;
+  testResult: string | null;
 }
 
 // ── constants ────────────────────────────────────────────────────────────────
@@ -97,8 +98,7 @@ function maskValue(val: string): string {
 
 function formatTime(iso: string | null): string {
   if (!iso) return 'Never';
-  const d = new Date(iso);
-  return d.toLocaleString('en-US', {
+  return new Date(iso).toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -106,8 +106,8 @@ function formatTime(iso: string | null): string {
   });
 }
 
-function StatusBadge({ status }: { status: ConnStatus }) {
-  switch (status) {
+function StatusBadge({ testResult }: { testResult: string | null }) {
+  switch (testResult) {
     case 'SUCCESS':
       return (
         <Badge className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
@@ -153,7 +153,7 @@ export function CredentialManager() {
         const res = await fetch('/api/credentials');
         if (res.ok && !cancelled) {
           const data = await res.json();
-          setCredentials(data);
+          setCredentials(data.credentials ?? []);
         }
       } catch {
         toast.error('Failed to load credentials');
@@ -180,11 +180,11 @@ export function CredentialManager() {
         setCredentials((prev) =>
           prev.map((c) =>
             c.id === cred.id
-              ? { ...c, status: data.status, lastTested: new Date().toISOString() }
+              ? { ...c, testResult: data.testResult ?? data.status, lastTestedAt: new Date().toISOString() }
               : c
           )
         );
-        toast.success(`${cred.service}: ${data.status}`);
+        toast.success(`${cred.service}: ${data.testResult ?? data.status}`);
       } else {
         toast.error(`Failed to test ${cred.service} connection`);
       }
@@ -207,12 +207,20 @@ export function CredentialManager() {
         body: JSON.stringify({
           service: newService,
           label: newLabel,
-          value: newValue,
+          encryptedData: JSON.stringify({ apiKey: newValue }),
         }),
       });
       if (res.ok) {
         const data = await res.json();
-        setCredentials((prev) => [...prev, data]);
+        setCredentials((prev) => [...prev, {
+          id: data.id,
+          service: data.service,
+          label: data.label,
+          maskedPreview: data.maskedPreview,
+          isActive: data.isActive ?? true,
+          lastTestedAt: data.lastTestedAt,
+          testResult: data.testResult,
+        }]);
         toast.success('Credential added');
       } else {
         toast.error('Failed to add credential');
@@ -252,10 +260,10 @@ export function CredentialManager() {
   }
 
   const successCount = credentials.filter(
-    (c) => c.status === 'SUCCESS'
+    (c) => c.testResult === 'SUCCESS'
   ).length;
   const failedCount = credentials.filter(
-    (c) => c.status === 'FAILED'
+    (c) => c.testResult === 'FAILED'
   ).length;
 
   return (
@@ -470,18 +478,18 @@ export function CredentialManager() {
                       </CardDescription>
                     </div>
                   </div>
-                  <StatusBadge status={cred.status} />
+                  <StatusBadge testResult={cred.testResult} />
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="rounded-md border border-gray-800 bg-gray-800/60 px-3 py-2">
                   <code className="text-xs font-mono text-gray-400">
-                    {maskValue(cred.value)}
+                    {cred.maskedPreview || '****'}
                   </code>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] text-gray-600">
-                    Last tested: {formatTime(cred.lastTested)}
+                    Last tested: {formatTime(cred.lastTestedAt)}
                   </span>
                   <div className="flex items-center gap-1">
                     <Button

@@ -10,6 +10,7 @@ import {
   BarChart3,
   Target,
   ClipboardList,
+  Clock,
 } from 'lucide-react';
 import {
   Card,
@@ -36,11 +37,36 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-import type { Venue, DecisionAction, RiskReasonCode } from '@/lib/types';
+import type { Venue } from '@/lib/types';
 import { VENUE_OPTIONS, REASON_CODE_DESCRIPTIONS } from '@/lib/constants';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
+// Raw API decision record (from /api/decisions)
+interface DecisionApiRecord {
+  id: string;
+  marketId: string;
+  candidateId: string | null;
+  action: string;
+  side: string | null;
+  reasonCode: string | null;
+  reason: string | null;
+  judgeProbability: number | null;
+  impliedProb: number | null;
+  edge: number | null;
+  confidence: number | null;
+  uncertainty: number | null;
+  maxSize: number | null;
+  urgency: string | null;
+  fees: number | null;
+  slippage: number | null;
+  dryRun: boolean;
+  createdAt: string;
+  market: { id: string; title: string; venue: string; category: string; status: string } | null;
+  candidate: { id: string; stage: string } | null;
+}
+
+// Flattened row used by the UI
 interface DecisionRow {
   id: string;
   marketId: string;
@@ -49,22 +75,38 @@ interface DecisionRow {
   predictedProb: number;
   impliedProb: number;
   edge: number;
-  action: DecisionAction;
-  reasonCode: RiskReasonCode | null;
+  action: string;
+  reasonCode: string | null;
   reasonCodeLabel: string;
-  positionSize: number;
-  outcome: 'WIN' | 'LOSS' | 'PENDING' | null;
-  pnl: number | null;
-  bullOutput: string;
-  bearOutput: string;
-  judgeOutput: string;
-  sources: string[];
-  executionLog: string;
-  postmortem: string;
+  maxSize: number;
+  urgency: string | null;
+  reason: string | null;
   decidedAt: string;
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+function flattenDecision(d: DecisionApiRecord): DecisionRow {
+  const reasonCode = d.reasonCode as string | null;
+  return {
+    id: d.id,
+    marketId: d.marketId,
+    marketTitle: d.market?.title ?? 'Unknown Market',
+    venue: (d.market?.venue ?? 'POLYMARKET') as Venue,
+    predictedProb: d.judgeProbability ?? 0,
+    impliedProb: d.impliedProb ?? 0,
+    edge: d.edge ?? 0,
+    action: d.action,
+    reasonCode,
+    reasonCodeLabel: reasonCode
+      ? (REASON_CODE_DESCRIPTIONS[reasonCode] ?? reasonCode)
+      : d.reason ?? '—',
+    maxSize: d.maxSize ?? 0,
+    urgency: d.urgency,
+    reason: d.reason,
+    decidedAt: d.createdAt,
+  };
+}
 
 function venueLabel(v: Venue): string {
   return VENUE_OPTIONS.find((o) => o.value === v)?.label ?? v;
@@ -95,7 +137,8 @@ export function ResearchLedger() {
         const res = await fetch('/api/decisions');
         if (res.ok && !cancelled) {
           const data = await res.json();
-          setDecisions(data.decisions ?? []);
+          const raw = data.decisions ?? [];
+          setDecisions(raw.map(flattenDecision));
         }
       } catch {
         // failed to load
@@ -127,20 +170,15 @@ export function ResearchLedger() {
   const summaryStats = useMemo(() => {
     const total = decisions.length;
     const buys = decisions.filter((d) => d.action === 'BUY').length;
-    const resolved = decisions.filter(
-      (d) => d.outcome === 'WIN' || d.outcome === 'LOSS'
-    );
-    const wins = resolved.filter((d) => d.outcome === 'WIN').length;
-    const winRate = resolved.length > 0 ? wins / resolved.length : 0;
-    const totalPnl = resolved.reduce(
-      (s, d) => s + (d.pnl ?? 0),
-      0
-    );
+    const skips = decisions.filter((d) => d.action === 'SKIP').length;
     const avgEdge =
       decisions.length > 0
         ? decisions.reduce((s, d) => s + d.edge, 0) / decisions.length
         : 0;
-    return { total, buys, resolved: resolved.length, winRate, totalPnl, avgEdge };
+    const totalSize = decisions
+      .filter((d) => d.action === 'BUY')
+      .reduce((s, d) => s + d.maxSize, 0);
+    return { total, buys, skips, avgEdge, totalSize };
   }, [decisions]);
 
   if (loading) {
@@ -158,7 +196,7 @@ export function ResearchLedger() {
       <div>
         <h2 className="text-xl font-semibold text-white">Research Ledger</h2>
         <p className="mt-1 text-sm text-gray-500">
-          Trading decisions, research outputs, and performance tracking
+          Trading decisions and risk engine outputs
         </p>
       </div>
 
@@ -189,16 +227,16 @@ export function ResearchLedger() {
                 color: 'text-white',
               },
               {
-                label: 'Win Rate',
-                value: `${(summaryStats.winRate * 100).toFixed(0)}%`,
-                icon: Target,
-                color: 'text-emerald-400',
-              },
-              {
                 label: 'Buy Actions',
                 value: summaryStats.buys,
                 icon: TrendingUp,
-                color: 'text-cyan-400',
+                color: 'text-emerald-400',
+              },
+              {
+                label: 'Skipped',
+                value: summaryStats.skips,
+                icon: TrendingDown,
+                color: 'text-gray-400',
               },
               {
                 label: 'Avg Edge',
@@ -207,11 +245,10 @@ export function ResearchLedger() {
                 color: 'text-amber-400',
               },
               {
-                label: 'Total PnL',
-                value: formatCurrency(summaryStats.totalPnl),
-                icon: summaryStats.totalPnl >= 0 ? TrendingUp : TrendingDown,
-                color:
-                  summaryStats.totalPnl >= 0 ? 'text-emerald-400' : 'text-red-400',
+                label: 'Total Size',
+                value: formatCurrency(summaryStats.totalSize),
+                icon: Target,
+                color: 'text-cyan-400',
               },
             ].map((s) => (
               <Card
@@ -291,7 +328,7 @@ export function ResearchLedger() {
                       </TableHead>
                       <TableHead className="text-right text-gray-500">Edge</TableHead>
                       <TableHead className="text-gray-500">Action</TableHead>
-                      <TableHead className="text-right text-gray-500">PnL</TableHead>
+                      <TableHead className="text-right text-gray-500">Max Size</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -372,23 +409,9 @@ export function ResearchLedger() {
                             )}
                           </TableCell>
                           <TableCell className="text-right">
-                            {d.pnl !== null ? (
-                              <span
-                                className={cn(
-                                  'text-sm font-medium tabular-nums',
-                                  d.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'
-                                )}
-                              >
-                                {d.pnl >= 0 ? '+' : ''}
-                                {formatCurrency(d.pnl)}
-                              </span>
-                            ) : d.outcome === 'PENDING' ? (
-                              <Badge className="border-amber-500/30 bg-amber-500/10 text-amber-400 text-[10px]">
-                                PENDING
-                              </Badge>
-                            ) : (
-                              <span className="text-sm text-gray-600">—</span>
-                            )}
+                            <span className="text-sm tabular-nums text-gray-300">
+                              {formatCurrency(d.maxSize)}
+                            </span>
                           </TableCell>
                         </TableRow>
                       ))
@@ -426,18 +449,18 @@ export function ResearchLedger() {
                             {d.reasonCode}
                           </Badge>
                         )}
-                        {d.outcome && (
+                        {d.urgency && (
                           <Badge
                             className={cn(
                               'text-[10px]',
-                              d.outcome === 'WIN'
-                                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                                : d.outcome === 'LOSS'
-                                  ? 'border-red-500/30 bg-red-500/10 text-red-400'
-                                  : 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+                              d.urgency === 'IMMEDIATE'
+                                ? 'border-red-500/30 bg-red-500/10 text-red-400'
+                                : d.urgency === 'HIGH'
+                                  ? 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+                                  : 'border-gray-500/30 bg-gray-500/10 text-gray-500'
                             )}
                           >
-                            {d.outcome}
+                            {d.urgency}
                           </Badge>
                         )}
                       </div>
@@ -453,79 +476,61 @@ export function ResearchLedger() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {/* Agent outputs */}
-                  <div className="grid gap-4 md:grid-cols-3">
+                  {/* Risk engine output */}
+                  <div className="grid gap-4 md:grid-cols-2">
                     <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
                       <p className="mb-1 text-xs font-semibold text-emerald-400">
-                        🐂 Bull Case
+                        Risk Decision
                       </p>
                       <p className="text-xs leading-relaxed text-gray-400">
-                        {d.bullOutput || 'No output available'}
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
-                      <p className="mb-1 text-xs font-semibold text-red-400">
-                        🐻 Bear Case
-                      </p>
-                      <p className="text-xs leading-relaxed text-gray-400">
-                        {d.bearOutput || 'No output available'}
+                        {d.reason ?? 'No reason recorded'}
                       </p>
                     </div>
                     <div className="rounded-lg border border-purple-500/20 bg-purple-500/5 p-3">
                       <p className="mb-1 text-xs font-semibold text-purple-400">
-                        ⚖️ Judge
+                        Reason Code
                       </p>
                       <p className="text-xs leading-relaxed text-gray-400">
-                        {d.judgeOutput || 'No output available'}
+                        {d.reasonCodeLabel || 'No reason code'}
                       </p>
                     </div>
                   </div>
 
-                  {/* Sources */}
-                  <div>
-                    <p className="mb-2 text-xs font-medium text-gray-500">
-                      Sources
-                    </p>
-                    {d.sources && d.sources.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {d.sources.map((s) => (
-                          <Badge
-                            key={s}
-                            variant="outline"
-                            className="border-gray-700 text-xs text-gray-400"
-                          >
-                            {s}
-                          </Badge>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-gray-600">No sources available</p>
-                    )}
-                  </div>
-
-                  {/* Execution log */}
-                  <div>
-                    <p className="mb-2 text-xs font-medium text-gray-500">
-                      Execution Log
-                    </p>
-                    <pre className="max-h-32 overflow-y-auto rounded-lg border border-gray-800 bg-gray-800/60 p-3 text-xs text-gray-400">
-                      {d.executionLog || 'No execution log available'}
-                    </pre>
-                  </div>
-
-                  {/* Postmortem */}
-                  {d.postmortem && (
-                    <div>
-                      <p className="mb-2 text-xs font-medium text-gray-500">
-                        Postmortem
+                  {/* Metrics grid */}
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+                      <p className="text-[11px] text-gray-500">Predicted Prob</p>
+                      <p className="mt-1 text-sm font-bold text-gray-200">
+                        {(d.predictedProb * 100).toFixed(1)}%
                       </p>
-                      <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
-                        <p className="text-xs leading-relaxed text-gray-400">
-                          {d.postmortem}
-                        </p>
-                      </div>
                     </div>
-                  )}
+                    <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+                      <p className="text-[11px] text-gray-500">Implied Prob</p>
+                      <p className="mt-1 text-sm font-bold text-gray-200">
+                        {(d.impliedProb * 100).toFixed(1)}%
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+                      <p className="text-[11px] text-gray-500">Edge</p>
+                      <p className="mt-1 text-sm font-bold text-gray-200">
+                        {d.edge >= 0 ? '+' : ''}{(d.edge * 100).toFixed(2)}%
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+                      <p className="text-[11px] text-gray-500">Max Position</p>
+                      <p className="mt-1 text-sm font-bold text-gray-200">
+                        {formatCurrency(d.maxSize)}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Timestamp */}
+                  <div className="flex items-center gap-4 text-xs text-gray-600">
+                    <span className="flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      Decided: {new Date(d.decidedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
                 </CardContent>
               </Card>
             );
