@@ -60,8 +60,10 @@ function TopBar() {
     toggleSidebar,
   } = useTradingStore();
   const [currentTime, setCurrentTime] = useState('');
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     const tick = () => {
       setCurrentTime(
         new Date().toLocaleTimeString('en-US', {
@@ -134,7 +136,7 @@ function TopBar() {
         {/* Clock */}
         <div className="hidden items-center gap-1.5 text-xs text-gray-500 md:flex">
           <Clock className="h-3.5 w-3.5" />
-          <span className="font-mono tabular-nums">{currentTime}</span>
+          <span className="font-mono tabular-nums">{mounted ? currentTime : ''}</span>
         </div>
 
         {/* Emergency stop */}
