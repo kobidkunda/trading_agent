@@ -13,6 +13,7 @@ import {
   OctagonX,
   Radio,
   Clock,
+  FlaskConical,
 } from 'lucide-react';
 import { useTradingStore, type PageView } from '@/store/trading-store';
 import { Button } from '@/components/ui/button';
@@ -31,6 +32,7 @@ import { ResearchLedger } from '@/components/trading/ResearchLedger';
 import { PromptStudio } from '@/components/trading/PromptStudio';
 import { SystemHealth } from '@/components/trading/SystemHealth';
 import { LiveStatus } from '@/components/trading/LiveStatus';
+import { SimulationLab } from '@/components/trading/SimulationLab';
 
 interface NavItem {
   id: PageView;
@@ -39,6 +41,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  { id: 'simulation', label: 'Simulation Lab', icon: FlaskConical },
   { id: 'strategy', label: 'Strategy Hub', icon: Settings },
   { id: 'credentials', label: 'Credentials', icon: Key },
   { id: 'triage', label: 'Market Triage', icon: ScanSearch },
@@ -261,6 +264,8 @@ function PageContent() {
   const { activePage } = useTradingStore();
 
   switch (activePage) {
+    case 'simulation':
+      return <SimulationLab />;
     case 'strategy':
       return <StrategyHub />;
     case 'credentials':
@@ -276,7 +281,7 @@ function PageContent() {
     case 'health':
       return <SystemHealth />;
     default:
-      return <StrategyHub />;
+      return <SimulationLab />;
   }
 }
 

@@ -93,3 +93,23 @@ Stage Summary:
 - Zero TypeScript errors in project source
 - All API routes verified returning 200
 - Build passes clean
+---
+Task ID: 1
+Agent: main
+Task: Build Dry-Run Simulation feature - full agent pipeline testing without real trades
+
+Work Log:
+- Explored project structure: 8 pages (SPA), 9 API routes, 17 Prisma models, Zustand store
+- Created simulation engine (src/lib/engine/simulation.ts) with 20 realistic prediction market templates
+- Engine runs full pipeline: Scan -> Triage -> Research (Bull/Bear/Contradiction) -> Judge -> Risk Engine -> Simulated Execute
+- Created /api/simulation API route with GET (fetch results) and POST (start simulation)
+- Built SimulationLab.tsx UI component with: config panel, real-time pipeline progress, summary dashboard, funnel chart, expandable market detail with full agent output inspection
+- Updated Zustand store to add 'simulation' PageView and set as default page
+- Updated page.tsx navigation with FlaskConical icon, added SimulationLab import and route
+- Build passes with zero errors
+- Tested API: 3-market simulation completed in 57ms with correct triage/research/judge/risk/execution flow
+
+Stage Summary:
+- Created files: src/lib/engine/simulation.ts, src/app/api/simulation/route.ts, src/components/trading/SimulationLab.tsx
+- Modified files: src/store/trading-store.ts, src/app/page.tsx
+- Feature complete: Full dry-run simulation pipeline that tests all agents without executing real trades

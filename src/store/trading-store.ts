@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type PageView = 'strategy' | 'credentials' | 'triage' | 'research' | 'prompts' | 'live' | 'health';
+export type PageView = 'strategy' | 'credentials' | 'triage' | 'research' | 'prompts' | 'simulation' | 'live' | 'health';
 
 interface TradingStore {
   activePage: PageView;
@@ -14,7 +14,7 @@ interface TradingStore {
 }
 
 export const useTradingStore = create<TradingStore>((set) => ({
-  activePage: 'strategy',
+  activePage: 'simulation',
   sidebarOpen: true,
   dryRunMode: true,
   globalKillSwitch: false,
