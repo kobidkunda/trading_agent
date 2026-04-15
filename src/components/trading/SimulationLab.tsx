@@ -27,6 +27,7 @@ import {
   Loader2,
   Bot,
   Eye,
+  FlaskConical,
 } from 'lucide-react';
 import {
   Card,
