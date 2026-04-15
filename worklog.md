@@ -113,3 +113,35 @@ Stage Summary:
 - Created files: src/lib/engine/simulation.ts, src/app/api/simulation/route.ts, src/components/trading/SimulationLab.tsx
 - Modified files: src/store/trading-store.ts, src/app/page.tsx
 - Feature complete: Full dry-run simulation pipeline that tests all agents without executing real trades
+---
+Task ID: 2
+Agent: main
+Task: Enhance Credential Manager with URL fields, self-hostable service detection, and connection testing
+
+Work Log:
+- Added `serviceUrl` and `testDetails` fields to Credential model in Prisma schema
+- Pushed schema to SQLite DB and regenerated Prisma client
+- Created `/api/credentials/test` endpoint with real HTTP connection testers for:
+  - Qdrant (tests /collections endpoint)
+  - Ollama (tests /api/tags, lists installed models)
+  - SearXNG (tests /search endpoint)
+  - Mem0 (tests /health endpoint)
+  - Generic URL reachability test for all other services
+- Updated `/api/credentials` API to handle serviceUrl field in create/update
+- Completely redesigned CredentialManager.tsx UI with:
+  - 8 service definitions (4 self-hosted: Qdrant, Ollama, SearXNG, Mem0; 4 cloud: Polymarket, Kalshi, Gemini, OpenAI)
+  - Each service has: default URL, port, Docker image, description, docs link
+  - Add dialog shows Self-Hosted vs Cloud sections with service descriptions
+  - URL field prominently displayed with Globe icon
+  - Test button (Zap icon) that actually connects to the service URL
+  - Expandable card detail showing: service URL, credential preview, test results
+  - Connection test details shown (success with latency, or failure with reason)
+  - Self-hosted badge and Docker image info for self-hosted services
+  - Stats bar showing total/self-hosted/connected/failed counts
+- Build passes with zero errors
+
+Stage Summary:
+- Modified: prisma/schema.prisma, src/app/api/credentials/route.ts
+- Created: src/app/api/credentials/test/route.ts
+- Rewritten: src/components/trading/CredentialManager.tsx
+- Verified: connection test for Qdrant correctly detects "fetch failed" when service not running

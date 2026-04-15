@@ -232,9 +232,11 @@ model Credential {
   label         String
   encryptedData String   // encrypted JSON of credentials
   maskedPreview String?  // e.g. "pk_****abcd"
+  serviceUrl    String?  // self-hosted service URL (e.g. http://localhost:6333)
   isActive      Boolean  @default(true)
   lastTestedAt  DateTime?
   testResult    String?  // SUCCESS, FAILED
+  testDetails   String?  // details from last test (latency, version, etc.)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }

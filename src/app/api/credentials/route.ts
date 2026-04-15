@@ -10,9 +10,11 @@ export async function GET() {
         service: true,
         label: true,
         maskedPreview: true,
+        serviceUrl: true,
         isActive: true,
         lastTestedAt: true,
         testResult: true,
+        testDetails: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -41,6 +43,7 @@ export async function POST(request: NextRequest) {
         label: body.label,
         encryptedData: body.encryptedData,
         maskedPreview,
+        serviceUrl: body.serviceUrl || null,
         isActive: body.isActive ?? true,
       },
     });
@@ -50,7 +53,7 @@ export async function POST(request: NextRequest) {
         action: 'CREATE_CREDENTIAL',
         entityType: 'Credential',
         entityId: credential.id,
-        details: `Credential "${body.label}" for service "${body.service}" created`,
+        details: `Credential "${body.label}" for service "${body.service}" created${body.serviceUrl ? ` (URL: ${body.serviceUrl})` : ''}`,
       },
     });
 
@@ -77,9 +80,11 @@ export async function PUT(request: NextRequest) {
       updateData.encryptedData = body.encryptedData;
       updateData.maskedPreview = generateMaskedPreview(body.service || '', body.encryptedData);
     }
+    if (body.serviceUrl !== undefined) updateData.serviceUrl = body.serviceUrl;
     if (body.isActive !== undefined) updateData.isActive = body.isActive;
     if (body.lastTestedAt !== undefined) updateData.lastTestedAt = new Date(body.lastTestedAt);
     if (body.testResult !== undefined) updateData.testResult = body.testResult;
+    if (body.testDetails !== undefined) updateData.testDetails = body.testDetails;
 
     const credential = await db.credential.update({
       where: { id: body.id },
@@ -140,7 +145,6 @@ function generateMaskedPreview(service: string, encryptedData: string): string {
 
   try {
     const data = JSON.parse(encryptedData);
-    // Try common key patterns for masking
     const keyPatterns = ['apiKey', 'api_key', 'key', 'privateKey', 'secret', 'token', 'password'];
     for (const pattern of keyPatterns) {
       if (data[pattern]) {
@@ -151,7 +155,6 @@ function generateMaskedPreview(service: string, encryptedData: string): string {
         return '****' + val.slice(-4);
       }
     }
-    // Fallback: mask based on string length
     return `****${encryptedData.slice(-4)}`;
   } catch {
     return '****' + encryptedData.slice(-4);
