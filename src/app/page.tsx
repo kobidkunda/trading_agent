@@ -30,6 +30,7 @@ import { MarketTriage } from '@/components/trading/MarketTriage';
 import { ResearchLedger } from '@/components/trading/ResearchLedger';
 import { PromptStudio } from '@/components/trading/PromptStudio';
 import { SystemHealth } from '@/components/trading/SystemHealth';
+import { LiveStatus } from '@/components/trading/LiveStatus';
 
 interface NavItem {
   id: PageView;
@@ -43,6 +44,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'triage', label: 'Market Triage', icon: ScanSearch },
   { id: 'research', label: 'Research Ledger', icon: BookOpen },
   { id: 'prompts', label: 'Prompt Studio', icon: FileText },
+  { id: 'live', label: 'Live Status', icon: Radio },
   { id: 'health', label: 'System Health', icon: Activity },
 ];
 
@@ -269,6 +271,8 @@ function PageContent() {
       return <ResearchLedger />;
     case 'prompts':
       return <PromptStudio />;
+    case 'live':
+      return <LiveStatus />;
     case 'health':
       return <SystemHealth />;
     default:

@@ -88,75 +88,6 @@ const SERVICE_COLORS: Record<string, string> = {
   SearXNG: 'text-teal-400',
 };
 
-// ── mock data ────────────────────────────────────────────────────────────────
-
-const MOCK_CREDENTIALS: Credential[] = [
-  {
-    id: '1',
-    service: 'Polymarket',
-    label: 'Production API Key',
-    value: 'pk_3f8a9c2d4e5b1a6c7d8e9f0a1b2c3d4e',
-    status: 'SUCCESS',
-    lastTested: '2025-01-15T10:30:00Z',
-  },
-  {
-    id: '2',
-    service: 'Kalshi',
-    label: 'Main Account',
-    value: 'ks_live_abc123def456ghi789jkl012mno345',
-    status: 'SUCCESS',
-    lastTested: '2025-01-15T09:15:00Z',
-  },
-  {
-    id: '3',
-    service: 'Gemini',
-    label: 'Pro Model Access',
-    value: 'AIzaSyBx9K8R7mN3oP2qW5eR8tY1uI6aS4dF7gH0j',
-    status: 'SUCCESS',
-    lastTested: '2025-01-15T08:00:00Z',
-  },
-  {
-    id: '4',
-    service: 'OpenAI',
-    label: 'GPT-4o Access',
-    value: 'sk-proj-ab12cd34ef56gh78ij90kl12mn34op56qr78',
-    status: 'FAILED',
-    lastTested: '2025-01-14T22:00:00Z',
-  },
-  {
-    id: '5',
-    service: 'Qdrant',
-    label: 'Vector DB URL',
-    value: 'https://qdrant.example.com:6333',
-    status: 'SUCCESS',
-    lastTested: '2025-01-15T07:45:00Z',
-  },
-  {
-    id: '6',
-    service: 'Mem0',
-    label: 'Memory API Key',
-    value: 'm0_sk_99887766554433221100aabbccddeeff00',
-    status: 'UNTESTED',
-    lastTested: null,
-  },
-  {
-    id: '7',
-    service: 'Ollama',
-    label: 'Local LLM Endpoint',
-    value: 'http://localhost:11434',
-    status: 'FAILED',
-    lastTested: '2025-01-14T18:30:00Z',
-  },
-  {
-    id: '8',
-    service: 'SearXNG',
-    label: 'Search Instance',
-    value: 'https://searx.example.com/search',
-    status: 'SUCCESS',
-    lastTested: '2025-01-15T06:00:00Z',
-  },
-];
-
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function maskValue(val: string): string {
@@ -225,10 +156,9 @@ export function CredentialManager() {
           setCredentials(data);
         }
       } catch {
-        // fallback
+        toast.error('Failed to load credentials');
       } finally {
         if (!cancelled) {
-          setCredentials(MOCK_CREDENTIALS);
           setLoading(false);
         }
       }
@@ -256,35 +186,9 @@ export function CredentialManager() {
         );
         toast.success(`${cred.service}: ${data.status}`);
       } else {
-        // Simulate random result for demo
-        const ok = Math.random() > 0.3;
-        setCredentials((prev) =>
-          prev.map((c) =>
-            c.id === cred.id
-              ? {
-                  ...c,
-                  status: ok ? 'SUCCESS' : 'FAILED',
-                  lastTested: new Date().toISOString(),
-                }
-              : c
-          )
-        );
-        toast[ok ? 'success' : 'error'](
-          `${cred.service}: ${ok ? 'Connection OK' : 'Connection failed'}`
-        );
+        toast.error(`Failed to test ${cred.service} connection`);
       }
     } catch {
-      setCredentials((prev) =>
-        prev.map((c) =>
-          c.id === cred.id
-            ? {
-                ...c,
-                status: 'FAILED',
-                lastTested: new Date().toISOString(),
-              }
-            : c
-        )
-      );
       toast.error('Network error during test');
     } finally {
       setTestingId(null);
@@ -311,29 +215,10 @@ export function CredentialManager() {
         setCredentials((prev) => [...prev, data]);
         toast.success('Credential added');
       } else {
-        // Fallback
-        const newCred: Credential = {
-          id: `local-${Date.now()}`,
-          service: newService,
-          label: newLabel,
-          value: newValue,
-          status: 'UNTESTED',
-          lastTested: null,
-        };
-        setCredentials((prev) => [...prev, newCred]);
-        toast.success('Credential added locally');
+        toast.error('Failed to add credential');
       }
     } catch {
-      const newCred: Credential = {
-        id: `local-${Date.now()}`,
-        service: newService,
-        label: newLabel,
-        value: newValue,
-        status: 'UNTESTED',
-        lastTested: null,
-      };
-      setCredentials((prev) => [...prev, newCred]);
-      toast.success('Credential added locally');
+      toast.error('Network error — could not add credential');
     }
     setAddOpen(false);
     setNewService('');
@@ -472,75 +357,162 @@ export function CredentialManager() {
         </div>
       </div>
 
-      {/* Credential cards grid */}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {credentials.map((cred) => (
-          <Card
-            key={cred.id}
-            className="group border-gray-800 bg-gray-900 transition-colors hover:border-gray-700"
-          >
-            <CardHeader className="pb-2">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gray-800">
-                    <KeyRound
-                      className={cn(
-                        'h-4 w-4',
-                        SERVICE_COLORS[cred.service] ?? 'text-gray-400'
-                      )}
+      {/* Empty state */}
+      {credentials.length === 0 ? (
+        <Card className="border-gray-800 bg-gray-900">
+          <CardContent className="flex flex-col items-center justify-center py-16">
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-800">
+              <KeyRound className="h-7 w-7 text-gray-500" />
+            </div>
+            <p className="text-sm font-medium text-gray-400">
+              No credentials configured
+            </p>
+            <p className="mt-1 text-xs text-gray-600">
+              Add API keys and service connections to get started
+            </p>
+            <Dialog open={addOpen} onOpenChange={setAddOpen}>
+              <DialogTrigger asChild>
+                <Button
+                  size="sm"
+                  className="mt-4 gap-2 bg-emerald-600 text-white hover:bg-emerald-700"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Credential
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="border-gray-800 bg-gray-900 text-white">
+                <DialogHeader>
+                  <DialogTitle>Add New Credential</DialogTitle>
+                  <DialogDescription className="text-gray-500">
+                    Enter the service details and credential value
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <Label className="text-gray-300">Service</Label>
+                    <Select value={newService} onValueChange={setNewService}>
+                      <SelectTrigger className="border-gray-700 bg-gray-800 text-white">
+                        <SelectValue placeholder="Select service" />
+                      </SelectTrigger>
+                      <SelectContent className="border-gray-700 bg-gray-900">
+                        {SERVICE_OPTIONS.map((s) => (
+                          <SelectItem key={s} value={s}>
+                            {s}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-gray-300">Label</Label>
+                    <Input
+                      value={newLabel}
+                      onChange={(e) => setNewLabel(e.target.value)}
+                      placeholder="e.g. Production API Key"
+                      className="border-gray-700 bg-gray-800 text-white placeholder:text-gray-600"
                     />
                   </div>
-                  <div>
-                    <CardTitle className="text-sm font-semibold text-white">
-                      {cred.service}
-                    </CardTitle>
-                    <CardDescription className="text-xs text-gray-500">
-                      {cred.label}
-                    </CardDescription>
+                  <div className="space-y-2">
+                    <Label className="text-gray-300">Credential Value</Label>
+                    <Input
+                      type="password"
+                      value={newValue}
+                      onChange={(e) => setNewValue(e.target.value)}
+                      placeholder="Enter API key, URL, or token"
+                      className="border-gray-700 bg-gray-800 text-white placeholder:text-gray-600"
+                    />
                   </div>
                 </div>
-                <StatusBadge status={cred.status} />
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="rounded-md border border-gray-800 bg-gray-800/60 px-3 py-2">
-                <code className="text-xs font-mono text-gray-400">
-                  {maskValue(cred.value)}
-                </code>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] text-gray-600">
-                  Last tested: {formatTime(cred.lastTested)}
-                </span>
-                <div className="flex items-center gap-1">
+                <DialogFooter>
                   <Button
                     variant="ghost"
-                    size="sm"
-                    className="h-7 gap-1.5 text-xs text-gray-400 hover:text-white"
-                    onClick={() => testConnection(cred)}
-                    disabled={testingId === cred.id}
+                    onClick={() => setAddOpen(false)}
+                    className="text-gray-400"
                   >
-                    {testingId === cred.id ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <RefreshCw className="h-3 w-3" />
-                    )}
-                    Test
+                    Cancel
                   </Button>
                   <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs text-red-400/70 hover:bg-red-500/10 hover:text-red-400"
-                    onClick={() => setDeleteTarget(cred)}
+                    onClick={addCredential}
+                    className="bg-emerald-600 text-white hover:bg-emerald-700"
                   >
-                    <Trash2 className="h-3 w-3" />
+                    Add
                   </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </CardContent>
+        </Card>
+      ) : (
+        /* Credential cards grid */
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {credentials.map((cred) => (
+            <Card
+              key={cred.id}
+              className="group border-gray-800 bg-gray-900 transition-colors hover:border-gray-700"
+            >
+              <CardHeader className="pb-2">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gray-800">
+                      <KeyRound
+                        className={cn(
+                          'h-4 w-4',
+                          SERVICE_COLORS[cred.service] ?? 'text-gray-400'
+                        )}
+                      />
+                    </div>
+                    <div>
+                      <CardTitle className="text-sm font-semibold text-white">
+                        {cred.service}
+                      </CardTitle>
+                      <CardDescription className="text-xs text-gray-500">
+                        {cred.label}
+                      </CardDescription>
+                    </div>
+                  </div>
+                  <StatusBadge status={cred.status} />
                 </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="rounded-md border border-gray-800 bg-gray-800/60 px-3 py-2">
+                  <code className="text-xs font-mono text-gray-400">
+                    {maskValue(cred.value)}
+                  </code>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-gray-600">
+                    Last tested: {formatTime(cred.lastTested)}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 gap-1.5 text-xs text-gray-400 hover:text-white"
+                      onClick={() => testConnection(cred)}
+                      disabled={testingId === cred.id}
+                    >
+                      {testingId === cred.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3 w-3" />
+                      )}
+                      Test
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs text-red-400/70 hover:bg-red-500/10 hover:text-red-400"
+                      onClick={() => setDeleteTarget(cred)}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {/* Delete confirmation */}
       <AlertDialog

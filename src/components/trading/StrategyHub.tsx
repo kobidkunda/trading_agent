@@ -47,10 +47,6 @@ function formatDollar(v: number) {
   return `$${v.toLocaleString()}`;
 }
 
-// ── mock data ────────────────────────────────────────────────────────────────
-
-const MOCK_SETTINGS: StrategySettings = DEFAULT_STRATEGY;
-
 const PROMPT_ROLES = [
   'triage',
   'bull',
@@ -64,7 +60,7 @@ const PROMPT_ROLES = [
 
 export function StrategyHub() {
   const { dryRunMode, setDryRunMode } = useTradingStore();
-  const [settings, setSettings] = useState<StrategySettings>(MOCK_SETTINGS);
+  const [settings, setSettings] = useState<StrategySettings>(DEFAULT_STRATEGY);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -79,7 +75,7 @@ export function StrategyHub() {
           setSettings(data);
         }
       } catch {
-        // fallback to mock data (already set)
+        toast.error('Failed to load strategy settings');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -111,7 +107,7 @@ export function StrategyHub() {
   }, [settings]);
 
   const resetSettings = useCallback(() => {
-    setSettings(MOCK_SETTINGS);
+    setSettings(DEFAULT_STRATEGY);
     setDryRunMode(true);
     toast.info('Settings reset to defaults');
   }, [setDryRunMode]);

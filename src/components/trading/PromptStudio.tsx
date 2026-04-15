@@ -8,6 +8,9 @@ import {
   GitCompare,
   Clock,
   FileCode,
+  Plus,
+  Loader2,
+  Sparkles,
 } from 'lucide-react';
 import {
   Card,
@@ -58,7 +61,7 @@ interface AuditEntry {
   author: string;
 }
 
-// ── mock data ────────────────────────────────────────────────────────────────
+// ── constants (NOT mock data) ────────────────────────────────────────────────
 
 const PROMPT_NAMES = [
   'triage',
@@ -77,73 +80,6 @@ const PROMPT_ROLES: Record<string, string> = {
   judge: 'Judge Arbitrator',
   postmortem: 'Postmortem Analyst',
 };
-
-const MOCK_PROMPTS: PromptTemplate[] = PROMPT_NAMES.map((name) => ({
-  name,
-  role: PROMPT_ROLES[name],
-  versions: [
-    {
-      version: 1,
-      body: DEFAULT_PROMPT_TEMPLATES[name],
-      state: 'PUBLISHED',
-      createdAt: '2025-01-10T08:00:00Z',
-      author: 'system',
-    },
-    {
-      version: 2,
-      body:
-        DEFAULT_PROMPT_TEMPLATES[name] +
-        '\n\nAdditional instructions:\n- Always cite sources when making claims\n- Consider base rate probabilities\n- Note your confidence level (1-10)',
-      state: 'DRAFT',
-      createdAt: '2025-01-14T14:30:00Z',
-      author: 'admin',
-    },
-  ],
-  currentVersion: 1,
-}));
-
-const MOCK_AUDIT: AuditEntry[] = [
-  {
-    id: 'a1',
-    promptName: 'judge',
-    action: 'saved_draft',
-    version: 2,
-    timestamp: '2025-01-15T11:30:00Z',
-    author: 'admin',
-  },
-  {
-    id: 'a2',
-    promptName: 'bull',
-    action: 'saved_draft',
-    version: 2,
-    timestamp: '2025-01-14T14:30:00Z',
-    author: 'admin',
-  },
-  {
-    id: 'a3',
-    promptName: 'triage',
-    action: 'published',
-    version: 1,
-    timestamp: '2025-01-10T08:00:00Z',
-    author: 'system',
-  },
-  {
-    id: 'a4',
-    promptName: 'bear',
-    action: 'rolled_back',
-    version: 1,
-    timestamp: '2025-01-12T09:00:00Z',
-    author: 'admin',
-  },
-  {
-    id: 'a5',
-    promptName: 'contradiction',
-    action: 'created',
-    version: 1,
-    timestamp: '2025-01-10T08:00:00Z',
-    author: 'system',
-  },
-];
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -206,17 +142,71 @@ function simpleDiff(a: string, b: string): string {
   return result.join('\n');
 }
 
+/** Build grouped PromptTemplate[] from flat API response */
+function buildPromptTemplates(
+  flat: Array<{
+    id: string;
+    name: string;
+    version: number;
+    state: PromptState;
+    body: string;
+    description?: string;
+    changelog?: string;
+    publishedAt?: string;
+    createdAt: string;
+    updatedAt: string;
+  }>
+): PromptTemplate[] {
+  const grouped = new Map<string, PromptTemplate>();
+
+  for (const item of flat) {
+    if (!grouped.has(item.name)) {
+      grouped.set(item.name, {
+        name: item.name,
+        role: PROMPT_ROLES[item.name] ?? item.name,
+        versions: [],
+        currentVersion: item.state === 'PUBLISHED' ? item.version : 0,
+      });
+    }
+    const tmpl = grouped.get(item.name)!;
+    tmpl.versions.push({
+      version: item.version,
+      body: item.body,
+      state: item.state,
+      createdAt: item.createdAt,
+      author: 'admin',
+    });
+    if (item.state === 'PUBLISHED') {
+      tmpl.currentVersion = item.version;
+    }
+  }
+
+  // If no published version found, use the highest version
+  for (const tmpl of grouped.values()) {
+    if (tmpl.currentVersion === 0 && tmpl.versions.length > 0) {
+      const max = Math.max(...tmpl.versions.map((v) => v.version));
+      tmpl.currentVersion = max;
+    }
+    // Sort versions ascending
+    tmpl.versions.sort((a, b) => a.version - b.version);
+  }
+
+  // Return in standard order
+  return PROMPT_NAMES.map((name) => grouped.get(name)!).filter(Boolean);
+}
+
 // ── component ────────────────────────────────────────────────────────────────
 
 export function PromptStudio() {
   const [prompts, setPrompts] = useState<PromptTemplate[]>([]);
   const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activePrompt, setActivePrompt] = useState<string>('triage');
+  const [activePrompt, setActivePrompt] = useState<string>('');
   const [selectedVersion, setSelectedVersion] = useState<number>(1);
   const [editBody, setEditBody] = useState('');
   const [diffMode, setDiffMode] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [seeding, setSeeding] = useState(false);
 
   // Load data
   useEffect(() => {
@@ -226,15 +216,24 @@ export function PromptStudio() {
         const res = await fetch('/api/prompts');
         if (res.ok && !cancelled) {
           const data = await res.json();
-          setPrompts(data.prompts ?? MOCK_PROMPTS);
-          setAuditLog(data.audit ?? MOCK_AUDIT);
+          const flat = data.prompts ?? [];
+          setPrompts(buildPromptTemplates(flat));
+
+          // Build audit log from prompt data if available
+          const audit: AuditEntry[] = flat.map((p: { name: string; version: number; state: string; createdAt: string }) => ({
+            id: `${p.name}-${p.version}`,
+            promptName: p.name,
+            action: p.state === 'PUBLISHED' ? 'published' as const : 'created' as const,
+            version: p.version,
+            timestamp: p.createdAt,
+            author: 'admin',
+          }));
+          setAuditLog(audit);
         }
       } catch {
-        // fallback
+        // failed to load
       } finally {
         if (!cancelled) {
-          setPrompts(MOCK_PROMPTS);
-          setAuditLog(MOCK_AUDIT);
           setLoading(false);
         }
       }
@@ -244,6 +243,13 @@ export function PromptStudio() {
       cancelled = true;
     };
   }, []);
+
+  // Set active prompt to first available after load
+  useEffect(() => {
+    if (prompts.length > 0 && !activePrompt) {
+      setActivePrompt(prompts[0].name);
+    }
+  }, [prompts, activePrompt]);
 
   const currentPrompt = useMemo(
     () => prompts.find((p) => p.name === activePrompt),
@@ -388,6 +394,40 @@ export function PromptStudio() {
     toast.info(`Rolled back to v${publishedVersion.version}`);
   }, [currentPrompt, publishedVersion]);
 
+  const seedDefaults = useCallback(async () => {
+    setSeeding(true);
+    try {
+      for (const name of PROMPT_NAMES) {
+        await fetch('/api/prompts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            version: 1,
+            body: DEFAULT_PROMPT_TEMPLATES[name],
+            action: 'publish',
+          }),
+        });
+      }
+      toast.success('Default prompts seeded');
+
+      // Refresh the list
+      const res = await fetch('/api/prompts');
+      if (res.ok) {
+        const data = await res.json();
+        const flat = data.prompts ?? [];
+        setPrompts(buildPromptTemplates(flat));
+        if (flat.length > 0 && !activePrompt) {
+          setActivePrompt(flat[0].name);
+        }
+      }
+    } catch {
+      toast.error('Failed to seed default prompts');
+    } finally {
+      setSeeding(false);
+    }
+  }, [activePrompt]);
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -425,197 +465,227 @@ export function PromptStudio() {
         </div>
       </div>
 
-      <div className="flex gap-6">
-        {/* Left sidebar - prompt list */}
-        <div className="w-52 shrink-0 space-y-2">
-          {prompts.map((p) => {
-            const isActive = p.name === activePrompt;
-            return (
-              <button
-                key={p.name}
-                onClick={() => switchPrompt(p.name)}
-                className={cn(
-                  'flex w-full items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors',
-                  isActive
-                    ? 'border-emerald-500/30 bg-emerald-500/10'
-                    : 'border-gray-800 bg-gray-900 hover:border-gray-700 hover:bg-gray-800/50'
-                )}
-              >
-                <FileCode
-                  className={cn(
-                    'mt-0.5 h-4 w-4 shrink-0',
-                    isActive ? 'text-emerald-400' : 'text-gray-600'
-                  )}
-                />
-                <div className="min-w-0 flex-1">
-                  <p
-                    className={cn(
-                      'text-sm font-medium capitalize',
-                      isActive ? 'text-emerald-300' : 'text-gray-300'
-                    )}
-                  >
-                    {p.name}
-                  </p>
-                  <p className="text-[11px] text-gray-600">{p.role}</p>
-                  <div className="mt-1 flex items-center gap-1.5">
-                    {stateBadge(
-                      p.versions.find((v) => v.version === p.currentVersion)
-                        ?.state ?? 'DRAFT'
-                    )}
-                    <span className="text-[10px] text-gray-600">
-                      v{p.currentVersion}
-                    </span>
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Main area */}
-        <div className="min-w-0 flex-1 space-y-4">
-          {/* Toolbar */}
-          <Card className="border-gray-800 bg-gray-900">
-            <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
-              <div className="flex items-center gap-3">
-                <Select
-                  value={String(selectedVersion)}
-                  onValueChange={(v) => setSelectedVersion(Number(v))}
-                >
-                  <SelectTrigger className="w-28 border-gray-700 bg-gray-800 text-white">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="border-gray-700 bg-gray-900">
-                    {currentPrompt?.versions.map((v) => (
-                      <SelectItem
-                        key={v.version}
-                        value={String(v.version)}
-                      >
-                        Version {v.version}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {currentVersionData && stateBadge(currentVersionData.state)}
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="gap-2 text-gray-400 hover:bg-gray-800 hover:text-white"
-                  onClick={saveDraft}
-                  disabled={saving}
-                >
-                  <Save className="h-4 w-4" />
-                  Save Draft
-                </Button>
-                <Button
-                  size="sm"
-                  className="gap-2 bg-emerald-600 text-white hover:bg-emerald-700"
-                  onClick={publish}
-                  disabled={saving || currentVersionData?.state === 'PUBLISHED'}
-                >
-                  <Upload className="h-4 w-4" />
-                  Publish
-                </Button>
-                {publishedVersion &&
-                  publishedVersion.version !== selectedVersion && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="gap-2 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
-                      onClick={rollback}
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                      Rollback
-                    </Button>
-                  )}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Editor / Diff view */}
-          {diffMode && currentVersionData && publishedVersion ? (
-            <Card className="border-gray-800 bg-gray-900">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm text-gray-400">
-                  Diff: v{publishedVersion.version} → v{selectedVersion}
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <p className="mb-2 text-xs font-medium text-emerald-400">
-                      Published (v{publishedVersion.version})
-                    </p>
-                    <pre className="h-96 max-h-96 overflow-auto rounded-lg border border-gray-800 bg-gray-800/60 p-4 text-xs leading-relaxed text-gray-400">
-                      {publishedVersion.body}
-                    </pre>
-                  </div>
-                  <div>
-                    <p className="mb-2 text-xs font-medium text-amber-400">
-                      Current (v{selectedVersion})
-                    </p>
-                    <pre className="h-96 max-h-96 overflow-auto rounded-lg border border-gray-800 bg-gray-800/60 p-4 text-xs leading-relaxed text-gray-400">
-                      {currentVersionData.body}
-                    </pre>
-                  </div>
-                </div>
-                {selectedVersion !== publishedVersion.version && (
-                  <div className="mt-4">
-                    <p className="mb-2 text-xs font-medium text-gray-500">
-                      Line-by-line diff
-                    </p>
-                    <pre className="max-h-64 overflow-auto rounded-lg border border-gray-800 bg-gray-800/60 p-4 font-mono text-xs leading-relaxed">
-                      {simpleDiff(
-                        publishedVersion.body,
-                        currentVersionData.body
-                      )
-                        .split('\n')
-                        .map((line, i) => (
-                          <div
-                            key={i}
-                            className={cn(
-                              line.startsWith('-')
-                                ? 'bg-red-500/10 text-red-400'
-                                : line.startsWith('+')
-                                  ? 'bg-emerald-500/10 text-emerald-400'
-                                  : 'text-gray-600'
-                            )}
-                          >
-                            {line || '\u00A0'}
-                          </div>
-                        ))}
-                    </pre>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          ) : (
-            <Card className="border-gray-800 bg-gray-900">
-              <CardContent className="p-4">
-                <Textarea
-                  value={editBody}
-                  onChange={(e) => setEditBody(e.target.value)}
-                  className="min-h-[500px] resize-y border-gray-800 bg-gray-800 font-mono text-sm leading-relaxed text-gray-300 placeholder:text-gray-600"
-                  placeholder="Select a prompt and version to edit..."
-                />
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Version metadata */}
-          {currentVersionData && (
-            <div className="flex items-center gap-4 text-xs text-gray-600">
-              <span className="flex items-center gap-1">
-                <Clock className="h-3 w-3" />
-                Created: {formatTime(currentVersionData.createdAt)}
-              </span>
-              <span>Author: {currentVersionData.author}</span>
+      {/* Empty state when no prompts */}
+      {prompts.length === 0 ? (
+        <Card className="border-gray-800 bg-gray-900">
+          <CardContent className="flex flex-col items-center justify-center py-16">
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-800">
+              <FileCode className="h-7 w-7 text-gray-500" />
             </div>
-          )}
+            <p className="text-sm font-medium text-gray-400">
+              No prompt templates
+            </p>
+            <p className="mt-1 text-xs text-gray-600">
+              Initialize prompts to get started.
+            </p>
+            <Button
+              size="sm"
+              className="mt-4 gap-2 bg-emerald-600 text-white hover:bg-emerald-700"
+              onClick={seedDefaults}
+              disabled={seeding}
+            >
+              {seeding ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4" />
+              )}
+              Seed Default Prompts
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="flex gap-6">
+          {/* Left sidebar - prompt list */}
+          <div className="w-52 shrink-0 space-y-2">
+            {prompts.map((p) => {
+              const isActive = p.name === activePrompt;
+              return (
+                <button
+                  key={p.name}
+                  onClick={() => switchPrompt(p.name)}
+                  className={cn(
+                    'flex w-full items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors',
+                    isActive
+                      ? 'border-emerald-500/30 bg-emerald-500/10'
+                      : 'border-gray-800 bg-gray-900 hover:border-gray-700 hover:bg-gray-800/50'
+                  )}
+                >
+                  <FileCode
+                    className={cn(
+                      'mt-0.5 h-4 w-4 shrink-0',
+                      isActive ? 'text-emerald-400' : 'text-gray-600'
+                    )}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p
+                      className={cn(
+                        'text-sm font-medium capitalize',
+                        isActive ? 'text-emerald-300' : 'text-gray-300'
+                      )}
+                    >
+                      {p.name}
+                    </p>
+                    <p className="text-[11px] text-gray-600">{p.role}</p>
+                    <div className="mt-1 flex items-center gap-1.5">
+                      {stateBadge(
+                        p.versions.find((v) => v.version === p.currentVersion)
+                          ?.state ?? 'DRAFT'
+                      )}
+                      <span className="text-[10px] text-gray-600">
+                        v{p.currentVersion}
+                      </span>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Main area */}
+          <div className="min-w-0 flex-1 space-y-4">
+            {/* Toolbar */}
+            <Card className="border-gray-800 bg-gray-900">
+              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
+                <div className="flex items-center gap-3">
+                  <Select
+                    value={String(selectedVersion)}
+                    onValueChange={(v) => setSelectedVersion(Number(v))}
+                  >
+                    <SelectTrigger className="w-28 border-gray-700 bg-gray-800 text-white">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="border-gray-700 bg-gray-900">
+                      {currentPrompt?.versions.map((v) => (
+                        <SelectItem
+                          key={v.version}
+                          value={String(v.version)}
+                        >
+                          Version {v.version}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {currentVersionData && stateBadge(currentVersionData.state)}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-2 text-gray-400 hover:bg-gray-800 hover:text-white"
+                    onClick={saveDraft}
+                    disabled={saving}
+                  >
+                    <Save className="h-4 w-4" />
+                    Save Draft
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="gap-2 bg-emerald-600 text-white hover:bg-emerald-700"
+                    onClick={publish}
+                    disabled={saving || currentVersionData?.state === 'PUBLISHED'}
+                  >
+                    <Upload className="h-4 w-4" />
+                    Publish
+                  </Button>
+                  {publishedVersion &&
+                    publishedVersion.version !== selectedVersion && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="gap-2 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
+                        onClick={rollback}
+                      >
+                        <RotateCcw className="h-4 w-4" />
+                        Rollback
+                      </Button>
+                    )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Editor / Diff view */}
+            {diffMode && currentVersionData && publishedVersion ? (
+              <Card className="border-gray-800 bg-gray-900">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm text-gray-400">
+                    Diff: v{publishedVersion.version} → v{selectedVersion}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div>
+                      <p className="mb-2 text-xs font-medium text-emerald-400">
+                        Published (v{publishedVersion.version})
+                      </p>
+                      <pre className="h-96 max-h-96 overflow-auto rounded-lg border border-gray-800 bg-gray-800/60 p-4 text-xs leading-relaxed text-gray-400">
+                        {publishedVersion.body}
+                      </pre>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-medium text-amber-400">
+                        Current (v{selectedVersion})
+                      </p>
+                      <pre className="h-96 max-h-96 overflow-auto rounded-lg border border-gray-800 bg-gray-800/60 p-4 text-xs leading-relaxed text-gray-400">
+                        {currentVersionData.body}
+                      </pre>
+                    </div>
+                  </div>
+                  {selectedVersion !== publishedVersion.version && (
+                    <div className="mt-4">
+                      <p className="mb-2 text-xs font-medium text-gray-500">
+                        Line-by-line diff
+                      </p>
+                      <pre className="max-h-64 overflow-auto rounded-lg border border-gray-800 bg-gray-800/60 p-4 font-mono text-xs leading-relaxed">
+                        {simpleDiff(
+                          publishedVersion.body,
+                          currentVersionData.body
+                        )
+                          .split('\n')
+                          .map((line, i) => (
+                            <div
+                              key={i}
+                              className={cn(
+                                line.startsWith('-')
+                                  ? 'bg-red-500/10 text-red-400'
+                                  : line.startsWith('+')
+                                    ? 'bg-emerald-500/10 text-emerald-400'
+                                    : 'text-gray-600'
+                              )}
+                            >
+                              {line || '\u00A0'}
+                            </div>
+                          ))}
+                      </pre>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ) : (
+              <Card className="border-gray-800 bg-gray-900">
+                <CardContent className="p-4">
+                  <Textarea
+                    value={editBody}
+                    onChange={(e) => setEditBody(e.target.value)}
+                    className="min-h-[500px] resize-y border-gray-800 bg-gray-800 font-mono text-sm leading-relaxed text-gray-300 placeholder:text-gray-600"
+                    placeholder="Select a prompt and version to edit..."
+                  />
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Version metadata */}
+            {currentVersionData && (
+              <div className="flex items-center gap-4 text-xs text-gray-600">
+                <span className="flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  Created: {formatTime(currentVersionData.createdAt)}
+                </span>
+                <span>Author: {currentVersionData.author}</span>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Audit log */}
       <Card className="border-gray-800 bg-gray-900">
@@ -623,40 +693,46 @@ export function PromptStudio() {
           <CardTitle className="text-sm text-white">Audit Log</CardTitle>
         </CardHeader>
         <CardContent>
-          <ScrollArea className="max-h-64">
-            <div className="space-y-2">
-              {auditLog.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="flex items-center justify-between rounded-lg border border-gray-800/50 bg-gray-800/30 px-4 py-2.5"
-                >
-                  <div className="flex items-center gap-3">
-                    <span
-                      className={cn(
-                        'text-xs font-medium capitalize',
-                        actionColor(entry.action)
-                      )}
-                    >
-                      {actionLabel(entry.action)}
-                    </span>
-                    <span className="text-xs capitalize text-gray-400">
-                      {entry.promptName}
-                    </span>
-                    <Badge
-                      variant="outline"
-                      className="border-gray-700 text-[10px] text-gray-500"
-                    >
-                      v{entry.version}
-                    </Badge>
-                  </div>
-                  <div className="flex items-center gap-3 text-[11px] text-gray-600">
-                    <span>{entry.author}</span>
-                    <span>{formatTime(entry.timestamp)}</span>
-                  </div>
-                </div>
-              ))}
+          {auditLog.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8">
+              <p className="text-xs text-gray-600">No audit entries</p>
             </div>
-          </ScrollArea>
+          ) : (
+            <ScrollArea className="max-h-64">
+              <div className="space-y-2">
+                {auditLog.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="flex items-center justify-between rounded-lg border border-gray-800/50 bg-gray-800/30 px-4 py-2.5"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={cn(
+                          'text-xs font-medium capitalize',
+                          actionColor(entry.action)
+                        )}
+                      >
+                        {actionLabel(entry.action)}
+                      </span>
+                      <span className="text-xs capitalize text-gray-400">
+                        {entry.promptName}
+                      </span>
+                      <Badge
+                        variant="outline"
+                        className="border-gray-700 text-[10px] text-gray-500"
+                      >
+                        v{entry.version}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-3 text-[11px] text-gray-600">
+                      <span>{entry.author}</span>
+                      <span>{formatTime(entry.timestamp)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          )}
         </CardContent>
       </Card>
     </div>

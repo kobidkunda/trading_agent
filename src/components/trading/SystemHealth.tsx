@@ -4,21 +4,20 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   RefreshCw,
   Wifi,
-  WifiOff,
   Database,
   Server,
   Gauge,
   Layers,
   HardDrive,
   Search,
-  CheckCircle2,
   XCircle,
-  AlertTriangle,
   Clock,
   Activity,
   Loader2,
   Zap,
   Shield,
+  Inbox,
+  Settings,
 } from 'lucide-react';
 import {
   Card,
@@ -57,168 +56,6 @@ interface JobRow {
   errorMessage: string | null;
   marketTitle?: string;
 }
-
-// ── mock data ────────────────────────────────────────────────────────────────
-
-const MOCK_HEALTH: SystemHealth = {
-  queueDepth: 12,
-  failingJobs: 2,
-  apiHealth: {
-    Gemini: 'UP',
-    OpenAI: 'DEGRADED',
-    Qdrant: 'UP',
-    Mem0: 'UP',
-    'SearXNG': 'DOWN',
-  },
-  venueRateLimits: {
-    POLYMARKET: { remaining: 847, resetAt: '2025-01-15T11:00:00Z' },
-    KALSHI: { remaining: 234, resetAt: '2025-01-15T10:30:00Z' },
-    SX_BET: { remaining: 1200, resetAt: '2025-01-15T11:00:00Z' },
-    MANIFOLD: { remaining: 950, resetAt: '2025-01-15T11:00:00Z' },
-  },
-  walletSync: 'OK',
-  dbStatus: 'UP',
-  vectorStatus: 'UP',
-  lastScanAt: '2025-01-15T10:30:00Z',
-  uptimeSeconds: 145237,
-};
-
-const MOCK_JOBS: JobRow[] = [
-  {
-    id: 'job-001',
-    type: 'SCAN',
-    status: 'COMPLETED',
-    priority: 'HIGH',
-    retryCount: 0,
-    createdAt: '2025-01-15T10:00:00Z',
-    startedAt: '2025-01-15T10:00:02Z',
-    completedAt: '2025-01-15T10:02:15Z',
-    errorMessage: null,
-    marketTitle: 'Market scan cycle #847',
-  },
-  {
-    id: 'job-002',
-    type: 'TRIAGE',
-    status: 'COMPLETED',
-    priority: 'MEDIUM',
-    retryCount: 0,
-    createdAt: '2025-01-15T10:02:16Z',
-    startedAt: '2025-01-15T10:02:18Z',
-    completedAt: '2025-01-15T10:03:45Z',
-    errorMessage: null,
-    marketTitle: 'Bitcoin > $150K by Dec 2025',
-  },
-  {
-    id: 'job-003',
-    type: 'RESEARCH',
-    status: 'RUNNING',
-    priority: 'HIGH',
-    retryCount: 0,
-    createdAt: '2025-01-15T10:03:50Z',
-    startedAt: '2025-01-15T10:03:52Z',
-    completedAt: null,
-    errorMessage: null,
-    marketTitle: 'Fed rate cut March 2025',
-  },
-  {
-    id: 'job-004',
-    type: 'RESEARCH',
-    status: 'RUNNING',
-    priority: 'MEDIUM',
-    retryCount: 0,
-    createdAt: '2025-01-15T10:04:00Z',
-    startedAt: '2025-01-15T10:04:02Z',
-    completedAt: null,
-    errorMessage: null,
-    marketTitle: 'TikTok banned in US by July',
-  },
-  {
-    id: 'job-005',
-    type: 'JUDGE',
-    status: 'PENDING',
-    priority: 'HIGH',
-    retryCount: 0,
-    createdAt: '2025-01-15T10:05:00Z',
-    startedAt: null,
-    completedAt: null,
-    errorMessage: null,
-    marketTitle: 'S&P 500 > 6000 Friday close',
-  },
-  {
-    id: 'job-006',
-    type: 'RISK',
-    status: 'PENDING',
-    priority: 'MEDIUM',
-    retryCount: 0,
-    createdAt: '2025-01-15T10:05:10Z',
-    startedAt: null,
-    completedAt: null,
-    errorMessage: null,
-    marketTitle: 'ETH ETF net inflows positive',
-  },
-  {
-    id: 'job-007',
-    type: 'EXECUTE',
-    status: 'COMPLETED',
-    priority: 'CRITICAL',
-    retryCount: 0,
-    createdAt: '2025-01-15T09:30:00Z',
-    startedAt: '2025-01-15T09:30:02Z',
-    completedAt: '2025-01-15T09:30:08Z',
-    errorMessage: null,
-    marketTitle: 'BTC > $150K BUY $1,250',
-  },
-  {
-    id: 'job-008',
-    type: 'RESEARCH',
-    status: 'FAILED',
-    priority: 'MEDIUM',
-    retryCount: 2,
-    createdAt: '2025-01-15T09:15:00Z',
-    startedAt: '2025-01-15T09:15:05Z',
-    completedAt: '2025-01-15T09:17:30Z',
-    errorMessage:
-      'OpenAI API rate limit exceeded (429). Retry attempts exhausted.',
-    marketTitle: 'Academy Award Best Picture',
-  },
-  {
-    id: 'job-009',
-    type: 'SETTLE',
-    status: 'COMPLETED',
-    priority: 'LOW',
-    retryCount: 0,
-    createdAt: '2025-01-15T08:00:00Z',
-    startedAt: '2025-01-15T08:00:05Z',
-    completedAt: '2025-01-15T08:00:15Z',
-    errorMessage: null,
-    marketTitle: 'S&P 500 > 6000 Friday close',
-  },
-  {
-    id: 'job-010',
-    type: 'RESEARCH',
-    status: 'FAILED',
-    priority: 'LOW',
-    retryCount: 3,
-    createdAt: '2025-01-14T22:00:00Z',
-    startedAt: '2025-01-14T22:00:03Z',
-    completedAt: '2025-01-14T22:05:00Z',
-    errorMessage:
-      'SearXNG search endpoint unreachable. Connection refused after 3 retries.',
-    marketTitle: 'NFL MVP Patrick Mahomes?',
-  },
-  {
-    id: 'job-011',
-    type: 'TRIAGE',
-    status: 'RETRYING',
-    priority: 'LOW',
-    retryCount: 1,
-    createdAt: '2025-01-15T10:02:00Z',
-    startedAt: '2025-01-15T10:02:05Z',
-    completedAt: null,
-    errorMessage: 'Gemini API timeout (504). Retrying with backoff.',
-    marketTitle: 'AGI before 2030?',
-  },
-];
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -316,10 +153,10 @@ export function SystemHealth() {
       }
       if (jobsRes.ok) {
         const data = await jobsRes.json();
-        setJobs(data);
+        setJobs(data.jobs ?? []);
       }
     } catch {
-      // fallback
+      // failed to refresh
     } finally {
       setRefreshing(false);
       setLoading(false);
@@ -338,14 +175,13 @@ export function SystemHealth() {
           setHealth(await healthRes.json());
         }
         if (jobsRes.ok && !cancelled) {
-          setJobs(await jobsRes.json());
+          const jobsData = await jobsRes.json();
+          setJobs(jobsData.jobs ?? []);
         }
       } catch {
-        // fallback
+        // failed to load
       } finally {
         if (!cancelled) {
-          setHealth(MOCK_HEALTH);
-          setJobs(MOCK_JOBS);
           setLoading(false);
         }
       }
@@ -394,6 +230,9 @@ export function SystemHealth() {
   const runningJobs = jobs.filter((j) => j.status === 'RUNNING').length;
   const failedJobs = jobs.filter((j) => j.status === 'FAILED').length;
   const pendingJobs = jobs.filter((j) => j.status === 'PENDING').length;
+
+  const hasApiHealth = health.apiHealth && Object.keys(health.apiHealth).length > 0;
+  const hasVenueRateLimits = health.venueRateLimits && Object.keys(health.venueRateLimits).length > 0;
 
   return (
     <div className="space-y-6">
@@ -589,15 +428,29 @@ export function SystemHealth() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {Object.entries(health.apiHealth).map(([name, status]) => (
-              <div
-                key={name}
-                className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-800/40 px-4 py-2.5"
-              >
-                <span className="text-sm font-medium text-gray-300">{name}</span>
-                {apiStatusDot(status)}
+            {!hasApiHealth ? (
+              <div className="flex flex-col items-center justify-center py-8">
+                <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-gray-800">
+                  <Settings className="h-5 w-5 text-gray-500" />
+                </div>
+                <p className="text-xs text-gray-500">
+                  No external API services configured.
+                </p>
+                <p className="text-[11px] text-gray-600">
+                  Connect services in Credentials.
+                </p>
               </div>
-            ))}
+            ) : (
+              Object.entries(health.apiHealth).map(([name, status]) => (
+                <div
+                  key={name}
+                  className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-800/40 px-4 py-2.5"
+                >
+                  <span className="text-sm font-medium text-gray-300">{name}</span>
+                  {apiStatusDot(status)}
+                </div>
+              ))
+            )}
           </CardContent>
         </Card>
 
@@ -610,48 +463,62 @@ export function SystemHealth() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {Object.entries(health.venueRateLimits).map(
-              ([venue, info]) => {
-                const pct = Math.min((info.remaining / 1000) * 100, 100);
-                const venueName = {
-                  POLYMARKET: 'Polymarket',
-                  KALSHI: 'Kalshi',
-                  SX_BET: 'SX Bet',
-                  MANIFOLD: 'Manifold',
-                }[venue] ?? venue;
-                return (
-                  <div key={venue} className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-gray-300">
-                        {venueName}
-                      </span>
-                      <span
+            {!hasVenueRateLimits ? (
+              <div className="flex flex-col items-center justify-center py-8">
+                <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-gray-800">
+                  <Wifi className="h-5 w-5 text-gray-500" />
+                </div>
+                <p className="text-xs text-gray-500">
+                  No venue connections active.
+                </p>
+                <p className="text-[11px] text-gray-600">
+                  Connect venue credentials to see rate limits.
+                </p>
+              </div>
+            ) : (
+              Object.entries(health.venueRateLimits).map(
+                ([venue, info]) => {
+                  const pct = Math.min((info.remaining / 1000) * 100, 100);
+                  const venueName = {
+                    POLYMARKET: 'Polymarket',
+                    KALSHI: 'Kalshi',
+                    SX_BET: 'SX Bet',
+                    MANIFOLD: 'Manifold',
+                  }[venue] ?? venue;
+                  return (
+                    <div key={venue} className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-gray-300">
+                          {venueName}
+                        </span>
+                        <span
+                          className={cn(
+                            'text-xs tabular-nums',
+                            pct > 50
+                              ? 'text-emerald-400'
+                              : pct > 20
+                                ? 'text-amber-400'
+                                : 'text-red-400'
+                          )}
+                        >
+                          {info.remaining} remaining
+                        </span>
+                      </div>
+                      <Progress
+                        value={pct}
                         className={cn(
-                          'text-xs tabular-nums',
+                          'h-1.5',
                           pct > 50
-                            ? 'text-emerald-400'
+                            ? '[&>div]:bg-emerald-500'
                             : pct > 20
-                              ? 'text-amber-400'
-                              : 'text-red-400'
+                              ? '[&>div]:bg-amber-500'
+                              : '[&>div]:bg-red-500'
                         )}
-                      >
-                        {info.remaining} remaining
-                      </span>
+                      />
                     </div>
-                    <Progress
-                      value={pct}
-                      className={cn(
-                        'h-1.5',
-                        pct > 50
-                          ? '[&>div]:bg-emerald-500'
-                          : pct > 20
-                            ? '[&>div]:bg-amber-500'
-                            : '[&>div]:bg-red-500'
-                      )}
-                    />
-                  </div>
-                );
-              }
+                  );
+                }
+              )
             )}
           </CardContent>
         </Card>
@@ -666,82 +533,96 @@ export function SystemHealth() {
           </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="max-h-[500px] overflow-y-auto">
-            <Table>
-              <TableHeader>
-                <TableRow className="border-gray-800 hover:bg-transparent">
-                  <TableHead className="text-gray-500">Type</TableHead>
-                  <TableHead className="text-gray-500">Status</TableHead>
-                  <TableHead className="text-gray-500">Priority</TableHead>
-                  <TableHead className="text-gray-500">Market</TableHead>
-                  <TableHead className="text-right text-gray-500">
-                    Retries
-                  </TableHead>
-                  <TableHead className="text-right text-gray-500">
-                    Created
-                  </TableHead>
-                  <TableHead className="text-right text-gray-500">
-                    Completed
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {jobs.map((job) => (
-                  <TableRow
-                    key={job.id}
-                    className="border-gray-800 transition-colors hover:bg-gray-800/50"
-                  >
-                    <TableCell>
-                      <Badge
-                        variant="outline"
-                        className="border-gray-700 text-[10px] text-gray-300"
-                      >
-                        {job.type}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{jobStatusBadge(job.status)}</TableCell>
-                    <TableCell>
-                      <span className={cn('text-xs font-medium', priorityColor(job.priority))}>
-                        {job.priority}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <div className="max-w-[200px]">
-                        <p className="truncate text-xs text-gray-400">
-                          {job.marketTitle || '—'}
-                        </p>
-                        {job.errorMessage && (
-                          <p className="mt-0.5 truncate text-[10px] text-red-400/70">
-                            {job.errorMessage}
-                          </p>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <span
-                        className={cn(
-                          'text-xs tabular-nums',
-                          job.retryCount > 0 ? 'text-amber-400' : 'text-gray-500'
-                        )}
-                      >
-                        {job.retryCount}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <span className="text-xs tabular-nums text-gray-500">
-                        {formatTime(job.createdAt)}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <span className="text-xs tabular-nums text-gray-500">
-                        {formatTime(job.completedAt)}
-                      </span>
-                    </TableCell>
+          {jobs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12">
+              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-gray-800">
+                <Inbox className="h-6 w-6 text-gray-500" />
+              </div>
+              <p className="text-xs font-medium text-gray-400">
+                No jobs recorded yet
+              </p>
+              <p className="mt-1 text-[11px] text-gray-600">
+                Jobs will appear as the trading pipeline processes markets.
+              </p>
+            </div>
+          ) : (
+            <div className="max-h-[500px] overflow-y-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-gray-800 hover:bg-transparent">
+                    <TableHead className="text-gray-500">Type</TableHead>
+                    <TableHead className="text-gray-500">Status</TableHead>
+                    <TableHead className="text-gray-500">Priority</TableHead>
+                    <TableHead className="text-gray-500">Market</TableHead>
+                    <TableHead className="text-right text-gray-500">
+                      Retries
+                    </TableHead>
+                    <TableHead className="text-right text-gray-500">
+                      Created
+                    </TableHead>
+                    <TableHead className="text-right text-gray-500">
+                      Completed
+                    </TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                </TableHeader>
+                <TableBody>
+                  {jobs.map((job) => (
+                    <TableRow
+                      key={job.id}
+                      className="border-gray-800 transition-colors hover:bg-gray-800/50"
+                    >
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className="border-gray-700 text-[10px] text-gray-300"
+                        >
+                          {job.type}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>{jobStatusBadge(job.status)}</TableCell>
+                      <TableCell>
+                        <span className={cn('text-xs font-medium', priorityColor(job.priority))}>
+                          {job.priority}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <div className="max-w-[200px]">
+                          <p className="truncate text-xs text-gray-400">
+                            {job.marketTitle || '—'}
+                          </p>
+                          {job.errorMessage && (
+                            <p className="mt-0.5 truncate text-[10px] text-red-400/70">
+                              {job.errorMessage}
+                            </p>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span
+                          className={cn(
+                            'text-xs tabular-nums',
+                            job.retryCount > 0 ? 'text-amber-400' : 'text-gray-500'
+                          )}
+                        >
+                          {job.retryCount}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className="text-xs tabular-nums text-gray-500">
+                          {formatTime(job.createdAt)}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className="text-xs tabular-nums text-gray-500">
+                          {formatTime(job.completedAt)}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

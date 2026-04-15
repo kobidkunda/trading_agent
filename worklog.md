@@ -33,3 +33,26 @@ Stage Summary:
 - Professional dark trading terminal UI
 - SQLite/Prisma database with 17 tables
 - Zero lint errors, zero type errors in project code
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: Remove mock data, add service skip feature, build Live Status page
+
+Work Log:
+- Identified and cataloged all MOCK_* data across 6 components (MOCK_SETTINGS, MOCK_CREDENTIALS, MOCK_MARKETS, MOCK_DECISIONS, MOCK_PROMPTS, MOCK_AUDIT, MOCK_HEALTH, MOCK_JOBS)
+- Removed all mock constants and fallback-to-mock patterns from StrategyHub, CredentialManager, MarketTriage, ResearchLedger, PromptStudio, SystemHealth
+- Added proper empty states for each page when no data exists
+- Added toast.error notifications on API failures instead of silent mock fallbacks
+- Built LiveStatus.tsx (837 lines) with 5 sections: Active Agents Panel, Pipeline Flow, Running Jobs Table, Recent Activity Feed, Service Dependency Status
+- Added Docker service detection with Skip/Enable toggle for unavailable services
+- Updated Zustand store PageView type to include 'live'
+- Updated page.tsx navigation with Live Status entry
+- Fixed TS2304 error in MarketTriage (missing toast import)
+- All lint passes clean, all TypeScript type checks pass
+
+Stage Summary:
+- Zero MOCK_ constants remaining in codebase
+- All 7 pages (including new Live Status) show real API data only
+- Service Dependencies section shows Docker services with skip functionality
+- Live Status page auto-refreshes jobs (5s) and health (10s)
