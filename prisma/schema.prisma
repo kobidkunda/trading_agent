@@ -1,0 +1,280 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============ MARKETS ============
+
+model Market {
+  id            String   @id @default(cuid())
+  externalId    String   @unique
+  venue         String   // POLYMARKET | KALSHI | SX_BET | MANIFOLD
+  title         String
+  description   String?
+  category      String   // politics, sports, crypto, science, etc.
+  status        String   @default("ACTIVE") // ACTIVE, CLOSED, RESOLVED
+  resolutionTime DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  snapshots        MarketSnapshot[]
+  tradeCandidates  TradeCandidate[]
+  researchRuns     ResearchRun[]
+  decisions        Decision[]
+  orders           Order[]
+  positions        Position[]
+  outcomes         Outcome[]
+  postmortems      Postmortem[]
+}
+
+model MarketSnapshot {
+  id             String   @id @default(cuid())
+  marketId       String
+  market         Market   @relation(fields: [marketId], references: [id])
+  impliedProb    Float
+  liquidity      Float
+  spread         Float
+  volume24h      Float    @default(0)
+  bestBid        Float?
+  bestAsk        Float?
+  timestamp      DateTime @default(now())
+}
+
+// ============ TRADE CANDIDATES ============
+
+model TradeCandidate {
+  id            String   @id @default(cuid())
+  marketId      String
+  market        Market   @relation(fields: [marketId], references: [id])
+  stage         String   @default("SCANNED") // SCANNED, TRIAGED, RESEARCHING, JUDGED, DECIDED, EXECUTED, SETTLED
+  triageStatus  String?  // RELEVANT, IRRELEVANT, AMBIGUOUS
+  triageReason  String?
+  researchQueued Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  decisions      Decision[]
+  researchRuns   ResearchRun[]
+}
+
+// ============ RESEARCH ============
+
+model ResearchRun {
+  id            String   @id @default(cuid())
+  marketId      String
+  market        Market   @relation(fields: [marketId], references: [id])
+  candidateId   String?
+  candidate     TradeCandidate? @relation(fields: [candidateId], references: [id])
+  status        String   @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED
+  depth         String   @default("QUICK")   // QUICK, DEEP, DEERFLOW
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  sources      ResearchSource[]
+  agentOutputs AgentOutput[]
+}
+
+model ResearchSource {
+  id            String   @id @default(cuid())
+  researchRunId String
+  researchRun   ResearchRun @relation(fields: [researchRunId], references: [id])
+  url           String
+  title         String?
+  content       String?
+  sourceType    String   // SEARCH, CRAWL, SOCIAL, MANUAL
+  recencyScore  Float?
+  qualityScore  Float?
+  extractedAt   DateTime @default(now())
+}
+
+// ============ AGENT OUTPUTS ============
+
+model AgentOutput {
+  id              String   @id @default(cuid())
+  researchRunId   String
+  researchRun     ResearchRun @relation(fields: [researchRunId], references: [id])
+  role            String   // TRIAGE, BULL, BEAR, CONTRADICTION, JUDGE
+  modelUsed       String?
+  promptVersion   String?
+  output          String   // JSON string of structured output
+  rawOutput       String?
+  tokenCount      Int?
+  latencyMs       Int?
+  createdAt       DateTime @default(now())
+}
+
+// ============ DECISIONS ============
+
+model Decision {
+  id              String   @id @default(cuid())
+  marketId        String
+  market          Market   @relation(fields: [marketId], references: [id])
+  candidateId     String?
+  candidate       TradeCandidate? @relation(fields: [candidateId], references: [id])
+  action          String   // BUY, SKIP
+  side            String?  // YES, NO
+  reasonCode      String?  // LOW_LIQUIDITY, WIDE_SPREAD, etc.
+  reason          String?
+  judgeProbability Float?
+  impliedProb     Float?
+  edge            Float?
+  confidence      Float?
+  uncertainty     Float?
+  maxSize         Float?
+  urgency         String?  // LOW, MEDIUM, HIGH, IMMEDIATE
+  fees            Float?
+  slippage        Float?
+  dryRun          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+}
+
+// ============ ORDERS ============
+
+model Order {
+  id            String   @id @default(cuid())
+  marketId      String
+  market        Market   @relation(fields: [marketId], references: [id])
+  venueOrderId  String?
+  side          String   // YES, NO
+  price         Float
+  size          Float
+  filledSize    Float    @default(0)
+  status        String   @default("PENDING") // PENDING, SUBMITTED, PARTIAL, FILLED, CANCELLED, FAILED
+  retryCount    Int      @default(0)
+  submittedAt   DateTime?
+  filledAt      DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  fills Fill[]
+}
+
+model Fill {
+  id            String   @id @default(cuid())
+  orderId       String
+  order         Order    @relation(fields: [orderId], references: [id])
+  price         Float
+  size          Float
+  fee           Float
+  fillTime      DateTime @default(now())
+}
+
+// ============ POSITIONS ============
+
+model Position {
+  id            String   @id @default(cuid())
+  marketId      String
+  market        Market   @relation(fields: [marketId], references: [id])
+  side          String
+  entryPrice    Float
+  currentSize   Float
+  avgEntryPrice Float
+  unrealizedPnl Float    @default(0)
+  realizedPnl   Float    @default(0)
+  status        String   @default("OPEN") // OPEN, CLOSED
+  openedAt      DateTime @default(now())
+  closedAt      DateTime?
+}
+
+// ============ OUTCOMES ============
+
+model Outcome {
+  id            String   @id @default(cuid())
+  marketId      String
+  market        Market   @relation(fields: [marketId], references: [id])
+  result        String   // YES, NO, CANCELLED
+  resolvedProb  Float?
+  resolvedAt    DateTime @default(now())
+}
+
+// ============ POSTMORTEMS ============
+
+model Postmortem {
+  id            String   @id @default(cuid())
+  marketId      String
+  market        Market   @relation(fields: [marketId], references: [id])
+  predictedProb Float?
+  actualOutcome String?
+  pnl           Float?
+  lessons       String?
+  failureTags   String?  // comma-separated tags
+  createdAt     DateTime @default(now())
+}
+
+// ============ PROMPT TEMPLATES ============
+
+model PromptTemplate {
+  id            String   @id @default(cuid())
+  name          String   // triage, bull, bear, contradiction, judge, postmortem
+  version       Int      @default(1)
+  state         String   @default("DRAFT") // DRAFT, PUBLISHED, ARCHIVED
+  body          String
+  description   String?
+  changelog     String?
+  publishedAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([name, version])
+}
+
+// ============ CREDENTIALS ============
+
+model Credential {
+  id            String   @id @default(cuid())
+  service       String   // polymarket, kalshi, gemini, openai, qdrant, mem0, ollama, searxng
+  label         String
+  encryptedData String   // encrypted JSON of credentials
+  maskedPreview String?  // e.g. "pk_****abcd"
+  isActive      Boolean  @default(true)
+  lastTestedAt  DateTime?
+  testResult    String?  // SUCCESS, FAILED
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// ============ SETTINGS ============
+
+model Settings {
+  id                  String   @id @default(cuid())
+  key                  String   @unique
+  value                String   // JSON-encoded value
+  description          String?
+  updatedAt            DateTime @updatedAt
+}
+
+// ============ AUDIT LOGS ============
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  action        String
+  actor         String?
+  entityType    String?
+  entityId      String?
+  details       String?
+  createdAt     DateTime @default(now())
+}
+
+// ============ JOBS ============
+
+model Job {
+  id            String   @id @default(cuid())
+  type          String   // SCAN, TRIAGE, RESEARCH, JUDGE, RISK, EXECUTE, SETTLE
+  status        String   @default("PENDING") // PENDING, RUNNING, COMPLETED, FAILED, RETRYING
+  priority      Int      @default(5)
+  payload       String?  // JSON
+  result        String?  // JSON
+  retryCount    Int      @default(0)
+  maxRetries    Int      @default(3)
+  startedAt     DateTime?
+  completedAt   DateTime?
+  error         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
