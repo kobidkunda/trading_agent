@@ -21,6 +21,7 @@ import {
   Info,
   ChevronDown,
   ChevronRight,
+  Database,
 } from 'lucide-react';
 import {
   Card,
@@ -62,6 +63,8 @@ import {
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { QdrantSetupWizard } from '@/components/trading/QdrantSetupWizard';
+import { QDRANT_DEFAULT_COLLECTIONS } from '@/lib/constants';
 
 // ── Service definitions ────────────────────────────────────────────────────
 
@@ -198,6 +201,20 @@ const SERVICES: ServiceDef[] = [
     credentialLabel: 'API Key',
     credentialPlaceholder: 'Enter OpenAI API key',
     docsUrl: 'https://platform.openai.com/docs',
+  },
+  {
+    id: 'llm',
+    label: 'LLM Provider',
+    color: 'text-blue-400',
+    iconBg: 'bg-blue-500/10',
+    type: 'self-hosted',
+    defaultUrl: 'http://192.168.88.97:4444/v1',
+    defaultPort: 4444,
+    description: 'Custom / OpenAI compatible LLM endpoint',
+    urlPlaceholder: 'http://localhost:11434/v1',
+    credentialLabel: 'API Key (optional)',
+    credentialPlaceholder: 'Leave blank for local providers',
+    testEndpoint: '/models',
   },
 ];
 
@@ -523,6 +540,31 @@ export function CredentialManager() {
   const [addOpen, setAddOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Credential | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardCredId, setWizardCredId] = useState<string | null>(null);
+  const [qdrantCollectionLinks, setQdrantCollectionLinks] = useState<Record<string, Record<string, string>>>({});
+
+  useEffect(() => {
+    async function fetchQdrantLinks() {
+      try {
+        const res = await fetch('/api/settings');
+        if (res.ok) {
+          const data = await res.json();
+          const linkMap: Record<string, Record<string, string>> = {};
+          for (const setting of data.settings || []) {
+            const match = setting.key.match(/^qdrant_collections_(.+)$/);
+            if (match) {
+              try {
+                linkMap[match[1]] = JSON.parse(setting.value);
+              } catch {}
+            }
+          }
+          setQdrantCollectionLinks(linkMap);
+        }
+      } catch {}
+    }
+    fetchQdrantLinks();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -894,6 +936,45 @@ export function CredentialManager() {
                       </div>
                     )}
 
+                    {serviceDef?.id === 'qdrant' && (
+                      <div className="flex items-center justify-between rounded-lg border border-orange-500/20 bg-orange-500/5 px-3 py-2.5">
+                        <div className="flex items-center gap-3">
+                          <Database className="h-3.5 w-3.5 shrink-0 text-orange-400" />
+                          <div className="flex items-center gap-1.5">
+                            {QDRANT_DEFAULT_COLLECTIONS.map((def) => {
+                              const links = qdrantCollectionLinks[cred.id];
+                              const isLinked = links && links[def.key];
+                              return (
+                                <button
+                                  key={def.key}
+                                  title={`${def.defaultName}: ${isLinked ? 'Linked' : 'Not linked'}`}
+                                  className={cn(
+                                    'h-3 w-3 rounded-full transition-colors',
+                                    isLinked ? 'bg-emerald-400' : 'bg-gray-700 hover:bg-gray-600'
+                                  )}
+                                />
+                              );
+                            })}
+                          </div>
+                          <span className="text-[10px] text-gray-600">
+                            {Object.keys(qdrantCollectionLinks[cred.id] || {}).length}/{QDRANT_DEFAULT_COLLECTIONS.length} linked
+                          </span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 gap-1.5 px-2 text-[11px] text-orange-400 hover:bg-orange-500/10 hover:text-orange-300"
+                          onClick={() => {
+                            setWizardCredId(cred.id);
+                            setWizardOpen(true);
+                          }}
+                        >
+                          <Database className="h-3 w-3" />
+                          Manage Collections
+                        </Button>
+                      </div>
+                    )}
+
                     {/* Test details for failed connections */}
                     {cred.testResult === 'FAILED' && cred.testDetails && (
                       <div className="flex items-start gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2.5">
@@ -924,6 +1005,32 @@ export function CredentialManager() {
             );
           })}
         </div>
+      )}
+
+      {wizardCredId && (
+        <QdrantSetupWizard
+          open={wizardOpen}
+          onOpenChange={setWizardOpen}
+          credentialId={wizardCredId}
+          onCollectionsLinked={async () => {
+            try {
+              const res = await fetch('/api/settings');
+              if (res.ok) {
+                const data = await res.json();
+                const linkMap: Record<string, Record<string, string>> = {};
+                for (const setting of data.settings || []) {
+                  const match = setting.key.match(/^qdrant_collections_(.+)$/);
+                  if (match) {
+                    try {
+                      linkMap[match[1]] = JSON.parse(setting.value);
+                    } catch {}
+                  }
+                }
+                setQdrantCollectionLinks(linkMap);
+              }
+            } catch {}
+          }}
+        />
       )}
 
       {/* Delete confirmation */}
