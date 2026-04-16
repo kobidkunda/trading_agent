@@ -14,6 +14,7 @@ import {
   Radio,
   Clock,
   FlaskConical,
+  Database,
 } from 'lucide-react';
 import { useTradingStore, type PageView } from '@/store/trading-store';
 import { Button } from '@/components/ui/button';
@@ -33,6 +34,7 @@ import { PromptStudio } from '@/components/trading/PromptStudio';
 import { SystemHealth } from '@/components/trading/SystemHealth';
 import { LiveStatus } from '@/components/trading/LiveStatus';
 import { SimulationLab } from '@/components/trading/SimulationLab';
+import { VectorDB } from '@/components/trading/VectorDB';
 
 interface NavItem {
   id: PageView;
@@ -49,6 +51,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'prompts', label: 'Prompt Studio', icon: FileText },
   { id: 'live', label: 'Live Status', icon: Radio },
   { id: 'health', label: 'System Health', icon: Activity },
+  { id: 'vectorDb', label: 'Vector DB', icon: Database },
 ];
 
 function TopBar() {
@@ -282,6 +285,8 @@ function PageContent() {
       return <LiveStatus />;
     case 'health':
       return <SystemHealth />;
+    case 'vectorDb':
+      return <VectorDB />;
     default:
       return <SimulationLab />;
   }
