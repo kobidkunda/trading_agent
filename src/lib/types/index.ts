@@ -117,7 +117,7 @@ export interface SystemHealth {
   venueRateLimits: Record<string, { remaining: number; resetAt: string }>;
   walletSync: 'OK' | 'ERROR' | 'SYNCING';
   dbStatus: 'UP' | 'DOWN';
-  vectorStatus: 'UP' | 'DOWN';
+  vectorStatus: 'UP' | 'DOWN' | 'DEGRADED';
   lastScanAt: string | null;
   uptimeSeconds: number;
 }

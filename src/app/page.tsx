@@ -34,6 +34,7 @@ import { PromptStudio } from '@/components/trading/PromptStudio';
 import { SystemHealth } from '@/components/trading/SystemHealth';
 import { LiveStatus } from '@/components/trading/LiveStatus';
 import { SimulationLab } from '@/components/trading/SimulationLab';
+import { PipelineSettings } from '@/components/trading/PipelineSettings';
 import { VectorDB } from '@/components/trading/VectorDB';
 
 interface NavItem {
@@ -52,6 +53,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'live', label: 'Live Status', icon: Radio },
   { id: 'health', label: 'System Health', icon: Activity },
   { id: 'vectorDb', label: 'Vector DB', icon: Database },
+  { id: 'pipelineSettings', label: 'Pipeline', icon: Settings },
 ];
 
 function TopBar() {
@@ -287,6 +289,8 @@ function PageContent() {
       return <SystemHealth />;
     case 'vectorDb':
       return <VectorDB />;
+    case 'pipelineSettings':
+      return <PipelineSettings />;
     default:
       return <SimulationLab />;
   }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { encrypt, isEncrypted } from '@/lib/engine/crypto';
 
 export async function GET() {
   try {
@@ -41,7 +42,7 @@ export async function POST(request: NextRequest) {
       data: {
         service: body.service,
         label: body.label,
-        encryptedData: body.encryptedData,
+        encryptedData: body.encryptedData ? encrypt(typeof body.encryptedData === 'string' ? body.encryptedData : JSON.stringify(body.encryptedData)) : '',
         maskedPreview,
         serviceUrl: body.serviceUrl || null,
         isActive: body.isActive ?? true,
@@ -77,8 +78,8 @@ export async function PUT(request: NextRequest) {
     const updateData: Record<string, unknown> = {};
     if (body.label !== undefined) updateData.label = body.label;
     if (body.encryptedData !== undefined) {
-      updateData.encryptedData = body.encryptedData;
-      updateData.maskedPreview = generateMaskedPreview(body.service || '', body.encryptedData);
+      updateData.encryptedData = encrypt(typeof body.encryptedData === 'string' ? body.encryptedData : JSON.stringify(body.encryptedData));
+      updateData.maskedPreview = generateMaskedPreview(body.service || '', typeof body.encryptedData === 'string' ? body.encryptedData : JSON.stringify(body.encryptedData));
     }
     if (body.serviceUrl !== undefined) updateData.serviceUrl = body.serviceUrl;
     if (body.isActive !== undefined) updateData.isActive = body.isActive;

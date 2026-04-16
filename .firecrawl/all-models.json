@@ -1,0 +1,269 @@
+{
+  "paper_lite": {
+    "id": "paper_lite"
+  },
+  "paper_mimo": {
+    "id": "paper_mimo"
+  },
+  "Gemma-4-26B": {
+    "id": "Gemma-4-26B"
+  },
+  "mimo-v2-pro": {
+    "id": "mimo-v2-pro"
+  },
+  "paper_glm51": {
+    "id": "paper_glm51"
+  },
+  "openai/flash": {
+    "id": "openai/flash"
+  },
+  "paper_progem": {
+    "id": "paper_progem"
+  },
+  "paper_proglm": {
+    "id": "paper_proglm"
+  },
+  "paper_progpt": {
+    "id": "paper_progpt"
+  },
+  "paper_probyte": {
+    "id": "paper_probyte"
+  },
+  "paper_prokimi": {
+    "id": "paper_prokimi"
+  },
+  "paper_proqwen": {
+    "id": "paper_proqwen"
+  },
+  "paper_qwen3.6": {
+    "id": "paper_qwen3.6"
+  },
+  "embeddinggemma": {
+    "id": "embeddinggemma"
+  },
+  "paper_flashgem": {
+    "id": "paper_flashgem"
+  },
+  "paper_flashsup": {
+    "id": "paper_flashsup"
+  },
+  "her-Gemma-4-26B": {
+    "id": "her-Gemma-4-26B"
+  },
+  "paper_flashmimi": {
+    "id": "paper_flashmimi"
+  },
+  "paper_prokimiturbo": {
+    "id": "paper_prokimiturbo"
+  },
+  "gemini-3-pro-preview": {
+    "id": "gemini-3-pro-preview"
+  },
+  "gemini-3-1-pro-high": {
+    "id": "gemini-3-1-pro-high"
+  },
+  "qwen-qwen3-5-397b-a17b": {
+    "id": "qwen-qwen3-5-397b-a17b"
+  },
+  "gpt-5-2": {
+    "id": "gpt-5-2"
+  },
+  "lite": {
+    "id": "lite"
+  },
+  "gpt-5-3-codex-spark": {
+    "id": "gpt-5-3-codex-spark"
+  },
+  "qwen3-6-plus": {
+    "id": "qwen3-6-plus"
+  },
+  "gemini-2-5-flash": {
+    "id": "gemini-2-5-flash"
+  },
+  "z-ai-glm-4-5-air-free": {
+    "id": "z-ai-glm-4-5-air-free"
+  },
+  "gpt-5-4": {
+    "id": "gpt-5-4"
+  },
+  "pro": {
+    "id": "pro"
+  },
+  "gemini-3-1-flash-image": {
+    "id": "gemini-3-1-flash-image"
+  },
+  "nvidia-nemotron-3-super-120b-a12b-free": {
+    "id": "nvidia-nemotron-3-super-120b-a12b-free"
+  },
+  "arcee-ai-trinity-large-preview-free": {
+    "id": "arcee-ai-trinity-large-preview-free"
+  },
+  "nousresearch-hermes-3-llama-3-1-405b-free": {
+    "id": "nousresearch-hermes-3-llama-3-1-405b-free"
+  },
+  "gemini-flash-latest": {
+    "id": "gemini-flash-latest"
+  },
+  "gpt-5": {
+    "id": "gpt-5"
+  },
+  "gpt-5-1-codex": {
+    "id": "gpt-5-1-codex"
+  },
+  "gemini-2-5-flash-lite": {
+    "id": "gemini-2-5-flash-lite"
+  },
+  "gemini-3-1-pro-preview": {
+    "id": "gemini-3-1-pro-preview"
+  },
+  "openai-gpt-oss-120b-free": {
+    "id": "openai-gpt-oss-120b-free"
+  },
+  "gemini-3-flash-preview": {
+    "id": "gemini-3-flash-preview"
+  },
+  "gpt-5-4-mini": {
+    "id": "gpt-5-4-mini"
+  },
+  "gemini-2-5-pro": {
+    "id": "gemini-2-5-pro"
+  },
+  "qwen-qwen3-6-plus-free": {
+    "id": "qwen-qwen3-6-plus-free"
+  },
+  "qwen-qwen3-coder-free": {
+    "id": "qwen-qwen3-coder-free"
+  },
+  "deepseek-deepseek-r1": {
+    "id": "deepseek-deepseek-r1"
+  },
+  "gpt-5-3-codex": {
+    "id": "gpt-5-3-codex"
+  },
+  "claude-sonnet-4-6": {
+    "id": "claude-sonnet-4-6"
+  },
+  "gemini-flash-lite-latest": {
+    "id": "gemini-flash-lite-latest"
+  },
+  "gpt-5-1-codex-mini": {
+    "id": "gpt-5-1-codex-mini"
+  },
+  "flash": {
+    "id": "flash"
+  },
+  "kimi-k2p5-turbo": {
+    "id": "kimi-k2p5-turbo"
+  },
+  "gpt-oss-120b-medium": {
+    "id": "gpt-oss-120b-medium"
+  },
+  "webapi-gemini-3-0-flash-thinking": {
+    "id": "webapi-gemini-3-0-flash-thinking"
+  },
+  "kimi-k2-5": {
+    "id": "kimi-k2-5"
+  },
+  "gemini-3-1-flash-lite-preview": {
+    "id": "gemini-3-1-flash-lite-preview"
+  },
+  "gemini-3-1-pro-low": {
+    "id": "gemini-3-1-pro-low"
+  },
+  "stepfun-ai-step-3-5-flash": {
+    "id": "stepfun-ai-step-3-5-flash"
+  },
+  "bytedance-seed-dola-seed-2-0-pro-free": {
+    "id": "bytedance-seed-dola-seed-2-0-pro-free"
+  },
+  "gpt-5-codex-mini": {
+    "id": "gpt-5-codex-mini"
+  },
+  "webapi-gemini-3-0-flash": {
+    "id": "webapi-gemini-3-0-flash"
+  },
+  "webapi-gemini-3-0-pro": {
+    "id": "webapi-gemini-3-0-pro"
+  },
+  "z-ai-glm5": {
+    "id": "z-ai-glm5"
+  },
+  "gemini-3-1-flash-live-preview": {
+    "id": "gemini-3-1-flash-live-preview"
+  },
+  "gpt-5-2-codex": {
+    "id": "gpt-5-2-codex"
+  },
+  "minimax-minimax-m2-5-free": {
+    "id": "minimax-minimax-m2-5-free"
+  },
+  "z-ai-glm4-7": {
+    "id": "z-ai-glm4-7"
+  },
+  "gpt-5-codex": {
+    "id": "gpt-5-codex"
+  },
+  "stepfun-step-3-5-flash-free": {
+    "id": "stepfun-step-3-5-flash-free"
+  },
+  "deepseek-ai-deepseek-v3-2": {
+    "id": "deepseek-ai-deepseek-v3-2"
+  },
+  "gpt-5-1": {
+    "id": "gpt-5-1"
+  },
+  "gpt-5-1-codex-max": {
+    "id": "gpt-5-1-codex-max"
+  },
+  "gemini-3-flash": {
+    "id": "gemini-3-flash"
+  },
+  "step-3-5-flash": {
+    "id": "step-3-5-flash"
+  },
+  "claude-opus-4-6-thinking": {
+    "id": "claude-opus-4-6-thinking"
+  },
+  "arcee-ai-trinity-large-thinking": {
+    "id": "arcee-ai-trinity-large-thinking"
+  },
+  "nemotron-3-super": {
+    "id": "nemotron-3-super"
+  },
+  "minimax-m2-5": {
+    "id": "minimax-m2-5"
+  },
+  "qwen3.5-27b-claude-4.6-opus-reasoning-distilled@q3_k_m": {
+    "id": "qwen3.5-27b-claude-4.6-opus-reasoning-distilled@q3_k_m"
+  },
+  "gemma-4-26b-a4b-it": {
+    "id": "gemma-4-26b-a4b-it"
+  },
+  "embeddinggemma:latest": {
+    "id": "embeddinggemma:latest"
+  },
+  "tts-1": {
+    "id": "tts-1"
+  },
+  "tts-1-hd": {
+    "id": "tts-1-hd"
+  },
+  "gpt-4o-mini-tts": {
+    "id": "gpt-4o-mini-tts"
+  },
+  "glm-5.1": {
+    "id": "glm-5.1"
+  },
+  "deepseek-v3.2": {
+    "id": "deepseek-v3.2"
+  },
+  "minimax-m2.7": {
+    "id": "minimax-m2.7"
+  },
+  "paper_prods": {
+    "id": "paper_prods"
+  },
+  "qwen3.5-27b": {
+    "id": "qwen3.5-27b"
+  }
+}

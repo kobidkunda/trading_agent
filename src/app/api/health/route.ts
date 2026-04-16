@@ -1,11 +1,10 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { SystemHealth } from '@/lib/types';
+import { isEncrypted, decrypt } from '@/lib/engine/crypto';
 
 export async function GET() {
   try {
-    const startTime = Date.now();
-
     // Check database connectivity
     let dbStatus: 'UP' | 'DOWN' = 'UP';
     try {
@@ -58,6 +57,54 @@ export async function GET() {
       select: { id: true, type: true, completedAt: true },
     });
 
+    // Ping real services
+    const credentials = await db.credential.findMany({ where: { isActive: true } });
+    const apiHealth: Record<string, 'UP' | 'DOWN' | 'DEGRADED'> = {};
+
+    for (const cred of credentials) {
+      if (!cred.serviceUrl || cred.testResult !== 'SUCCESS') {
+        apiHealth[cred.service.toLowerCase()] = 'DOWN' as const;
+        continue;
+      }
+
+      const serviceEndpoints: Record<string, string> = {
+        qdrant: '/healthz',
+        ollama: '/api/tags',
+        searxng: '/search?q=test&format=json',
+        mem0: '/health',
+        llm: '/models',
+        'llm provider': '/models',
+        openai: '/models',
+      };
+
+      const endpoint = serviceEndpoints[cred.service.toLowerCase()];
+      if (!endpoint) continue;
+
+      try {
+        let parsedData: Record<string, unknown> = {};
+        if (cred.encryptedData) {
+          try {
+            const raw = isEncrypted(cred.encryptedData) ? decrypt(cred.encryptedData) : cred.encryptedData;
+            parsedData = JSON.parse(raw);
+          } catch {}
+        }
+
+        const headers: Record<string, string> = { Accept: 'application/json' };
+        if (parsedData.apiKey) headers['Authorization'] = `Bearer ${parsedData.apiKey}`;
+
+        const res = await fetch(`${cred.serviceUrl.replace(/\/$/, '')}${endpoint}`, {
+          method: 'GET',
+          headers,
+          signal: AbortSignal.timeout(5000),
+        });
+        apiHealth[cred.service.toLowerCase()] = res.ok ? 'UP' as const : 'DEGRADED' as const;
+      } catch {
+        apiHealth[cred.service.toLowerCase()] = 'DOWN' as const;
+      }
+    }
+
+    const vectorStatus = apiHealth['qdrant'] || ('DOWN' as const);
+
     // Build the health response
     const health: SystemHealth & {
       jobsByType: Record<string, number>;
@@ -67,11 +114,11 @@ export async function GET() {
     } = {
       queueDepth,
       failingJobs,
-      apiHealth: {},
+      apiHealth,
       venueRateLimits: {},
       walletSync: 'OK',
       dbStatus,
-      vectorStatus: dbStatus, // Vector DB mirrors main DB status
+      vectorStatus,
       lastScanAt,
       uptimeSeconds: process.uptime(),
       jobsByType: Object.fromEntries(jobsByType.map((j) => [j.type, j._count.id])),

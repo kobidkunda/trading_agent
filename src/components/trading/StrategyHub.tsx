@@ -407,7 +407,9 @@ export function StrategyHub() {
         </Card>
       </div>
 
-      {/* ─── Trading Mode ─── */}
+
+
+       {/* ─── Trading Mode ─── */}
       <Card className="border-gray-800 bg-gray-900">
         <CardHeader className="pb-3">
           <CardTitle className="text-base text-white">Trading Mode</CardTitle>

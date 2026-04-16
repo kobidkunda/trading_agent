@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { Prisma } from '@prisma/client';
+import { getKalshiMarkets } from '@/lib/venues/kalshi';
 
 export async function GET(request: NextRequest) {
   try {
@@ -40,6 +41,63 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+
+    if (body.action === 'sync_kalshi') {
+      const kalshiMarkets = await getKalshiMarkets();
+      
+      const created: string[] = [];
+      for (const market of kalshiMarkets) {
+        try {
+          const existing = await db.market.findFirst({
+            where: { externalId: market.ticker, venue: 'KALSHI' }
+          });
+
+          if (!existing) {
+            const createdMarket = await db.market.create({
+              data: {
+                externalId: market.ticker,
+                venue: 'KALSHI',
+                title: market.title,
+                description: market.subtitle || '',
+                category: market.category || 'other',
+                status: market.status === 'active' ? 'ACTIVE' : 'INACTIVE',
+                resolutionTime: new Date(market.close_time),
+              }
+            });
+            created.push(createdMarket.id);
+
+            await db.marketSnapshot.create({
+              data: {
+                marketId: createdMarket.id,
+                impliedProb: market.last_price / 100,
+                liquidity: market.volume,
+                spread: Math.max(0.01, (market.yes_ask - market.yes_bid) / 100),
+                volume24h: market.volume,
+                bestBid: market.yes_bid / 100,
+                bestAsk: market.yes_ask / 100,
+              }
+            });
+          } else {
+            await db.marketSnapshot.create({
+              data: {
+                marketId: existing.id,
+                impliedProb: market.last_price / 100,
+                liquidity: market.volume,
+                spread: Math.max(0.01, (market.yes_ask - market.yes_bid) / 100),
+                volume24h: market.volume,
+                bestBid: market.yes_bid / 100,
+                bestAsk: market.yes_ask / 100,
+              }
+            });
+          }
+        } catch (e) {
+          console.error('Failed to import Kalshi market', market.ticker, e);
+        }
+      }
+
+      return NextResponse.json({ imported: created.length, total: kalshiMarkets.length });
+    }
+
     const market = await db.market.create({
       data: {
         externalId: body.externalId,
