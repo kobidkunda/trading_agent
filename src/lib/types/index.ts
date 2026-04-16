@@ -60,6 +60,7 @@ export interface StrategySettings {
   researchEscalationThreshold: number;
   dryRun: boolean;
   promptVersion: Record<string, number>; // prompt name -> version number
+
 }
 
 // Risk engine input
@@ -119,4 +120,41 @@ export interface SystemHealth {
   vectorStatus: 'UP' | 'DOWN';
   lastScanAt: string | null;
   uptimeSeconds: number;
+}
+
+export type EmbeddingProvider = 'openai' | 'ollama' | 'custom';
+
+export type QdrantDistanceMetric = 'Cosine' | 'Euclid' | 'Dot';
+
+export interface QdrantCollectionInfo {
+  name: string;
+  vectorsCount: number;
+  status: string;
+  vectorConfig: {
+    size: number;
+    distance: QdrantDistanceMetric;
+  };
+}
+
+export interface QdrantDiscoverResult {
+  connected: boolean;
+  instanceInfo: {
+    version: string;
+    mode: string;
+  } | null;
+  collections: QdrantCollectionInfo[];
+  expectedDefaults: Record<string, { found: boolean; name?: string }>;
+}
+
+export interface QdrantCollectionLink {
+  researchMemory: string;
+  marketSearch: string;
+  tradeHistory: string;
+}
+
+export interface QdrantDefaultCollectionDef {
+  key: string;
+  defaultName: string;
+  description: string;
+  payloadIndexes: string[];
 }

@@ -1,3 +1,5 @@
+import type { QdrantDefaultCollectionDef } from '@/lib/types';
+
 export const VENUE_OPTIONS = [
   { value: 'POLYMARKET', label: 'Polymarket', color: '#1a73e8' },
   { value: 'KALSHI', label: 'Kalshi', color: '#6c5ce7' },
@@ -157,3 +159,30 @@ Respond in JSON:
   "recommendation": "What to do differently next time"
 }`,
 };
+
+export const QDRANT_DEFAULT_COLLECTIONS: QdrantDefaultCollectionDef[] = [
+  {
+    key: 'researchMemory',
+    defaultName: 'research_memory',
+    description: 'Research run outputs, agent analysis, RAG retrieval',
+    payloadIndexes: ['marketId', 'role', 'depth', 'createdAt'],
+  },
+  {
+    key: 'marketSearch',
+    defaultName: 'market_search',
+    description: 'Market title/description embeddings for semantic search',
+    payloadIndexes: ['venue', 'category', 'status', 'createdAt'],
+  },
+  {
+    key: 'tradeHistory',
+    defaultName: 'trade_history',
+    description: 'Trade decision embeddings for pattern matching',
+    payloadIndexes: ['marketId', 'action', 'side', 'outcome', 'createdAt'],
+  },
+];
+
+export const EMBEDDING_PROVIDER_OPTIONS = [
+  { value: 'openai', label: 'OpenAI', defaultDims: 1536, description: 'text-embedding-3-small (1536 dims)' },
+  { value: 'ollama', label: 'Ollama', defaultDims: 768, description: 'nomic-embed-text (768 dims)' },
+  { value: 'custom', label: 'Custom', defaultDims: 0, description: 'Enter vector dimensions manually' },
+] as const;
