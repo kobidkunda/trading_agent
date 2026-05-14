@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { isEncrypted, decrypt } from '@/lib/engine/crypto';
 
 async function getCredentialHeaders(credentialId: string): Promise<{ baseUrl: string; headers: Record<string, string> } | null> {
   const credential = await db.credential.findUnique({ where: { id: credentialId } });
@@ -7,7 +8,10 @@ async function getCredentialHeaders(credentialId: string): Promise<{ baseUrl: st
 
   let parsedData: Record<string, unknown> = {};
   try {
-    if (credential.encryptedData) parsedData = JSON.parse(credential.encryptedData);
+    if (credential.encryptedData) {
+      const rawData = isEncrypted(credential.encryptedData) ? decrypt(credential.encryptedData) : credential.encryptedData;
+      parsedData = JSON.parse(rawData);
+    }
   } catch {}
 
   const headers: Record<string, string> = {

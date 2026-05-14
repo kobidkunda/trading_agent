@@ -1,14 +1,15 @@
-// ── Continuous Simulation Engine ─────────────────────────────────────────────
-// Runs the trading pipeline continuously like a live system.
-// Scans markets periodically, processes them through the full agent pipeline,
-// and records simulated orders in the DB — the system believes trades are real.
-// ──────────────────────────────────────────────────────────────────────────────
-
 import { db } from '@/lib/db';
-import { computeRisk, DEFAULT_STRATEGY } from '@/lib/engine/risk';
-import type { Venue, StrategySettings, JudgeOutput, RiskEngineOutput } from '@/lib/types';
-
-// ── In-memory state ──────────────────────────────────────────────────────────
+import {
+  applyLiveActivityEventToState,
+  createInitialActivityState,
+} from '@/lib/engine/live-sim-events';
+import {
+  runPipelineForMarket,
+  type PipelineStageEvent,
+} from '@/lib/engine/pipeline';
+import { runResolutionCycle } from '@/lib/engine/resolution-poller';
+import { DEFAULT_STRATEGY } from '@/lib/engine/risk';
+import type { LiveActivityEvent, LiveMarketProgress, LivePipelineStage, Venue } from '@/lib/types';
 
 type SimStatus = 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING';
 
@@ -23,9 +24,16 @@ interface LiveSimState {
   ordersSkipped: number;
   totalExposure: number;
   totalEstimatedPnl: number;
+  paperBetsResolved: number;
+  paperBetAccuracy: number;
   lastActivity: string | null;
   currentAgent: string | null;
+  currentStage: LivePipelineStage | null;
+  currentStageStartedAt: string | null;
   currentMarketTitle: string | null;
+  activityEvents: LiveActivityEvent[];
+  marketProgress: LiveMarketProgress[];
+  lastCompletedMarket: { marketId: string; marketTitle: string; completedAt: string } | null;
   error: string | null;
   config: {
     venues: Venue[];
@@ -36,7 +44,6 @@ interface LiveSimState {
   };
 }
 
-// Global singleton state (persists across requests in the same Node.js process)
 const state: LiveSimState = {
   status: 'STOPPED',
   startedAt: null,
@@ -48,22 +55,21 @@ const state: LiveSimState = {
   ordersSkipped: 0,
   totalExposure: 0,
   totalEstimatedPnl: 0,
-  lastActivity: null,
+  paperBetsResolved: 0,
+  paperBetAccuracy: 0,
+  ...createInitialActivityState(),
   currentAgent: null,
-  currentMarketTitle: null,
   error: null,
   config: {
     venues: DEFAULT_STRATEGY.enabledVenues as Venue[],
     categories: DEFAULT_STRATEGY.enabledCategories,
-    scanIntervalSec: 8,
-    marketsPerScan: 3,
+    scanIntervalSec: 120,
+    marketsPerScan: 1,
     maxPortfolioExposure: 50000,
   },
 };
 
 let intervalHandle: ReturnType<typeof setTimeout> | null = null;
-
-// ── Market Templates ─────────────────────────────────────────────────────────
 
 interface MarketTemplate {
   title: string;
@@ -98,20 +104,8 @@ const MARKET_TEMPLATES: MarketTemplate[] = [
   { title: 'Will the US unemployment rate exceed 5% in 2026?', description: 'Resolves YES if the BLS reports a seasonally adjusted unemployment rate above 5.0% for any month in 2026.', category: 'economics', venue: 'KALSHI', impliedProbRange: [0.15, 0.4], liquidityRange: [40000, 300000], spreadRange: [0.01, 0.025] },
 ];
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
 function randRange(min: number, max: number): number {
   return Math.random() * (max - min) + min;
-}
-function randInt(min: number, max: number): number {
-  return Math.floor(randRange(min, max + 1));
-}
-function pick<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 function pickTemplates(venues: Venue[], categories: string[], count: number): MarketTemplate[] {
@@ -119,86 +113,45 @@ function pickTemplates(venues: Venue[], categories: string[], count: number): Ma
     (t) => (venues.length === 0 || venues.includes(t.venue)) && (categories.length === 0 || categories.includes(t.category))
   );
   if (pool.length === 0) pool = MARKET_TEMPLATES;
-  // Shuffle and pick
   const shuffled = [...pool].sort(() => Math.random() - 0.5);
   return shuffled.slice(0, count);
 }
 
-// ── Agent simulators ─────────────────────────────────────────────────────────
+function recordActivity(event: LiveActivityEvent): void {
+  Object.assign(state, applyLiveActivityEventToState(state, event));
+}
 
-function simTriage(title: string, category: string) {
-  const relevant = Math.random() > 0.3;
-  if (relevant) {
-    return {
-      status: 'RELEVANT' as const,
-      reason: `Market "${title}" has clear resolution criteria and falls within ${category} — suitable for analysis`,
-      worthResearch: true,
-    };
-  }
+function createPipelineStageActivityEvent(
+  marketId: string,
+  marketTitle: string,
+  event: PipelineStageEvent,
+  timestamp = new Date().toISOString(),
+): LiveActivityEvent {
   return {
-    status: pick(['IRRELEVANT', 'AMBIGUOUS'] as const),
-    reason: `Market "${title}" has ambiguous resolution criteria or insufficient data availability`,
-    worthResearch: false,
+    marketId,
+    marketTitle,
+    stage: event.stage,
+    type: event.type ?? 'started',
+    message: event.message,
+    timestamp,
+    provider: event.provider,
+    serviceName: event.serviceName,
+    model: event.model,
+    failureReason: event.failureReason,
+    summary: event.summary,
+    references: event.references,
   };
 }
 
-function simBull(title: string, impliedProb: number) {
-  const shift = randRange(0.02, 0.15);
-  return {
-    thesis: `Analysis suggests "${title}" probability is underestimated. Multiple converging signals indicate positive outcome likelihood.`,
-    keyArguments: [
-      `Historical base rate supports YES at ${(randRange(55, 80)).toFixed(0)}% rate`,
-      `Recent developments not yet reflected in market pricing indicate positive shift`,
-      `Expert consensus assigns higher probability than current market price`,
-    ].slice(0, randInt(2, 4)),
-    estimatedProbability: Math.min(0.95, impliedProb + shift),
-    confidence: randRange(0.45, 0.85),
-  };
-}
-
-function simBear(title: string, impliedProb: number) {
-  const shift = randRange(0.03, 0.18);
-  return {
-    thesis: `Contrarian analysis identifies critical risk factors suggesting "${title}" probability is overestimated.`,
-    keyArguments: [
-      `Base rate for this event type is only ${(Math.max(0.1, impliedProb - shift) * 100).toFixed(1)}%`,
-      `Availability cascade from recent news inflates perceived probability`,
-      `Structural headwinds make YES outcome materially harder than priced`,
-    ].slice(0, randInt(2, 4)),
-    estimatedProbability: Math.max(0.05, impliedProb - shift),
-    confidence: randRange(0.4, 0.8),
-  };
-}
-
-function simJudge(title: string, impliedProb: number, bull: ReturnType<typeof simBull>, bear: ReturnType<typeof simBear>) {
-  const w = bull.confidence + bear.confidence || 1;
-  let prob = (bull.estimatedProbability * bull.confidence + bear.estimatedProbability * bear.confidence) / w;
-  prob = Math.max(0.05, Math.min(0.95, prob + randRange(-0.05, 0.05)));
-  const confidence = randRange(0.35, 0.85);
-  const uncertainty = randRange(0.1, 0.4);
-  return {
-    trueProbability: Math.round(prob * 1000) / 1000,
-    confidence: Math.round(confidence * 1000) / 1000,
-    uncertainty: Math.round(uncertainty * 1000) / 1000,
-    proEvidence: bull.keyArguments.slice(0, 2),
-    antiEvidence: bear.keyArguments.slice(0, 2),
-    catalystTiming: pick(['NONE', 'NONE', 'NONE', 'FAR', 'CLOSE'] as const),
-    skipReason: confidence < 0.4 ? 'Insufficient confidence in probability estimate' : undefined,
-  };
-}
-
-// ── Process single market through full pipeline ─────────────────────────────
-
-async function processMarket(template: MarketTemplate, strategy: StrategySettings): Promise<void> {
+async function processMarket(template: MarketTemplate): Promise<void> {
   const impliedProb = Math.round(randRange(...template.impliedProbRange) * 1000) / 1000;
   const liquidity = Math.round(randRange(...template.liquidityRange));
   const spread = Math.round(randRange(...template.spreadRange) * 1000) / 1000;
 
-  // ── 1. SCAN ──
   state.currentAgent = 'SCANNER';
   state.currentMarketTitle = template.title;
-  state.lastActivity = new Date().toISOString();
-  await delay(randInt(400, 1200));
+
+  console.log(`[LiveSim] Starting pipeline for: ${template.title}`);
 
   const market = await db.market.create({
     data: {
@@ -223,315 +176,174 @@ async function processMarket(template: MarketTemplate, strategy: StrategySetting
     },
   });
 
-  const candidate = await db.tradeCandidate.create({
+  await db.tradeCandidate.create({
     data: { marketId: market.id, stage: 'SCANNED' },
   });
 
-  await db.job.create({
-    data: {
-      type: 'SCAN', status: 'COMPLETED', priority: 5,
-      payload: JSON.stringify({ marketId: market.id, marketTitle: template.title }),
-      result: JSON.stringify({ impliedProb, liquidity, spread }),
-      startedAt: new Date(), completedAt: new Date(),
-    },
+  const scanStartedAt = new Date().toISOString();
+  recordActivity({
+    marketId: market.id,
+    marketTitle: market.title,
+    stage: 'SCAN',
+    type: 'started',
+    message: 'Scanning market',
+    timestamp: scanStartedAt,
+    provider: 'system',
+  });
+
+  const scanProgressAt = new Date().toISOString();
+  recordActivity({
+    marketId: market.id,
+    marketTitle: market.title,
+    stage: 'SCAN',
+    type: 'progress',
+    message: 'Market created and queued',
+    timestamp: scanProgressAt,
+    provider: 'system',
   });
 
   state.marketsScanned++;
-  state.lastActivity = new Date().toISOString();
+  state.currentAgent = 'PIPELINE';
 
-  // ── 2. TRIAGE ──
-  state.currentAgent = 'TRIAGE';
-  await delay(randInt(600, 2000));
+  try {
+    const result = await runPipelineForMarket(market.id, {
+      onStage: async (event) => {
+        recordActivity(createPipelineStageActivityEvent(market.id, market.title, event));
+      },
+    });
 
-  const triage = simTriage(template.title, template.category);
+    console.log(`[LiveSim] Pipeline completed for: ${template.title} — action=${result.riskAction}, stages=${result.stages.join('→')}`);
 
-  await db.job.create({
-    data: {
-      type: 'TRIAGE', status: 'COMPLETED', priority: 7,
-      payload: JSON.stringify({ marketId: market.id, marketTitle: template.title }),
-      result: JSON.stringify(triage),
-      startedAt: new Date(), completedAt: new Date(),
-    },
-  });
+    if (result.error) {
+      state.error = result.error;
+      console.error(`[LiveSim] Pipeline error for ${template.title}: ${result.error}`);
+    }
 
-  await db.tradeCandidate.update({
-    where: { id: candidate.id },
-    data: {
-      stage: 'TRIAGED',
-      triageStatus: triage.status,
-      triageReason: triage.reason,
-      researchQueued: triage.status === 'RELEVANT',
-    },
-  });
+    if (result.triageStatus !== 'RELEVANT') {
+      state.ordersSkipped++;
+      recordActivity({
+        marketId: market.id,
+        marketTitle: market.title,
+        stage: 'DECISION',
+        type: 'skipped',
+        message: 'Pipeline skipped market after triage',
+        timestamp: new Date().toISOString(),
+        provider: 'system',
+      });
+    } else {
+      state.marketsRelevant++;
+    }
 
-  state.lastActivity = new Date().toISOString();
+    if (result.riskAction === 'BID') {
+      state.ordersPlaced++;
 
-  // Skip if not relevant
-  if (triage.status !== 'RELEVANT') {
+      const latestOrder = await db.order.findFirst({
+        where: { marketId: market.id },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (latestOrder) {
+        state.totalExposure += latestOrder.size;
+        if (latestOrder.side === 'YES') {
+          const debateProb = result.debateResult?.finalProbability ?? impliedProb;
+          state.totalEstimatedPnl += (debateProb - latestOrder.price) * latestOrder.size;
+        } else {
+          const debateProb = result.debateResult?.finalProbability ?? impliedProb;
+          state.totalEstimatedPnl += ((1 - debateProb) - latestOrder.price) * latestOrder.size;
+        }
+      }
+
+      const completedAt = new Date().toISOString();
+      recordActivity({
+        marketId: market.id,
+        marketTitle: market.title,
+        stage: 'DECISION',
+        type: 'completed',
+        terminal: 'completed',
+        message: 'Pipeline completed successfully',
+        timestamp: completedAt,
+        provider: 'system',
+      });
+    } else if (result.triageStatus === 'RELEVANT') {
+      state.ordersSkipped++;
+      recordActivity({
+        marketId: market.id,
+        marketTitle: market.title,
+        stage: 'DECISION',
+        type: 'skipped',
+        message: 'Pipeline completed without placing an order',
+        timestamp: new Date().toISOString(),
+        provider: 'system',
+      });
+    }
+  } catch (err) {
+    state.error = err instanceof Error ? err.message : 'Pipeline failed';
+    console.error(`[LiveSim] Pipeline exception for ${template.title}:`, err);
     state.ordersSkipped++;
-    state.currentAgent = null;
-    state.currentMarketTitle = null;
-    return;
-  }
-
-  state.marketsRelevant++;
-
-  // ── 3. RESEARCH (Bull + Bear + Contradiction) ──
-  state.currentAgent = 'RESEARCH';
-  await delay(randInt(1000, 3000));
-
-  const researchRun = await db.researchRun.create({
-    data: {
+    recordActivity({
       marketId: market.id,
-      candidateId: candidate.id,
-      status: 'RUNNING',
-      depth: 'DEEP',
-      startedAt: new Date(),
-    },
-  });
-
-  await db.tradeCandidate.update({
-    where: { id: candidate.id },
-    data: { stage: 'RESEARCHING' },
-  });
-
-  const bull = simBull(template.title, impliedProb);
-  const bear = simBear(template.title, impliedProb);
-
-  await db.agentOutput.create({
-    data: {
-      researchRunId: researchRun.id, role: 'BULL', modelUsed: 'live-sim-engine',
-      promptVersion: '1', output: JSON.stringify(bull),
-      tokenCount: randInt(800, 2000), latencyMs: randInt(500, 1500),
-    },
-  });
-
-  await db.agentOutput.create({
-    data: {
-      researchRunId: researchRun.id, role: 'BEAR', modelUsed: 'live-sim-engine',
-      promptVersion: '1', output: JSON.stringify(bear),
-      tokenCount: randInt(800, 2000), latencyMs: randInt(500, 1500),
-    },
-  });
-
-  await db.agentOutput.create({
-    data: {
-      researchRunId: researchRun.id, role: 'CONTRADICTION', modelUsed: 'live-sim-engine',
-      promptVersion: '1',
-      output: JSON.stringify({ contradictions: ['Bull/bear cite same source but reach opposite conclusions'], overlookedRisks: ['Black swan potential not adequately accounted for'], alternativeInterpretations: ['Resolution criteria may be interpreted differently'], reliabilityAssessment: randRange(0.4, 0.75) }),
-      tokenCount: randInt(600, 1500), latencyMs: randInt(400, 1200),
-    },
-  });
-
-  await db.researchRun.update({
-    where: { id: researchRun.id },
-    data: { status: 'COMPLETED', completedAt: new Date() },
-  });
-
-  await db.job.create({
-    data: {
-      type: 'RESEARCH', status: 'COMPLETED', priority: 7,
-      payload: JSON.stringify({ marketId: market.id, marketTitle: template.title, depth: 'DEEP' }),
-      result: JSON.stringify({ researchRunId: researchRun.id }),
-      startedAt: new Date(), completedAt: new Date(),
-    },
-  });
-
-  state.lastActivity = new Date().toISOString();
-
-  // ── 4. JUDGE ──
-  state.currentAgent = 'JUDGE';
-  await delay(randInt(600, 2000));
-
-  const judge = simJudge(template.title, impliedProb, bull, bear);
-
-  await db.tradeCandidate.update({
-    where: { id: candidate.id },
-    data: { stage: 'JUDGED' },
-  });
-
-  await db.agentOutput.create({
-    data: {
-      researchRunId: researchRun.id, role: 'JUDGE', modelUsed: 'live-sim-engine',
-      promptVersion: '1', output: JSON.stringify(judge),
-      tokenCount: randInt(600, 1500), latencyMs: randInt(300, 900),
-    },
-  });
-
-  await db.job.create({
-    data: {
-      type: 'JUDGE', status: 'COMPLETED', priority: 8,
-      payload: JSON.stringify({ marketId: market.id, marketTitle: template.title }),
-      result: JSON.stringify(judge),
-      startedAt: new Date(), completedAt: new Date(),
-    },
-  });
-
-  state.lastActivity = new Date().toISOString();
-
-  // ── 5. RISK ENGINE ──
-  state.currentAgent = 'RISK';
-  await delay(randInt(300, 1000));
-
-  let riskResult: RiskEngineOutput;
-  if (judge.skipReason) {
-    riskResult = {
-      action: 'SKIP', maxSize: 0, adjustedSize: 0, urgency: 'LOW',
-      reasonCode: 'LOW_CONFIDENCE', reason: judge.skipReason,
-      edge: Math.abs(judge.trueProbability - impliedProb), fees: 0.02, slippage: 0.01,
-    };
-  } else {
-    riskResult = computeRisk({
-      impliedProbability: impliedProb,
-      judgeProbability: judge.trueProbability,
-      confidence: judge.confidence,
-      uncertainty: judge.uncertainty,
-      fees: 0.02,
-      slippage: 0.01,
-      venue: template.venue,
-      category: template.category,
-      dailyExposure: state.totalExposure,
-      categoryExposure: randRange(0, 8000),
-      openPositions: state.ordersPlaced,
-      marketLiquidity: liquidity,
-      marketSpread: spread,
-      catalystTiming: judge.catalystTiming === 'CLOSE' ? 'CLOSE' : undefined,
+      marketTitle: market.title,
+      stage: 'DECISION',
+      type: 'failed',
+      message: state.error,
+      timestamp: new Date().toISOString(),
+      provider: 'system',
     });
-  }
-
-  await db.decision.create({
-    data: {
-      marketId: market.id, candidateId: candidate.id,
-      action: riskResult.action,
-      side: riskResult.side ?? null,
-      reasonCode: riskResult.reasonCode ?? null,
-      reason: riskResult.reason,
-      judgeProbability: judge.trueProbability,
-      impliedProb, edge: riskResult.edge,
-      confidence: judge.confidence,
-      uncertainty: judge.uncertainty,
-      maxSize: riskResult.maxSize,
-      urgency: riskResult.urgency,
-      fees: riskResult.fees,
-      slippage: riskResult.slippage,
-      dryRun: false, // System thinks it's real!
-    },
-  });
-
-  await db.tradeCandidate.update({
-    where: { id: candidate.id },
-    data: { stage: 'DECIDED' },
-  });
-
-  await db.job.create({
-    data: {
-      type: 'RISK', status: 'COMPLETED', priority: 9,
-      payload: JSON.stringify({ marketId: market.id, marketTitle: template.title }),
-      result: JSON.stringify(riskResult),
-      startedAt: new Date(), completedAt: new Date(),
-    },
-  });
-
-  state.lastActivity = new Date().toISOString();
-
-  // ── 6. EXECUTE (Simulated but recorded as real) ──
-  state.currentAgent = 'EXECUTOR';
-  await delay(randInt(300, 800));
-
-  if (riskResult.action === 'BUY') {
-    const orderSize = riskResult.adjustedSize || riskResult.maxSize;
-    const orderPrice = riskResult.side === 'YES' ? impliedProb : 1 - impliedProb;
-    const estimatedPnl = riskResult.side === 'YES'
-      ? (judge.trueProbability - orderPrice) * orderSize
-      : ((1 - judge.trueProbability) - orderPrice) * orderSize;
-
-    // Record order — system thinks it's a real fill
-    await db.order.create({
-      data: {
-        marketId: market.id,
-        venueOrderId: `LIVE_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        side: riskResult.side ?? 'YES',
-        price: orderPrice,
-        size: orderSize,
-        filledSize: orderSize,
-        status: 'FILLED',
-        submittedAt: new Date(),
-        filledAt: new Date(),
-      },
-    });
-
-    // Open a position
-    await db.position.create({
-      data: {
-        marketId: market.id,
-        side: riskResult.side ?? 'YES',
-        entryPrice: orderPrice,
-        currentSize: orderSize,
-        avgEntryPrice: orderPrice,
-        unrealizedPnl: estimatedPnl,
-        realizedPnl: 0,
-        status: 'OPEN',
-      },
-    });
-
-    await db.tradeCandidate.update({
-      where: { id: candidate.id },
-      data: { stage: 'EXECUTED' },
-    });
-
-    await db.job.create({
-      data: {
-        type: 'EXECUTE', status: 'COMPLETED', priority: 10,
-        payload: JSON.stringify({
-          marketId: market.id, marketTitle: template.title,
-          side: riskResult.side, size: orderSize, price: orderPrice,
-        }),
-        result: JSON.stringify({ status: 'FILLED', filledSize: orderSize }),
-        startedAt: new Date(), completedAt: new Date(),
-      },
-    });
-
-    state.ordersPlaced++;
-    state.totalExposure += orderSize;
-    state.totalEstimatedPnl += estimatedPnl;
-  } else {
-    state.ordersSkipped++;
   }
 
   state.currentAgent = null;
   state.currentMarketTitle = null;
-  state.lastActivity = new Date().toISOString();
 }
-
-// ── Main loop ────────────────────────────────────────────────────────────────
 
 async function runLoop(): Promise<void> {
   if (state.status !== 'RUNNING') return;
 
   try {
     state.currentCycle++;
+
+    state.currentAgent = 'RESOLUTION_CHECK';
+    recordActivity({
+      marketId: 'resolution-cycle',
+      marketTitle: 'Resolution check',
+      stage: 'RESOLUTION_CHECK',
+      type: 'started',
+      message: 'Checking paper bet resolutions',
+      timestamp: new Date().toISOString(),
+      provider: 'system',
+    });
+
+    try {
+      const resolutionResult = await runResolutionCycle();
+      if (resolutionResult.resolved > 0) {
+        state.paperBetsResolved += resolutionResult.scored;
+        const totalBets = await db.paperBet.count({ where: { actualOutcome: { not: null } } });
+        const correctBets = await db.paperBet.count({ where: { actualOutcome: { not: null }, directionCorrect: true } });
+        state.paperBetAccuracy = totalBets > 0 ? Math.round((correctBets / totalBets) * 10000) / 100 : 0;
+        console.log(`[LiveSim] Resolved ${resolutionResult.resolved} markets, scored ${resolutionResult.scored} paper bets`);
+      }
+    } catch (e) {
+      console.error('[LiveSim] Resolution poll failed:', e);
+    }
+
     const templates = pickTemplates(
-      state.config.venues,
-      state.config.categories,
+      state.config.venues ?? DEFAULT_STRATEGY.enabledVenues as Venue[],
+      state.config.categories ?? DEFAULT_STRATEGY.enabledCategories,
       state.config.marketsPerScan,
     );
 
     for (const template of templates) {
       if (state.status !== 'RUNNING') break;
-      await processMarket(template, DEFAULT_STRATEGY);
+      await processMarket(template);
     }
   } catch (err) {
     state.error = err instanceof Error ? err.message : 'Unknown error';
     console.error('[LiveSim] Cycle error:', err);
   }
 
-  // Schedule next cycle if still running
   if (state.status === 'RUNNING') {
     intervalHandle = setTimeout(runLoop, state.config.scanIntervalSec * 1000);
   }
 }
-
-// ── Public API ───────────────────────────────────────────────────────────────
 
 export function getSimState(): LiveSimState {
   return { ...state };
@@ -540,7 +352,6 @@ export function getSimState(): LiveSimState {
 export function startSimulation(config?: Partial<LiveSimState['config']>): LiveSimState {
   if (state.status === 'RUNNING') return state;
 
-  // Reset stats
   Object.assign(state, {
     status: 'RUNNING' as SimStatus,
     startedAt: new Date().toISOString(),
@@ -552,9 +363,10 @@ export function startSimulation(config?: Partial<LiveSimState['config']>): LiveS
     ordersSkipped: 0,
     totalExposure: 0,
     totalEstimatedPnl: 0,
-    lastActivity: null,
+    paperBetsResolved: 0,
+    paperBetAccuracy: 0,
+    ...createInitialActivityState(),
     currentAgent: null,
-    currentMarketTitle: null,
     error: null,
   });
 
@@ -562,8 +374,7 @@ export function startSimulation(config?: Partial<LiveSimState['config']>): LiveS
     Object.assign(state.config, config);
   }
 
-  // Start the loop
-  intervalHandle = setTimeout(runLoop, 1000);
+  intervalHandle = setTimeout(runLoop, 2000);
 
   return { ...state };
 }
@@ -581,6 +392,8 @@ export function stopSimulation(): LiveSimState {
 
   state.status = 'STOPPED';
   state.currentAgent = null;
+  state.currentStage = null;
+  state.currentStageStartedAt = null;
   state.currentMarketTitle = null;
   state.lastActivity = new Date().toISOString();
 
@@ -592,4 +405,5 @@ export function updateConfig(config: Partial<LiveSimState['config']>): LiveSimSt
   return { ...state };
 }
 
+export { createPipelineStageActivityEvent };
 export type { LiveSimState };

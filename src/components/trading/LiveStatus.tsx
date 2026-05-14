@@ -10,6 +10,7 @@ import {
   ShieldAlert,
   Play,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   AlertTriangle,
   Clock,
@@ -83,7 +84,7 @@ type JobType = 'SCAN' | 'TRIAGE' | 'RESEARCH' | 'JUDGE' | 'RISK' | 'EXECUTE' | '
 
 const JOB_TYPES: JobType[] = ['SCAN', 'TRIAGE', 'RESEARCH', 'JUDGE', 'RISK', 'EXECUTE', 'SETTLE'];
 
-const REQUIRED_SERVICES = ['Postgres', 'Redis', 'Qdrant', 'Ollama', 'SearXNG', 'Mem0'] as const;
+const REQUIRED_SERVICES = ['Qdrant', 'SearXNG', 'LLM'] as const;
 
 // ── Agent config ───────────────────────────────────────────────────────────
 
@@ -308,9 +309,9 @@ export function LiveStatus() {
   // ── Derived data ────────────────────────────────────────────────────────
 
   const statsByType = useMemo(() => {
-    const stats: Record<string, { running: number; pending: number; failed: number; total: number; retrying: number }> = {};
+    const stats: Record<string, { running: number; pending: number; failed: number; completed: number; total: number; retrying: number }> = {};
     for (const type of JOB_TYPES) {
-      stats[type] = { running: 0, pending: 0, failed: 0, total: 0, retrying: 0 };
+      stats[type] = { running: 0, pending: 0, failed: 0, completed: 0, total: 0, retrying: 0 };
     }
     for (const job of jobs) {
       if (!stats[job.type]) continue;
@@ -318,10 +319,13 @@ export function LiveStatus() {
       if (job.status === 'RUNNING') stats[job.type].running++;
       if (job.status === 'PENDING') stats[job.type].pending++;
       if (job.status === 'FAILED') stats[job.type].failed++;
+      if (job.status === 'COMPLETED') stats[job.type].completed++;
       if (job.status === 'RETRYING') stats[job.type].retrying++;
     }
     return stats;
   }, [jobs]);
+
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
 
   const runningJobs = useMemo(
     () => jobs.filter((j) => j.status === 'RUNNING' || j.status === 'RETRYING'),
@@ -421,7 +425,7 @@ export function LiveStatus() {
             const isActive = stats.running + stats.retrying > 0;
             const hasFailures = stats.failed > 0;
             const activeCount = stats.running + stats.retrying;
-            const completedCount = stats.total - activeCount - stats.pending - stats.failed;
+            const hasData = stats.total > 0;
 
             let cardBorder = 'border-gray-800';
             let cardGlow = '';
@@ -431,6 +435,8 @@ export function LiveStatus() {
             } else if (isActive) {
               cardBorder = 'border-emerald-500/30';
               cardGlow = 'shadow-sm shadow-emerald-500/5';
+            } else if (hasData) {
+              cardBorder = 'border-blue-500/20';
             }
 
             return (
@@ -440,7 +446,7 @@ export function LiveStatus() {
                   'border-gray-800 bg-gray-900 transition-all duration-300',
                   cardBorder,
                   cardGlow,
-                  !isActive && !hasFailures && 'opacity-60'
+                  !isActive && !hasFailures && !hasData && 'opacity-60'
                 )}
               >
                 <CardContent className="p-4">
@@ -455,48 +461,56 @@ export function LiveStatus() {
                     {config.label}
                   </p>
                   <p className="mt-1 text-2xl font-bold tabular-nums text-white">
-                    {activeCount}
+                    {activeCount > 0 ? activeCount : stats.completed}
                   </p>
 
-                  {/* Progress bar: active out of total */}
+                  {/* Progress bar: completed out of total */}
                   {stats.total > 0 ? (
                     <div className="mt-2">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] text-gray-600">
-                          {activeCount}/{stats.total}
+                          {activeCount > 0 ? `${activeCount} running` : `${stats.completed} done`}
                         </span>
                         <span className="text-[10px] text-gray-600">
-                          {stats.pending}q
+                          {stats.total} total
                         </span>
                       </div>
                       <Progress
-                        value={stats.total > 0 ? (activeCount / stats.total) * 100 : 0}
+                        value={stats.total > 0 ? (stats.completed / stats.total) * 100 : 0}
                         className={cn(
                           'mt-1 h-1',
                           isActive
                             ? '[&>div]:bg-emerald-500'
                             : hasFailures
                               ? '[&>div]:bg-red-500'
-                              : '[&>div]:bg-gray-600'
+                              : stats.completed > 0
+                                ? '[&>div]:bg-blue-500'
+                                : '[&>div]:bg-gray-600'
                         )}
                       />
                     </div>
                   ) : (
-                    <p className="mt-2 text-[10px] text-gray-600">No jobs</p>
+                    <p className="mt-2 text-[10px] text-gray-600">No data yet</p>
                   )}
 
                   {/* Mini stats row */}
                   <div className="mt-2 flex gap-2 text-[10px]">
+                    {stats.completed > 0 && (
+                      <span className="text-blue-400/80">
+                        <CheckCircle2 className="mr-0.5 inline h-2.5 w-2.5" />
+                        {stats.completed}
+                      </span>
+                    )}
                     {stats.pending > 0 && (
                       <span className="text-gray-500">
                         <Clock className="mr-0.5 inline h-2.5 w-2.5" />
-                        {stats.pending}
+                        {stats.pending}q
                       </span>
                     )}
                     {stats.failed > 0 && (
                       <span className="text-red-400/70">
                         <AlertTriangle className="mr-0.5 inline h-2.5 w-2.5" />
-                        {stats.failed}
+                        {stats.failed}f
                       </span>
                     )}
                   </div>
@@ -521,6 +535,7 @@ export function LiveStatus() {
                 const Icon = config.icon;
                 const isActive = stats.running + stats.retrying > 0;
                 const hasFailures = stats.failed > 0;
+                const hasData = stats.completed > 0;
 
                 return (
                   <div key={type} className="flex items-center">
@@ -531,14 +546,16 @@ export function LiveStatus() {
                           ? 'border-emerald-500/40 bg-emerald-500/5 shadow-sm shadow-emerald-500/10'
                           : hasFailures
                             ? 'border-red-500/30 bg-red-500/5'
-                            : 'border-gray-800 bg-gray-800/40'
+                            : hasData
+                              ? 'border-blue-500/20 bg-blue-500/5'
+                              : 'border-gray-800 bg-gray-800/40'
                       )}
                     >
                       <div className="relative">
                         <Icon
                           className={cn(
                             'h-5 w-5 transition-colors',
-                            isActive ? 'text-emerald-400' : hasFailures ? 'text-red-400' : 'text-gray-500'
+                            isActive ? 'text-emerald-400' : hasFailures ? 'text-red-400' : hasData ? 'text-blue-400' : 'text-gray-500'
                           )}
                         />
                         {isActive && (
@@ -550,7 +567,7 @@ export function LiveStatus() {
                       </div>
                       <span className={cn(
                         'text-[11px] font-medium',
-                        isActive ? 'text-emerald-300' : hasFailures ? 'text-red-300' : 'text-gray-500'
+                        isActive ? 'text-emerald-300' : hasFailures ? 'text-red-300' : hasData ? 'text-blue-300' : 'text-gray-500'
                       )}>
                         {config.label}
                       </span>
@@ -558,6 +575,11 @@ export function LiveStatus() {
                         {stats.running > 0 && (
                           <Badge className="h-4 px-1 text-[9px] border-cyan-500/30 bg-cyan-500/10 text-cyan-400">
                             {stats.running}r
+                          </Badge>
+                        )}
+                        {stats.completed > 0 && !isActive && (
+                          <Badge className="h-4 px-1 text-[9px] border-blue-500/30 bg-blue-500/10 text-blue-400">
+                            {stats.completed}
                           </Badge>
                         )}
                         {stats.pending > 0 && (
@@ -570,7 +592,7 @@ export function LiveStatus() {
                             {stats.failed}f
                           </Badge>
                         )}
-                        {stats.running === 0 && stats.pending === 0 && stats.failed === 0 && (
+                        {stats.running === 0 && stats.pending === 0 && stats.failed === 0 && stats.completed === 0 && (
                           <span className="text-[9px] text-gray-600">idle</span>
                         )}
                       </div>
@@ -696,28 +718,78 @@ export function LiveStatus() {
             <CardContent className="p-0">
               {recentJobs.length > 0 ? (
                 <div className="max-h-96 overflow-y-auto divide-y divide-gray-800/50">
-                  {recentJobs.map((job) => (
-                    <div
-                      key={job.id}
-                      className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-800/30"
-                    >
-                      <div className="shrink-0">{jobStatusBadge(job.status)}</div>
-                      <div className="shrink-0">{jobTypeBadge(job.type)}</div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-xs text-gray-300">
-                          {getMarketTitle(job.payload)}
-                        </p>
-                        {job.error && job.status === 'FAILED' && (
-                          <p className="mt-0.5 truncate text-[10px] text-red-400/60">
-                            {job.error}
-                          </p>
+                  {recentJobs.map((job) => {
+                    const isExpanded = expandedJobId === job.id;
+                    const payloadObj = parsePayload(job.payload);
+                    const resultObj = parsePayload(job.result);
+                    return (
+                      <div key={job.id}>
+                        <div
+                          className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-800/30 cursor-pointer"
+                          onClick={() => setExpandedJobId(isExpanded ? null : job.id)}
+                        >
+                          <div className="shrink-0">{jobStatusBadge(job.status)}</div>
+                          <div className="shrink-0">{jobTypeBadge(job.type)}</div>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-xs text-gray-300">
+                              {getMarketTitle(job.payload)}
+                            </p>
+                            {job.error && job.status === 'FAILED' && (
+                              <p className="mt-0.5 truncate text-[10px] text-red-400/60">
+                                {job.error}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-[10px] tabular-nums text-gray-600">
+                              {formatRelativeTime(job.createdAt)}
+                            </span>
+                            {isExpanded ? (
+                              <ChevronDown className="h-3 w-3 text-gray-600" />
+                            ) : (
+                              <ChevronRight className="h-3 w-3 text-gray-700" />
+                            )}
+                          </div>
+                        </div>
+                        {isExpanded && (
+                          <div className="border-t border-gray-800/50 px-4 py-3 space-y-2 bg-gray-800/10">
+                            <div className="grid grid-cols-3 gap-3 text-[10px]">
+                              <div>
+                                <span className="text-gray-500">Priority:</span>{' '}
+                                <span className={priorityColor(job.priority)}>{priorityLabel(job.priority)}</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-500">Retries:</span>{' '}
+                                <span className="text-gray-300">{job.retryCount}/{job.maxRetries}</span>
+                              </div>
+                              <div>
+                                <span className="text-gray-500">Started:</span>{' '}
+                                <span className="text-gray-300">{job.startedAt ? formatTime(job.startedAt) : '—'}</span>
+                              </div>
+                            </div>
+                            {payloadObj && (
+                              <div>
+                                <p className="text-[10px] text-gray-500 mb-1">Payload</p>
+                                <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded bg-gray-900 p-2 text-[10px] text-gray-400">{JSON.stringify(payloadObj, null, 2)}</pre>
+                              </div>
+                            )}
+                            {resultObj && (
+                              <div>
+                                <p className="text-[10px] text-gray-500 mb-1">Result</p>
+                                <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded bg-gray-900 p-2 text-[10px] text-gray-400">{JSON.stringify(resultObj, null, 2)}</pre>
+                              </div>
+                            )}
+                            {job.error && (
+                              <div>
+                                <p className="text-[10px] text-gray-500 mb-1">Error</p>
+                                <p className="text-[10px] text-red-400">{job.error}</p>
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
-                      <span className="shrink-0 text-[10px] tabular-nums text-gray-600">
-                        {formatRelativeTime(job.createdAt)}
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center py-12 text-gray-600">

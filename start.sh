@@ -4,8 +4,8 @@
 
 cd /home/z/my-project
 
-# Kill any existing server on port 3000
-lsof -i :3000 2>/dev/null | awk 'NR>1{print $2}' | sort -u | xargs -r kill -9 2>/dev/null
+# Kill any existing server on port 6501
+lsof -i :6501 2>/dev/null | awk 'NR>1{print $2}' | sort -u | xargs -r kill -9 2>/dev/null
 sleep 1
 
 # Copy static assets to standalone (required for standalone builds)
@@ -18,7 +18,7 @@ echo "Starting Trading Command Center..."
 (
   while true; do
     cd /home/z/my-project/.next/standalone
-    PORT=3000 node server.js >> /tmp/tcc_server.log 2>&1
+    PORT=6501 node server.js >> /tmp/tcc_server.log 2>&1
     echo "[$(date)] Server exited, restarting in 2s..." >> /tmp/tcc_server.log
     sleep 2
   done
@@ -31,8 +31,8 @@ echo "Watchdog PID: $SERVER_PID"
 sleep 3
 
 # Verify
-if ss -tlnp 2>/dev/null | rg -q 3000; then
-  echo "Trading Command Center is RUNNING on http://localhost:3000"
+if ss -tlnp 2>/dev/null | rg -q 6501; then
+  echo "Trading Command Center is RUNNING on http://localhost:6501"
 else
   echo "Failed to start - check /tmp/tcc_server.log"
   exit 1

@@ -28,7 +28,8 @@ model Market {
   orders           Order[]
   positions        Position[]
   outcomes         Outcome[]
-  postmortems      Postmortem[]
+  postmortems Postmortem[]
+  paperBets PaperBet[]
 }
 
 model MarketSnapshot {
@@ -99,13 +100,21 @@ model AgentOutput {
   id              String   @id @default(cuid())
   researchRunId   String
   researchRun     ResearchRun @relation(fields: [researchRunId], references: [id])
-  role            String   // TRIAGE, BULL, BEAR, CONTRADICTION, JUDGE
+  role            String   // TRIAGE, BULL, BEAR, CONTRADICTION, JUDGE, etc.
+  stage           String?  // Pipeline stage: TRIAGE, WEB_SEARCH, DEERFLOW, SYNTHESIS, etc.
+  serviceName     String?  // Human-readable service name
+  provider        String?  // Provider: openai, deerflow, tradingagents, agent_reach, system
   modelUsed       String?
   promptVersion   String?
   output          String   // JSON string of structured output
-  rawOutput       String?
+  rawOutput       String?  // Full raw output from the service
+  summary         String?  // Human-readable summary
+  referencesJson  String?  // JSON array of source references
+  failureReason   String?  // Reason for failure if status is failed
   tokenCount      Int?
   latencyMs       Int?
+  startedAt       DateTime?
+  endedAt         DateTime?
   createdAt       DateTime @default(now())
 }
 
@@ -130,8 +139,9 @@ model Decision {
   urgency         String?  // LOW, MEDIUM, HIGH, IMMEDIATE
   fees            Float?
   slippage        Float?
-  dryRun          Boolean  @default(true)
-  createdAt       DateTime @default(now())
+  dryRun Boolean @default(true)
+  paperBet PaperBet?
+  createdAt DateTime @default(now())
 }
 
 // ============ ORDERS ============
@@ -177,20 +187,59 @@ model Position {
   avgEntryPrice Float
   unrealizedPnl Float    @default(0)
   realizedPnl   Float    @default(0)
-  status        String   @default("OPEN") // OPEN, CLOSED
+  status        String   @default("OPEN") // OPEN, WATCH, CLOSED
   openedAt      DateTime @default(now())
   closedAt      DateTime?
+}
+
+// ============ PAPER BETS (DRY-RUN TRACKING) ============
+
+model PaperBet {
+  id String @id @default(cuid())
+  marketId String
+  market Market @relation(fields: [marketId], references: [id])
+  decisionId String @unique
+  decision Decision @relation(fields: [decisionId], references: [id])
+  
+  predictionType String // BID, WATCH
+  predictedProb Float // Model's probability estimate
+  predictedSide String // YES, NO
+  impliedProb Float // Market price at prediction time
+  edge Float // predictedProb - impliedProb (or 1-implied for NO)
+  confidence Float
+  
+  stake Float // Paper stake amount
+  entryPrice Float // Price at which bet was "placed"
+  
+  // Resolution (filled when market resolves)
+  actualOutcome String? // YES, NO, CANCELLED
+  resolvedProb Float? // Final market probability at resolution
+  resolvedAt DateTime?
+  
+  // Scoring
+  directionCorrect Boolean? // Did we predict YES/NO correctly?
+  probError Float? // |predictedProb - actualProb| or |predictedProb - resolvedProb|
+  brierScore Float? // (predictedProb - actualProb)^2 where actualProb is 1 or 0
+  pnl Float? // Simulated profit/loss
+  
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([marketId])
+  @@index([predictionType])
+  @@index([resolvedAt])
 }
 
 // ============ OUTCOMES ============
 
 model Outcome {
-  id            String   @id @default(cuid())
-  marketId      String
-  market        Market   @relation(fields: [marketId], references: [id])
-  result        String   // YES, NO, CANCELLED
-  resolvedProb  Float?
-  resolvedAt    DateTime @default(now())
+  id String @id @default(cuid())
+  marketId String
+  market Market @relation(fields: [marketId], references: [id])
+  result String // YES, NO, CANCELLED
+  resolvedProb Float?
+  resolvedAt DateTime @default(now())
 }
 
 // ============ POSTMORTEMS ============

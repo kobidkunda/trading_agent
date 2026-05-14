@@ -1,4 +1,4 @@
-:81 {
+:6502 {
 	@transform_port_query {
 		query XTransformPort=*
 	}
@@ -13,7 +13,7 @@
 	}
 
 	handle {
-		reverse_proxy localhost:3000 {
+		reverse_proxy localhost:6501 {
 			header_up Host {host}
 			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto {scheme}

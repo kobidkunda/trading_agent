@@ -18,6 +18,6 @@ fi
 sleep 1
 
 # Start server
-node .next/standalone/server.js &
+PORT=6501 node .next/standalone/server.js &
 echo $! > "$PID_FILE"
 echo "Trading Command Center started (PID: $(cat $PID_FILE))"

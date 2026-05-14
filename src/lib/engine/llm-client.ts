@@ -24,20 +24,37 @@ interface ProviderConfig {
   model: string;
 }
 
+function isInvalidApiKey(key: string): boolean {
+  if (!key || key.length < 20) return true;
+  const invalidPatterns = [
+    'your-api-key',
+    'your-apikey',
+    'change-this',
+    'placeholder',
+    'dummy',
+    'test',
+    'sk-test',
+    'sk-dummy',
+    'example',
+  ];
+  const lowerKey = key.toLowerCase();
+  return invalidPatterns.some(pattern => lowerKey.includes(pattern));
+}
+
 async function getProviderConfig(preferredModel?: string): Promise<ProviderConfig> {
   const strategySetting = await db.settings.findUnique({ where: { key: 'strategy_settings' } });
   const strategy = strategySetting ? JSON.parse(strategySetting.value) : {};
 
-  const model = preferredModel || strategy.defaultModel || strategy.researchModel || 'gpt-4o-mini';
+  const model = preferredModel || strategy.defaultModel || strategy.researchModel || 'paper_lite';
 
   let llmCred = await db.credential.findFirst({
-    where: { service: { in: ['LLM Provider', 'OpenAI'] }, isActive: true },
+    where: { service: { in: ['llm', 'LLM Provider', 'OpenAI', 'openai'] }, isActive: true },
     orderBy: { createdAt: 'desc' },
   });
 
   if (!llmCred) {
     llmCred = await db.credential.findFirst({
-      where: { service: 'OpenAI', isActive: true },
+      where: { service: { in: ['OpenAI', 'openai'] }, isActive: true },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -45,6 +62,9 @@ async function getProviderConfig(preferredModel?: string): Promise<ProviderConfi
   if (!llmCred || !llmCred.serviceUrl) {
     const baseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
     const apiKey = process.env.OPENAI_API_KEY || '';
+    if (isInvalidApiKey(apiKey)) {
+      throw new Error('Invalid or placeholder API key in environment. Please set a valid OPENAI_API_KEY in .env file');
+    }
     return { baseUrl, apiKey, model };
   }
 
@@ -61,9 +81,14 @@ async function getProviderConfig(preferredModel?: string): Promise<ProviderConfi
     } catch {}
   }
 
+  const apiKey = String(parsedData.apiKey || '');
+  if (isInvalidApiKey(apiKey)) {
+    throw new Error('Invalid or placeholder API key in credential. Please update the LLM credential with a valid API key');
+  }
+
   return {
     baseUrl: llmCred.serviceUrl.replace(/\/$/, ''),
-    apiKey: String(parsedData.apiKey || ''),
+    apiKey,
     model,
   };
 }

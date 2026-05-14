@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, Fragment } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Search,
   RefreshCw,
@@ -11,6 +12,16 @@ import {
   Clock,
   DollarSign,
   Radar,
+  ArrowRight,
+  Scale,
+  Brain,
+  Globe,
+  ExternalLink,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  Timer,
+  FileText,
 } from 'lucide-react';
 import {
   Card,
@@ -72,6 +83,95 @@ interface MarketApiRecord {
   }>
 }
 
+interface AgentOutput {
+  id: string;
+  role: string;
+  modelUsed: string | null;
+  promptVersion: string | null;
+  output: string;
+  tokenCount: number | null;
+  latencyMs: number | null;
+  createdAt: string;
+}
+
+interface ResearchSource {
+  id: string;
+  url: string;
+  title: string | null;
+  content: string | null;
+  sourceType: string;
+  recencyScore: number | null;
+  qualityScore: number | null;
+  extractedAt: string;
+  provider?: string | null;
+  reasonIncluded?: string | null;
+  snippet?: string | null;
+}
+
+interface ResearchRunData {
+  id: string;
+  status: string;
+  depth: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  sources: ResearchSource[];
+  agentOutputs: AgentOutput[];
+  transparencyStages?: TransparencyStageRecord[];
+  sourceProvenance?: SourceProvenance[];
+}
+
+interface SourceProvenance {
+  url: string;
+  title: string | null;
+  domain: string | null;
+  sourceType: string;
+  qualityScore: number | null;
+  recencyScore: number | null;
+  extractedAt: string;
+}
+
+interface TransparencySourceRef {
+  title: string;
+  url: string;
+  domain: string | null;
+  snippet: string | null;
+  provider: string | null;
+  reasonIncluded?: string | null;
+}
+
+interface TransparencyStageRecord {
+  stage: string;
+  serviceName: string;
+  provider: string | null;
+  model: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number | null;
+  status: 'running' | 'completed' | 'failed' | 'skipped' | 'timeout';
+  failureReason: string | null;
+  summary: string | null;
+  rawOutput: string | null;
+  sources: TransparencySourceRef[];
+  references: TransparencySourceRef[];
+}
+
+interface DecisionData {
+  id: string;
+  action: string;
+  side: string | null;
+  reasonCode: string | null;
+  reason: string | null;
+  judgeProbability: number | null;
+  impliedProb: number | null;
+  edge: number | null;
+  confidence: number | null;
+  uncertainty: number | null;
+  maxSize: number | null;
+  urgency: string | null;
+  dryRun: boolean;
+  createdAt: string;
+}
+
 // Flattened row used by the UI
 interface MarketRow {
   id: string;
@@ -110,6 +210,596 @@ function flattenMarketRecord(m: MarketApiRecord): MarketRow {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+function parseAgentOutput(output: string): Record<string, unknown> | null {
+  try { return JSON.parse(output); } catch { return null; }
+}
+
+const ROLE_COLORS: Record<string, string> = {
+  TRIAGE: 'text-violet-400 border-violet-500/30 bg-violet-500/10',
+  BULL: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10',
+  BEAR: 'text-red-400 border-red-500/30 bg-red-500/10',
+  CONTRADICTION: 'text-amber-400 border-amber-500/50 bg-amber-500/20 shadow-sm shadow-amber-500/10',
+  JUDGE: 'text-cyan-400 border-cyan-500/50 bg-cyan-500/20 shadow-sm shadow-cyan-500/10',
+  DEERFLOW: 'text-indigo-400 border-indigo-500/30 bg-indigo-500/10',
+};
+
+const ROLE_ICONS: Record<string, React.ElementType> = {
+  TRIAGE: Filter,
+  BULL: ArrowRight,
+  BEAR: ArrowRight,
+  CONTRADICTION: AlertTriangle,
+  JUDGE: Scale,
+  DEERFLOW: Brain,
+};
+
+const STAGE_STATUS_ICONS: Record<string, React.ElementType> = {
+  running: Loader2,
+  completed: CheckCircle2,
+  failed: XCircle,
+  skipped: Timer,
+  timeout: Timer,
+};
+
+const STAGE_STATUS_COLORS: Record<string, string> = {
+  running: 'text-blue-400 border-blue-500/30 bg-blue-500/10',
+  completed: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10',
+  failed: 'text-red-400 border-red-500/30 bg-red-500/10',
+  skipped: 'text-amber-400 border-amber-500/30 bg-amber-500/10',
+  timeout: 'text-amber-400 border-amber-500/30 bg-amber-500/10',
+};
+
+function formatDuration(ms: number | null): string {
+  if (!ms) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+// Helper function to extract domain from URL
+function extractDomain(url: string): string | null {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function InlineMarketDetail({
+  market,
+  onClose,
+}: {
+  market: MarketRow;
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const [research, setResearch] = useState<ResearchRunData[]>([]);
+  const [decisions, setDecisions] = useState<DecisionData[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
+  const [expandedStage, setExpandedStage] = useState<string | null>(null);
+  const [expandedSource, setExpandedSource] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    async function fetchData() {
+      try {
+        const [resRes, decRes] = await Promise.all([
+          fetch(`/api/research?marketId=${market.id}`),
+          fetch(`/api/decisions?marketId=${market.id}`),
+        ]);
+        if (!cancelled) {
+          if (resRes.ok) {
+            const data = await resRes.json();
+            setResearch(data.researchRuns ?? []);
+          }
+          if (decRes.ok) {
+            const data = await decRes.json();
+            setDecisions(data.decisions ?? []);
+          }
+        }
+      } catch {
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    fetchData();
+    return () => { cancelled = true; };
+  }, [market.id]);
+
+  const latestResearch = research[0];
+  const latestDecision = decisions[0];
+  const agentOutputs = latestResearch?.agentOutputs ?? [];
+  const sources = latestResearch?.sources ?? [];
+  const provenance = latestResearch?.sourceProvenance ?? [];
+  const transparencyStages = latestResearch?.transparencyStages ?? [];
+
+  const sortedAgents = [...agentOutputs].sort((a, b) => {
+    const order = ['TRIAGE', 'BULL', 'BEAR', 'CONTRADICTION', 'DEERFLOW', 'JUDGE'];
+    return order.indexOf(a.role) - order.indexOf(b.role);
+  });
+
+  const sortedStages = [...transparencyStages].sort((a, b) => {
+    const order = ['TRIAGE', 'BULL', 'BEAR', 'CONTRADICTION', 'DEERFLOW', 'JUDGE', 'NEWS_ANALYST', 'SENTIMENT_ANALYST', 'TECHNICAL_ANALYST', 'SYNTHESIS'];
+    return order.indexOf(a.stage) - order.indexOf(b.stage);
+  });
+
+  const debateAgents = sortedAgents.filter(a => ['BULL', 'BEAR', 'CONTRADICTION', 'JUDGE'].includes(a.role));
+  const hasDebate = debateAgents.length > 0;
+
+  return (
+    <div className="p-4 space-y-4">
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-sm font-medium text-white">{market.title}</p>
+          <div className="mt-1 flex items-center gap-2">
+            {triageBadge(market.triageStatus)}
+            {stageBadge(market.stage)}
+            <span className="text-xs text-gray-600">{market.category}</span>
+            {latestResearch && (
+              <Badge className="text-[10px] border-blue-500/30 bg-blue-500/10 text-blue-400">
+                {latestResearch.depth}
+              </Badge>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={() => router.push(`/market/${market.id}`)}
+            className="h-6 text-[10px] border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10"
+          >
+            <FileText className="h-3 w-3 mr-1" />
+            Full Detail
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onClose} className="text-gray-500 h-6 text-[10px]">
+            Close
+          </Button>
+        </div>
+      </div>
+        {market.description && (
+          <div>
+            <p className="mb-1 text-xs font-medium text-gray-500">Description</p>
+            <p className="text-sm leading-relaxed text-gray-300">{market.description}</p>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+            <p className="text-[11px] text-gray-500"><DollarSign className="mr-1 inline h-3 w-3" />Liquidity</p>
+            <p className="mt-1 text-sm font-bold text-gray-200">{formatCurrency(market.liquidity)}</p>
+          </div>
+          <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+            <p className="text-[11px] text-gray-500">Spread</p>
+            <p className="mt-1 text-sm font-bold text-gray-200">{(market.spread * 100).toFixed(2)}%</p>
+          </div>
+          <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+            <p className="text-[11px] text-gray-500">Implied Probability</p>
+            <p className="mt-1 text-sm font-bold text-gray-200">{(market.impliedProb * 100).toFixed(1)}%</p>
+          </div>
+          <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+            <p className="text-[11px] text-gray-500"><Clock className="mr-1 inline h-3 w-3" />Last Snapshot</p>
+            <p className="mt-1 text-sm font-bold text-gray-200">{new Date(market.snapshotAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</p>
+          </div>
+        </div>
+
+        {market.triageReason && (
+          <div>
+            <p className="mb-1 text-xs font-medium text-gray-500">Triage Reason</p>
+            <p className="text-sm text-gray-400">{market.triageReason}</p>
+          </div>
+        )}
+
+        {loading && (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
+            <span className="ml-2 text-sm text-gray-500">Loading pipeline results...</span>
+          </div>
+        )}
+
+        {!loading && latestDecision && (
+          <div className="rounded-lg border border-gray-700 bg-gray-800/30 p-3">
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Decision</h4>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div>
+                <p className="text-[10px] text-gray-500">Action</p>
+                <p className={cn('text-sm font-bold',
+                  latestDecision.action === 'BID' ? 'text-emerald-400' :
+                  latestDecision.action === 'WATCH' ? 'text-amber-400' :
+                  'text-red-400'
+                )}>
+                  {latestDecision.action}
+                  {latestDecision.side ? ` ${latestDecision.side}` : ''}
+                </p>
+              </div>
+              {latestDecision.edge !== null && (
+                <div>
+                  <p className="text-[10px] text-gray-500">Edge</p>
+                  <p className="text-sm font-bold text-gray-200">{((latestDecision.edge ?? 0) * 100).toFixed(2)}%</p>
+                </div>
+              )}
+              {latestDecision.judgeProbability !== null && (
+                <div>
+                  <p className="text-[10px] text-gray-500">Judge Prob</p>
+                  <p className="text-sm font-bold text-cyan-400">{((latestDecision.judgeProbability ?? 0) * 100).toFixed(1)}%</p>
+                </div>
+              )}
+              {latestDecision.confidence !== null && (
+                <div>
+                  <p className="text-[10px] text-gray-500">Confidence</p>
+                  <p className="text-sm font-bold text-gray-200">{((latestDecision.confidence ?? 0) * 100).toFixed(0)}%</p>
+                </div>
+              )}
+            </div>
+            {latestDecision.reason && (
+              <p className="mt-2 text-xs text-gray-500">{latestDecision.reasonCode ? `[${latestDecision.reasonCode}] ` : ''}{latestDecision.reason}</p>
+            )}
+          </div>
+        )}
+
+        {/* Stage Transparency Section */}
+        {!loading && sortedStages.length > 0 && (
+          <div>
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Stage Transparency</h4>
+            <div className="space-y-2">
+              {sortedStages.map((stage, stageIndex) => {
+                const isExpanded = expandedStage === `${stage.stage}-${stage.serviceName}-${stageIndex}`;
+                const statusColor = STAGE_STATUS_COLORS[stage.status] ?? STAGE_STATUS_COLORS.completed;
+                const StatusIcon = STAGE_STATUS_ICONS[stage.status] ?? CheckCircle2;
+                const isDebateStage = ['BULL', 'BEAR', 'CONTRADICTION', 'JUDGE'].includes(stage.stage);
+
+                return (
+                  <div key={`${stage.stage}-${stage.serviceName}-${stageIndex}`} className={cn(
+                    "rounded-lg border bg-gray-800/20",
+                    isDebateStage ? "border-amber-500/30" : "border-gray-800"
+                  )}>
+                    <button
+                      className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-gray-800/50"
+                      onClick={() => setExpandedStage(isExpanded ? null : `${stage.stage}-${stage.serviceName}-${stageIndex}`)}
+                    >
+                      <div className="flex items-center gap-2">
+                        <StatusIcon className={cn("h-3.5 w-3.5", stage.status === 'running' && "animate-spin")} />
+                        <Badge className={cn('text-[10px]', statusColor)}>{stage.status}</Badge>
+                        <span className={cn("text-sm font-medium", isDebateStage && "text-amber-400")}>
+                          {stage.stage}
+                        </span>
+                        {isDebateStage && <AlertTriangle className="h-3 w-3 text-amber-400" />}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {stage.durationMs !== null && (
+                          <span className="text-[10px] text-gray-600">{formatDuration(stage.durationMs)}</span>
+                        )}
+                        {isExpanded ? <ChevronDown className="h-3.5 w-3.5 text-gray-500" /> : <ChevronRight className="h-3.5 w-3.5 text-gray-600" />}
+                      </div>
+                    </button>
+                    {isExpanded && (
+                      <div className="border-t border-gray-800 px-3 py-2 space-y-2">
+                        <div className="grid grid-cols-2 gap-2 text-[10px]">
+                          <div>
+                            <span className="text-gray-500">Service:</span>{' '}
+                            <span className="text-gray-300">{stage.serviceName}</span>
+                          </div>
+                          {stage.provider && (
+                            <div>
+                              <span className="text-gray-500">Provider:</span>{' '}
+                              <span className="text-gray-300">{stage.provider}</span>
+                            </div>
+                          )}
+                          {stage.model && (
+                            <div>
+                              <span className="text-gray-500">Model:</span>{' '}
+                              <span className="text-gray-300">{stage.model}</span>
+                            </div>
+                          )}
+                          {stage.startedAt && (
+                            <div>
+                              <span className="text-gray-500">Started:</span>{' '}
+                              <span className="text-gray-300">{new Date(stage.startedAt).toLocaleTimeString()}</span>
+                            </div>
+                          )}
+                        </div>
+                        {stage.failureReason && (
+                          <div className="rounded bg-red-500/10 border border-red-500/20 p-2">
+                            <p className="text-[10px] text-red-400 font-medium">Failure Reason</p>
+                            <p className="text-xs text-red-300">{stage.failureReason}</p>
+                          </div>
+                        )}
+                        {stage.summary && (
+                          <div>
+                            <p className="text-[10px] text-gray-500 mb-1">Summary</p>
+                            <p className="text-xs text-gray-300">{stage.summary}</p>
+                          </div>
+                        )}
+                        {stage.rawOutput && (
+                          <div>
+                            <p className="text-[10px] text-gray-500 mb-1">Raw Output</p>
+                            <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap text-[10px] text-gray-400 bg-gray-900/50 p-2 rounded">{stage.rawOutput}</pre>
+                          </div>
+                        )}
+                        {/* Sources (with full provenance) */}
+                        {stage.sources?.length > 0 && (
+                          <div>
+                            <p className="text-[10px] text-gray-500 mb-1">Sources ({stage.sources.length})</p>
+                            <div className="space-y-1 max-h-32 overflow-y-auto">
+                              {stage.sources.slice(0, 5).map((src, idx) => (
+                                <div key={idx} className="flex items-start gap-2 text-[10px]">
+                                  <ExternalLink className="mt-0.5 h-3 w-3 shrink-0 text-gray-600" />
+                                  <div className="min-w-0">
+                                    <a
+                                      href={src.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-cyan-400 hover:underline truncate block"
+                                    >
+                                      {src.title || src.url}
+                                    </a>
+                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                      {src.domain && <span className="text-gray-600">{src.domain}</span>}
+                                      {src.provider && (
+                                        <Badge variant="outline" className="text-[9px] border-gray-700 bg-gray-800 text-gray-400">
+                                          {src.provider}
+                                        </Badge>
+                                      )}
+                                    </div>
+                                    {src.snippet && <p className="text-gray-500 line-clamp-2">{src.snippet}</p>}
+                                    {src.reasonIncluded && (
+                                      <p className="text-gray-500 italic">{src.reasonIncluded}</p>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                              {stage.sources.length > 5 && (
+                                <p className="text-[10px] text-gray-600 text-center">+ {stage.sources.length - 5} more</p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        {/* References (legacy format) */}
+                        {stage.references?.length > 0 && (
+                          <div>
+                            <p className="text-[10px] text-gray-500 mb-1">References ({stage.references.length})</p>
+                            <div className="space-y-1 max-h-32 overflow-y-auto">
+                              {stage.references.slice(0, 5).map((ref, idx) => (
+                                <div key={idx} className="flex items-start gap-2 text-[10px]">
+                                  <ExternalLink className="mt-0.5 h-3 w-3 shrink-0 text-gray-600" />
+                                  <div className="min-w-0">
+                                    <a
+                                      href={ref.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-cyan-400 hover:underline truncate block"
+                                    >
+                                      {ref.title || ref.url}
+                                    </a>
+                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                      {ref.domain && <span className="text-gray-600">{ref.domain}</span>}
+                                      {ref.provider && (
+                                        <Badge variant="outline" className="text-[9px] border-gray-700 bg-gray-800 text-gray-400">
+                                          {ref.provider}
+                                        </Badge>
+                                      )}
+                                    </div>
+                                    {ref.snippet && <p className="text-gray-500 line-clamp-2">{ref.snippet}</p>}
+                                    {ref.reasonIncluded && (
+                                      <p className="text-gray-500 italic">{ref.reasonIncluded}</p>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                              {stage.references.length > 5 && (
+                                <p className="text-[10px] text-gray-600 text-center">+ {stage.references.length - 5} more</p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Debate and Judge Section - Emphasized */}
+        {!loading && hasDebate && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-amber-400 flex items-center gap-2">
+              <Scale className="h-4 w-4" />
+              Debate and Judge Analysis
+            </h4>
+            <div className="space-y-2">
+              {debateAgents.map((agent) => {
+                const parsed = parseAgentOutput(agent.output);
+                const isExpanded = expandedAgent === agent.id;
+                const roleColor = ROLE_COLORS[agent.role] ?? 'text-gray-400 border-gray-500/30 bg-gray-500/10';
+                const RoleIcon = ROLE_ICONS[agent.role] ?? ArrowRight;
+                const isJudge = agent.role === 'JUDGE';
+                const isContradiction = agent.role === 'CONTRADICTION';
+
+                return (
+                  <div key={agent.id} className={cn(
+                    "rounded-lg border bg-gray-800/40",
+                    (isJudge || isContradiction) ? "border-cyan-500/40 shadow-sm shadow-cyan-500/5" : "border-gray-800"
+                  )}>
+                    <button
+                      className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-gray-800/60"
+                      onClick={() => setExpandedAgent(isExpanded ? null : agent.id)}
+                    >
+                      <div className="flex items-center gap-2">
+                        <RoleIcon className={cn("h-3.5 w-3.5", (isJudge || isContradiction) && "text-amber-400")} />
+                        <Badge className={cn('text-[10px]', roleColor)}>{agent.role}</Badge>
+                        {isJudge && <span className="text-[10px] text-cyan-400 font-medium">Final Verdict</span>}
+                        {isContradiction && <span className="text-[10px] text-amber-400 font-medium">Debate</span>}
+                        {agent.modelUsed && <span className="text-[10px] text-gray-600">{agent.modelUsed}</span>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {agent.latencyMs != null && <span className="text-[10px] text-gray-600">{agent.latencyMs}ms</span>}
+                        {isExpanded ? <ChevronDown className="h-3.5 w-3.5 text-gray-500" /> : <ChevronRight className="h-3.5 w-3.5 text-gray-600" />}
+                      </div>
+                    </button>
+                    {isExpanded && (
+                      <div className="border-t border-gray-800 px-3 py-2 space-y-2">
+                        {parsed ? (
+                          <div>
+                            <p className="text-[10px] text-gray-500 mb-1">Structured Output</p>
+                            <pre className="max-h-60 overflow-y-auto whitespace-pre-wrap text-xs text-gray-300 bg-gray-900/50 p-2 rounded">{JSON.stringify(parsed, null, 2)}</pre>
+                          </div>
+                        ) : (
+                          <div>
+                            <p className="text-[10px] text-gray-500 mb-1">Raw Output</p>
+                            <p className="text-xs text-gray-400 whitespace-pre-wrap">{agent.output}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Agent Pipeline Section - Other Agents */}
+        {!loading && sortedAgents.filter(a => !['BULL', 'BEAR', 'CONTRADICTION', 'JUDGE'].includes(a.role)).length > 0 && (
+          <div>
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Agent Pipeline</h4>
+            <div className="space-y-2">
+              {sortedAgents.filter(a => !['BULL', 'BEAR', 'CONTRADICTION', 'JUDGE'].includes(a.role)).map((agent) => {
+                const parsed = parseAgentOutput(agent.output);
+                const isExpanded = expandedAgent === agent.id;
+                const roleColor = ROLE_COLORS[agent.role] ?? 'text-gray-400 border-gray-500/30 bg-gray-500/10';
+                const RoleIcon = ROLE_ICONS[agent.role] ?? ArrowRight;
+                return (
+                  <div key={agent.id} className="rounded-lg border border-gray-800 bg-gray-800/20">
+                    <button
+                      className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-gray-800/50"
+                      onClick={() => setExpandedAgent(isExpanded ? null : agent.id)}
+                    >
+                      <div className="flex items-center gap-2">
+                        <RoleIcon className="h-3.5 w-3.5" />
+                        <Badge className={cn('text-[10px]', roleColor)}>{agent.role}</Badge>
+                        {agent.modelUsed && <span className="text-[10px] text-gray-600">{agent.modelUsed}</span>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {agent.latencyMs != null && <span className="text-[10px] text-gray-600">{agent.latencyMs}ms</span>}
+                        {isExpanded ? <ChevronDown className="h-3.5 w-3.5 text-gray-500" /> : <ChevronRight className="h-3.5 w-3.5 text-gray-600" />}
+                      </div>
+                    </button>
+                    {isExpanded && parsed && (
+                      <div className="border-t border-gray-800 px-3 py-2">
+                        <pre className="max-h-60 overflow-y-auto whitespace-pre-wrap text-xs text-gray-300">{JSON.stringify(parsed, null, 2)}</pre>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Research Sources with Provenance */}
+        {!loading && (provenance.length > 0 || sources.length > 0) && (
+          <div>
+            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+              Research Sources ({provenance.length || sources.length})
+            </h4>
+            <div className="space-y-2 max-h-96 overflow-y-auto">
+              {(provenance.length > 0 ? provenance : sources.map(s => ({
+                url: s.url,
+                title: s.title,
+                domain: null,
+                sourceType: s.sourceType,
+                qualityScore: s.qualityScore,
+                recencyScore: s.recencyScore,
+                extractedAt: s.extractedAt,
+                provider: s.provider ?? null,
+                reasonIncluded: s.reasonIncluded ?? null,
+                snippet: s.snippet ?? null,
+              }))).map((src, idx) => {
+                const sourceId = `src-${idx}`;
+                const isExpanded = expandedSource === sourceId;
+                const domain = src.domain || extractDomain(src.url);
+
+                return (
+                  <div key={sourceId} className="rounded-lg border border-gray-800 bg-gray-800/30 p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <a
+                          href={src.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-sm text-cyan-400 underline-offset-2 hover:underline truncate block"
+                        >
+                          {src.title || src.url}
+                        </a>
+                        <div className="flex items-center gap-2 mt-1">
+                          {domain && (
+                            <Badge variant="outline" className="text-[10px] border-gray-700 bg-gray-800 text-gray-400 flex items-center gap-1">
+                              <Globe className="h-3 w-3" />
+                              {domain}
+                            </Badge>
+                          )}
+                          <Badge variant="outline" className="text-[10px] border-gray-700 bg-gray-800 text-gray-400">
+                            {src.sourceType}
+                          </Badge>
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-[10px] text-gray-500"
+                        onClick={() => setExpandedSource(isExpanded ? null : sourceId)}
+                      >
+                        {isExpanded ? 'Less' : 'More'}
+                      </Button>
+                    </div>
+                    {'content' in src && (src as { content?: string }).content && (
+                      <p className="mt-2 text-xs text-gray-500 line-clamp-2">{(src as { content?: string }).content}</p>
+                    )}
+                    {'snippet' in src && (src as { snippet?: string }).snippet && (
+                      <p className="mt-2 text-xs text-gray-500 line-clamp-2">{(src as { snippet?: string }).snippet}</p>
+                    )}
+                    {isExpanded && (
+                      <div className="mt-2 pt-2 border-t border-gray-800 space-y-1 text-[10px] text-gray-500">
+                        <div className="flex items-center gap-2">
+                          <ExternalLink className="h-3 w-3" />
+                          <a href={src.url} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline truncate">
+                            {src.url}
+                          </a>
+                        </div>
+                        {src.qualityScore !== null && (
+                          <p>Quality Score: {(src.qualityScore * 100).toFixed(0)}%</p>
+                        )}
+                        {src.recencyScore !== null && (
+                          <p>Recency Score: {(src.recencyScore * 100).toFixed(0)}%</p>
+                        )}
+                        {'provider' in src && (src as { provider?: string }).provider && (
+                          <p>Provider: <span className="text-gray-400">{(src as { provider?: string }).provider}</span></p>
+                        )}
+                        {'reasonIncluded' in src && (src as { reasonIncluded?: string }).reasonIncluded && (
+                          <p>Reason: <span className="text-gray-400 italic">{(src as { reasonIncluded?: string }).reasonIncluded}</span></p>
+                        )}
+                        <p>Extracted: {new Date(src.extractedAt).toLocaleString()}</p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {!loading && !latestResearch && !latestDecision && (
+          <div className="rounded-lg border border-gray-800 bg-gray-800/20 p-4 text-center">
+            <p className="text-sm text-gray-500">No pipeline results yet</p>
+            <p className="mt-1 text-xs text-gray-600">This market has not been processed through the research pipeline</p>
+          </div>
+        )}
+    </div>
+  );
+}
 
 function formatCurrency(n: number): string {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
@@ -386,69 +1076,78 @@ export function MarketTriage() {
                       </TableRow>
                     ) : (
                       filtered.map((m) => (
-                        <TableRow
-                          key={m.id}
-                          className="cursor-pointer border-gray-800 transition-colors hover:bg-gray-800/50"
-                          onClick={() =>
-                            setExpandedId(expandedId === m.id ? null : m.id)
-                          }
-                        >
-                          <TableCell className="w-8 px-3">
-                            {expandedId === m.id ? (
-                              <ChevronDown className="h-4 w-4 text-gray-500" />
-                            ) : (
-                              <ChevronRight className="h-4 w-4 text-gray-600" />
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <div className="max-w-xs">
-                              <p className="truncate text-sm font-medium text-gray-200">
-                                {m.title}
-                              </p>
-                              <div className="flex items-center gap-2">
-                                {m.researchQueued && (
-                                  <span className="text-[10px] text-amber-400">
-                                    ⏳ Research
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <span
-                              className="text-xs font-medium"
-                              style={{ color: venueColor(m.venue) }}
-                            >
-                              {venueLabel(m.venue)}
-                            </span>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <span className="text-sm tabular-nums text-gray-300">
-                              {formatCurrency(m.liquidity)}
-                            </span>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <span
-                              className={cn(
-                                'text-sm tabular-nums',
-                                m.spread > 0.04
-                                  ? 'text-red-400'
-                                  : m.spread > 0.02
-                                    ? 'text-amber-400'
-                                    : 'text-emerald-400'
+                        <Fragment key={m.id}>
+                          <TableRow
+                            key={m.id}
+                            className="cursor-pointer border-gray-800 transition-colors hover:bg-gray-800/50"
+                            onClick={() =>
+                              setExpandedId(expandedId === m.id ? null : m.id)
+                            }
+                          >
+                            <TableCell className="w-8 px-3">
+                              {expandedId === m.id ? (
+                                <ChevronDown className="h-4 w-4 text-gray-500" />
+                              ) : (
+                                <ChevronRight className="h-4 w-4 text-gray-600" />
                               )}
-                            >
-                              {(m.spread * 100).toFixed(1)}%
-                            </span>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <span className="text-sm tabular-nums text-gray-300">
-                              {(m.impliedProb * 100).toFixed(1)}%
-                            </span>
-                          </TableCell>
-                          <TableCell>{triageBadge(m.triageStatus)}</TableCell>
-                          <TableCell>{stageBadge(m.stage)}</TableCell>
-                        </TableRow>
+                            </TableCell>
+                            <TableCell>
+                              <div className="max-w-xs">
+                                <p className="truncate text-sm font-medium text-gray-200">
+                                  {m.title}
+                                </p>
+                                <div className="flex items-center gap-2">
+                                  {m.researchQueued && (
+                                    <span className="text-[10px] text-amber-400">
+                                      ⏳ Research
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <span
+                                className="text-xs font-medium"
+                                style={{ color: venueColor(m.venue) }}
+                              >
+                                {venueLabel(m.venue)}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <span className="text-sm tabular-nums text-gray-300">
+                                {formatCurrency(m.liquidity)}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <span
+                                className={cn(
+                                  'text-sm tabular-nums',
+                                  m.spread > 0.04
+                                    ? 'text-red-400'
+                                    : m.spread > 0.02
+                                      ? 'text-amber-400'
+                                      : 'text-emerald-400'
+                                )}
+                              >
+                                {(m.spread * 100).toFixed(1)}%
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <span className="text-sm tabular-nums text-gray-300">
+                                {(m.impliedProb * 100).toFixed(1)}%
+                              </span>
+                            </TableCell>
+                            <TableCell>{triageBadge(m.triageStatus)}</TableCell>
+                            <TableCell>{stageBadge(m.stage)}</TableCell>
+                          </TableRow>
+                          {expandedId === m.id && (
+                            <TableRow key={`${m.id}-detail`} className="border-gray-800 bg-gray-900/80">
+                              <TableCell colSpan={8} className="p-0">
+                                <InlineMarketDetail market={m} onClose={() => setExpandedId(null)} />
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </Fragment>
                       ))
                     )}
                   </TableBody>
@@ -457,92 +1156,6 @@ export function MarketTriage() {
             </CardContent>
           </Card>
 
-          {/* Expanded detail */}
-          {expandedId && (() => {
-            const m = markets.find((x) => x.id === expandedId);
-            if (!m) return null;
-            return (
-              <Card className="border-gray-800 bg-gray-900">
-                <CardHeader className="pb-2">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <CardTitle className="text-sm text-white">
-                        {m.title}
-                      </CardTitle>
-                      <div className="mt-1 flex items-center gap-2">
-                        {triageBadge(m.triageStatus)}
-                        {stageBadge(m.stage)}
-                        <span className="text-xs text-gray-600">
-                          {m.category}
-                        </span>
-                      </div>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setExpandedId(null)}
-                      className="text-gray-500"
-                    >
-                      Close
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div>
-                    <p className="mb-1 text-xs font-medium text-gray-500">
-                      Description
-                    </p>
-                    <p className="text-sm leading-relaxed text-gray-300">
-                      {m.description}
-                    </p>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                    <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
-                      <p className="text-[11px] text-gray-500">
-                        <DollarSign className="mr-1 inline h-3 w-3" />
-                        Liquidity
-                      </p>
-                      <p className="mt-1 text-sm font-bold text-gray-200">
-                        {formatCurrency(m.liquidity)}
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
-                      <p className="text-[11px] text-gray-500">Spread</p>
-                      <p className="mt-1 text-sm font-bold text-gray-200">
-                        {(m.spread * 100).toFixed(2)}%
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
-                      <p className="text-[11px] text-gray-500">
-                        Implied Probability
-                      </p>
-                      <p className="mt-1 text-sm font-bold text-gray-200">
-                        {(m.impliedProb * 100).toFixed(1)}%
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
-                      <p className="text-[11px] text-gray-500">
-                        <Clock className="mr-1 inline h-3 w-3" />
-                        Last Snapshot
-                      </p>
-                      <p className="mt-1 text-sm font-bold text-gray-200">
-                        {new Date(m.snapshotAt).toLocaleTimeString('en-US', {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </p>
-                    </div>
-                  </div>
-                  <div>
-                    <p className="mb-1 text-xs font-medium text-gray-500">
-                      Triage Reason
-                    </p>
-                    <p className="text-sm text-gray-400">{m.triageReason}</p>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })()}
         </>
       )}
     </div>

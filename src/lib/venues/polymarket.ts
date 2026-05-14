@@ -33,7 +33,7 @@ export async function getPolymarketMarkets(limit: number = 100): Promise<Array<{
 }>> {
   try {
     const response = await fetch(`${POLYMARKET_BASE_URL}/markets?limit=${limit}&active=true`, {
-      next: { revalidate: 60 },
+      cache: 'no-store',
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(15000),
     });

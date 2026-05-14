@@ -8,7 +8,7 @@ export async function getEmbedding(text: string): Promise<EmbeddingResult | null
   const { db } = await import('@/lib/db');
   const setting = await db.settings.findUnique({ where: { key: 'strategy_settings' } });
   const strategy = setting ? JSON.parse(setting.value) : {};
-  const provider = strategy.embeddingProvider || 'openai';
+  const provider = strategy.stageRouting?.embeddingProvider || strategy.embeddingProvider || 'openai';
 
   if (provider === 'ollama') {
     return await getOllamaEmbedding(text, strategy.ollamaUrl);
@@ -17,25 +17,11 @@ export async function getEmbedding(text: string): Promise<EmbeddingResult | null
 }
 
 async function getOpenAIEmbedding(text: string): Promise<EmbeddingResult | null> {
-  const { db } = await import('@/lib/db');
-  const { isEncrypted, decrypt } = await import('@/lib/engine/crypto');
+  const { getCredentialForService } = await import('@/lib/engine/research/search');
 
-  const cred = await db.credential.findFirst({
-    where: { service: { in: ['LLM Provider', 'OpenAI'] }, isActive: true },
-    orderBy: { createdAt: 'desc' },
-  });
-
-  const baseUrl = cred?.serviceUrl?.replace(/\/$/, '') || 'https://api.openai.com/v1';
-  let apiKey = '';
-  if (cred?.encryptedData) {
-    try {
-      const rawData = isEncrypted(cred.encryptedData) ? decrypt(cred.encryptedData) : cred.encryptedData;
-      const parsed = JSON.parse(rawData);
-      apiKey = String(parsed.apiKey || '');
-    } catch {}
-  }
-
-  if (!apiKey) apiKey = process.env.OPENAI_API_KEY || '';
+  const credResult = await getCredentialForService('llm');
+  const baseUrl = credResult?.baseUrl?.replace(/\/$/, '') || 'https://api.openai.com/v1';
+  const apiKey = credResult?.apiKey || process.env.OPENAI_API_KEY || '';
 
   try {
     const response = await fetch(`${baseUrl}/embeddings`, {
@@ -58,14 +44,12 @@ async function getOpenAIEmbedding(text: string): Promise<EmbeddingResult | null>
 }
 
 async function getOllamaEmbedding(text: string, ollamaUrl?: string): Promise<EmbeddingResult | null> {
-  const { db } = await import('@/lib/db');
+  const { getCredentialForService } = await import('@/lib/engine/research/search');
+
   let baseUrl = ollamaUrl;
   if (!baseUrl) {
-    const cred = await db.credential.findFirst({
-      where: { service: 'Ollama', isActive: true },
-      orderBy: { createdAt: 'desc' },
-    });
-    baseUrl = cred?.serviceUrl || 'http://localhost:11434';
+    const credResult = await getCredentialForService('ollama');
+    baseUrl = credResult?.baseUrl || 'http://localhost:11434';
   }
 
   try {

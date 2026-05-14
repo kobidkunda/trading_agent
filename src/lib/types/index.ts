@@ -5,25 +5,26 @@ export type Venue = 'POLYMARKET' | 'KALSHI' | 'SX_BET' | 'MANIFOLD';
 export type MarketStatus = 'ACTIVE' | 'CLOSED' | 'RESOLVED';
 
 // Candidate pipeline stages
-export type CandidateStage = 'SCANNED' | 'TRIAGED' | 'RESEARCHING' | 'JUDGED' | 'DECIDED' | 'EXECUTED' | 'SETTLED';
+export type CandidateStage = 'SCANNED' | 'TRIAGED' | 'RESEARCHING' | 'JUDGED' | 'DECIDED' | 'EXECUTED' | 'WATCHING' | 'SETTLED';
 
 // Triage status
 export type TriageStatus = 'RELEVANT' | 'IRRELEVANT' | 'AMBIGUOUS';
 
 // Decision action
-export type DecisionAction = 'BUY' | 'SKIP';
+export type DecisionAction = 'BID' | 'SKIP' | 'WATCH';
 
 // Order side
 export type OrderSide = 'YES' | 'NO';
 
 // Research depth
-export type ResearchDepth = 'QUICK' | 'DEEP' | 'DEERFLOW';
 
 // Risk reason codes enum
 export type RiskReasonCode =
   | 'LOW_LIQUIDITY'
   | 'WIDE_SPREAD'
   | 'LOW_EDGE'
+  | 'MODERATE_EDGE'
+  | 'INSUFFICIENT_EDGE'
   | 'LOW_CONFIDENCE'
   | 'HIGH_UNCERTAINTY'
   | 'CATALYST_TOO_CLOSE'
@@ -33,7 +34,7 @@ export type RiskReasonCode =
   | 'MANUAL_REVIEW_REQUIRED';
 
 // Agent roles
-export type AgentRole = 'TRIAGE' | 'BULL' | 'BEAR' | 'CONTRADICTION' | 'JUDGE';
+export type AgentRole = 'TRIAGE' | 'BULL' | 'BEAR' | 'CONTRADICTION' | 'JUDGE' | 'DEERFLOW' | 'NEWS_ANALYST' | 'SENTIMENT_ANALYST' | 'TECHNICAL_ANALYST' | 'REDDIT_ANALYST' | 'X_ANALYST';
 
 // Research status
 export type ResearchStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
@@ -47,7 +48,134 @@ export type JobStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'RETRYI
 // Prompt template state
 export type PromptState = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
 
-// Strategy settings interface
+export type PipelineStage = 'triage' | 'bull' | 'bear' | 'contradiction' | 'judge' | 'deerflow' | 'NEWS_ANALYST' | 'SENTIMENT_ANALYST' | 'TECHNICAL_ANALYST' | 'SYNTHESIS';
+
+export type LivePipelineStage =
+  | 'SCAN'
+  | 'TRIAGE'
+  | 'WEB_SEARCH'
+  | 'DEERFLOW'
+  | 'TRADINGAGENTS'
+  | 'AGENT_REACH'
+  | 'SYNTHESIS'
+  | 'JUDGE'
+  | 'RISK'
+  | 'DECISION'
+  | 'RESOLUTION_CHECK'
+  | 'FIRECRAWL'
+  | 'MIROFISH_PREDICT';
+
+export type LiveActivityType = 'started' | 'progress' | 'completed' | 'failed' | 'skipped' | 'timeout';
+
+export interface LiveActivityEvent {
+  timestamp: string;
+  marketId: string;
+  marketTitle: string;
+  stage: LivePipelineStage;
+  provider?: 'deerflow' | 'tradingagents' | 'agent_reach' | 'system';
+  type: LiveActivityType;
+  terminal?: 'completed' | 'failed' | 'skipped';
+  message: string;
+  serviceName?: string;
+  model?: string | null;
+  failureReason?: string | null;
+  summary?: string | null;
+  references?: TransparencySourceRef[];
+}
+
+export interface LiveMarketProgress {
+  marketId: string;
+  marketTitle: string;
+  currentStage: LivePipelineStage | null;
+  currentStageStartedAt: string | null;
+  status: 'running' | 'completed' | 'failed' | 'skipped';
+  history: LiveActivityEvent[];
+  lastUpdatedAt: string;
+}
+
+export interface MetadataOption {
+  id: string;
+  label: string;
+  stale?: boolean;
+}
+
+export interface TradingAgentsMetadataResponse {
+  providers: MetadataOption[];
+  models: MetadataOption[];
+  source: 'tradingagents' | 'llm-fallback';
+  error?: string;
+}
+
+export type TransparencyStageStatus = 'running' | 'completed' | 'failed' | 'skipped' | 'timeout';
+
+export interface TransparencySourceRef {
+  title: string;
+  url: string;
+  domain: string | null;
+  snippet: string | null;
+  provider: string | null;
+  reasonIncluded?: string | null;
+}
+
+export interface TransparencyStageRecord {
+  stage: string;
+  serviceName: string;
+  provider: string | null;
+  model: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number | null;
+  status: TransparencyStageStatus;
+  failureReason: string | null;
+  summary: string | null;
+  rawOutput: string | null;
+  sources: TransparencySourceRef[];
+  references: TransparencySourceRef[];
+}
+
+export type ResearchDepth = 'QUICK' | 'DEEP' | 'DEERFLOW' | 'FULL';
+
+export interface StageServiceMapping {
+  triageModel?: string;
+  triageFallbackModels?: string[];
+  bullModel?: string;
+  bullFallbackModels?: string[];
+  bearModel?: string;
+  bearFallbackModels?: string[];
+  contradictionModel?: string;
+  contradictionFallbackModels?: string[];
+  judgeModel?: string;
+  judgeFallbackModels?: string[];
+  deerflowModel?: string;
+  deerflowFallbackModels?: string[];
+  deerflowApiModel?: string;
+  newsAnalystModel?: string;
+  newsAnalystFallbackModels?: string[];
+  sentimentAnalystModel?: string;
+  sentimentAnalystFallbackModels?: string[];
+  technicalAnalystModel?: string;
+  technicalAnalystFallbackModels?: string[];
+  analystDeepThinkLlm?: string;
+  analystDeepThinkFallbackModels?: string[];
+  analystQuickThinkLlm?: string;
+  analystQuickThinkFallbackModels?: string[];
+  analystLlmProvider?: string;
+  analystMaxDebateRounds?: number;
+  searchService?: string;
+  searchMaxResults?: number;
+  agentReachEnabled?: boolean;
+  agentReachServiceUrl?: string;
+  agentReachToolName?: string;
+  vectorDbCollection?: string;
+  embeddingProvider?: string;
+  deerflowSearchIterations?: number;
+  deerflowQuestionsPerIteration?: number;
+  deerflowMaxDepth?: number;
+  researchDepth?: ResearchDepth;
+  mirofishPredictionModel?: string;
+  researchFallbackProvider?: string;
+}
+
 export interface StrategySettings {
   enabledVenues: Venue[];
   enabledCategories: string[];
@@ -59,8 +187,12 @@ export interface StrategySettings {
   maxCategoryExposure: number;
   researchEscalationThreshold: number;
   dryRun: boolean;
-  promptVersion: Record<string, number>; // prompt name -> version number
-
+  promptVersion: Record<string, number>;
+  defaultModel?: string;
+  triageModel?: string;
+  researchModel?: string;
+  judgeModel?: string;
+  stageRouting?: StageServiceMapping;
 }
 
 // Risk engine input
@@ -120,6 +252,8 @@ export interface SystemHealth {
   vectorStatus: 'UP' | 'DOWN' | 'DEGRADED';
   lastScanAt: string | null;
   uptimeSeconds: number;
+  researchProvider?: string | null;
+  checkedAt?: string;
 }
 
 export type EmbeddingProvider = 'openai' | 'ollama' | 'custom';

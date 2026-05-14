@@ -7,6 +7,14 @@ export const VENUE_OPTIONS = [
   { value: 'MANIFOLD', label: 'Manifold', color: '#e17055' },
 ] as const;
 
+export const RESEARCH_PROVIDER_OPTIONS = [
+  { value: 'researchProvider', label: 'Research Provider', color: '#8b5cf6' },
+] as const;
+
+export const MIROFISH_BASE_URL = 'http://192.168.88.96:5401';
+export const MIROFISH_DEFAULT_MODEL = 'free_ling';
+export const FIRECRAWL_SERVICE = 'Firecrawl';
+
 export const CATEGORY_OPTIONS = [
   'politics',
   'sports',
@@ -24,6 +32,9 @@ export const STAGE_COLORS: Record<string, string> = {
   SCANNED: 'bg-gray-500',
   TRIAGED: 'bg-blue-500',
   RESEARCHING: 'bg-yellow-500',
+  DEERFLOW: 'bg-indigo-500',
+  ANALYSTS: 'bg-rose-500',
+  SYNTHESIS: 'bg-teal-500',
   JUDGED: 'bg-purple-500',
   DECIDED: 'bg-orange-500',
   EXECUTED: 'bg-green-500',
@@ -31,7 +42,8 @@ export const STAGE_COLORS: Record<string, string> = {
 };
 
 export const DECISION_COLORS: Record<string, string> = {
-  BUY: 'text-green-400',
+  BID: 'text-emerald-400',
+  WATCH: 'text-amber-400',
   SKIP: 'text-red-400',
 };
 
@@ -39,7 +51,9 @@ export const REASON_CODE_DESCRIPTIONS: Record<string, string> = {
   LOW_LIQUIDITY: 'Market does not have sufficient liquidity to execute safely',
   WIDE_SPREAD: 'Bid-ask spread exceeds maximum allowed threshold',
   LOW_EDGE: 'Expected edge is insufficient after accounting for costs',
-  LOW_CONFIDENCE: 'Judge model confidence is below minimum threshold',
+  MODERATE_EDGE: 'Edge exists but is moderate — worth monitoring for improvement',
+  INSUFFICIENT_EDGE: 'Edge too thin with current confidence level',
+  LOW_CONFIDENCE: 'Debate arena confidence is below minimum threshold',
   HIGH_UNCERTAINTY: 'Uncertainty in probability estimate is too high',
   CATALYST_TOO_CLOSE: 'Major catalyst event is imminent, avoiding new positions',
   CATEGORY_DISABLED: 'This market category is disabled in strategy settings',

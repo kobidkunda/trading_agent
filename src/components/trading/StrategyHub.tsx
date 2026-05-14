@@ -8,6 +8,18 @@ import {
   Save,
   Loader2,
   RotateCcw,
+  Cpu,
+  RefreshCw,
+  Route,
+  Brain,
+  Search,
+  Database,
+  Layers,
+  Newspaper,
+  MessageSquare,
+  TrendingUp,
+  FileText,
+  Activity,
 } from 'lucide-react';
 import {
   Card,
@@ -35,8 +47,9 @@ import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { useTradingStore } from '@/store/trading-store';
 import { VENUE_OPTIONS, CATEGORY_OPTIONS } from '@/lib/constants';
-import { DEFAULT_STRATEGY } from '@/lib/engine/risk';
-import type { StrategySettings, Venue } from '@/lib/types';
+import { DEFAULT_STRATEGY, DEFAULT_STAGE_ROUTING } from '@/lib/engine/risk';
+import type { StrategySettings, Venue, StageServiceMapping, ResearchDepth, MetadataOption, TradingAgentsMetadataResponse } from '@/lib/types';
+import { withStaleOption } from '@/lib/engine/research/transparency';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -56,6 +69,37 @@ const PROMPT_ROLES = [
   'postmortem',
 ] as const;
 
+const STAGE_MODEL_ROLES = [
+  { key: 'triageModel' as const, label: 'Triage', desc: 'Market scanning & classification', icon: Cpu },
+  { key: 'bullModel' as const, label: 'Bull Advocate', desc: 'Bullish case for trades', icon: Cpu },
+  { key: 'bearModel' as const, label: 'Bear Advocate', desc: 'Bearish case for trades', icon: Cpu },
+  { key: 'contradictionModel' as const, label: 'Contradiction', desc: 'Find counter-evidence', icon: Cpu },
+  { key: 'judgeModel' as const, label: 'Judge', desc: 'Final probability estimate', icon: Cpu },
+  { key: 'deerflowModel' as const, label: 'DeerFlow Research', desc: 'Deep multi-hop research agent', icon: Brain },
+  { key: 'newsAnalystModel' as const, label: 'News Analyst', desc: 'News analysis via TradingAgents', icon: Newspaper },
+  { key: 'sentimentAnalystModel' as const, label: 'Sentiment Analyst', desc: 'Social sentiment via TradingAgents', icon: MessageSquare },
+  { key: 'technicalAnalystModel' as const, label: 'Technical Analyst', desc: 'Technical indicators via TradingAgents', icon: TrendingUp },
+  { key: 'mirofishPredictionModel' as const, label: 'MiroFish Predict', desc: 'Post-debate synthesis', icon: Brain },
+] as const;
+
+const RESEARCH_DEPTH_OPTIONS: { value: ResearchDepth; label: string; desc: string }[] = [
+  { value: 'QUICK', label: 'Quick', desc: 'Single search, minimal extraction' },
+  { value: 'DEEP', label: 'Deep', desc: 'Multi-source search + extraction' },
+  { value: 'DEERFLOW', label: 'DeerFlow', desc: 'Iterative multi-hop deep research' },
+  { value: 'FULL', label: 'Full', desc: 'All sources parallel + merge & compare synthesis' },
+];
+
+function getTradingAgentsSourceLabel(source: TradingAgentsMetadataResponse['source'] | null): string {
+  switch (source) {
+    case 'tradingagents':
+      return 'Options loaded from TradingAgents';
+    case 'llm-fallback':
+      return 'Options loaded from LLM Provider fallback';
+    default:
+      return 'Metadata unavailable';
+  }
+}
+
 // ── component ────────────────────────────────────────────────────────────────
 
 export function StrategyHub() {
@@ -72,7 +116,19 @@ export function StrategyHub() {
         const res = await fetch('/api/strategy');
         if (res.ok && !cancelled) {
           const data = await res.json();
-          setSettings(data);
+          // Merge with defaults to ensure all fields exist
+          setSettings({
+            ...DEFAULT_STRATEGY,
+            ...data,
+            stageRouting: {
+              ...DEFAULT_STAGE_ROUTING,
+              ...(data.stageRouting || {}),
+            },
+            promptVersion: {
+              ...DEFAULT_STRATEGY.promptVersion,
+              ...(data.promptVersion || {}),
+            },
+          });
         }
       } catch {
         toast.error('Failed to load strategy settings');
@@ -112,6 +168,189 @@ export function StrategyHub() {
     toast.info('Settings reset to defaults');
   }, [setDryRunMode]);
 
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [deerflowApiModels, setDeerflowApiModels] = useState<string[]>([]);
+  const [deerflowError, setDeerflowError] = useState<string | null>(null);
+  const [deerflowLoading, setDeerflowLoading] = useState(false);
+
+  // TradingAgents metadata state
+  const [tradingAgentsProviders, setTradingAgentsProviders] = useState<MetadataOption[]>([]);
+  const [tradingAgentsModels, setTradingAgentsModels] = useState<MetadataOption[]>([]);
+  const [tradingAgentsSource, setTradingAgentsSource] = useState<TradingAgentsMetadataResponse['source'] | null>(null);
+  const [tradingAgentsError, setTradingAgentsError] = useState<string | null>(null);
+  const [tradingAgentsLoading, setTradingAgentsLoading] = useState(false);
+
+  // MiroFish state
+  const [mirofishModels, setMirofishModels] = useState<Array<{id: string; tier: string; provider: string; isFree: boolean}>>([]);
+  const [mirofishLoading, setMirofishLoading] = useState(false);
+  const [mirofishError, setMirofishError] = useState<string | null>(null);
+
+  // Service health state
+  const [serviceHealth, setServiceHealth] = useState<Record<string, string>>({});
+
+  const fetchModels = useCallback(async () => {
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const res = await fetch('/api/llm/models');
+      if (res.ok) {
+        const data = await res.json();
+        setAvailableModels(data.models.map((m: { id: string }) => m.id));
+        if (data.error) setModelsError(data.error);
+      } else {
+        setModelsError('Failed to fetch models');
+      }
+    } catch {
+      setModelsError('Network error');
+    } finally {
+      setModelsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchModels();
+  }, [fetchModels]);
+
+  // Fetch MiroFish models
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchMirofish() {
+      setMirofishLoading(true);
+      setMirofishError(null);
+      try {
+        const res = await fetch('/api/mirofish/models');
+        if (!cancelled && res.ok) {
+          const data = await res.json();
+          setMirofishModels(data.models || []);
+          if (data.error) setMirofishError(data.error);
+        } else if (!cancelled) {
+          setMirofishError(`Failed: HTTP ${res.status}`);
+        }
+      } catch (e) {
+        if (!cancelled) setMirofishError(String(e));
+      } finally {
+        if (!cancelled) setMirofishLoading(false);
+      }
+    }
+    fetchMirofish();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Fetch service health
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchHealth() {
+      try {
+        const res = await fetch('/api/health');
+        if (!cancelled && res.ok) {
+          const data = await res.json();
+          setServiceHealth(data.apiHealth || {});
+        }
+      } catch {}
+    }
+    fetchHealth();
+    const interval = setInterval(fetchHealth, 15000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchDeerFlowApiModels() {
+      setDeerflowLoading(true);
+      setDeerflowError(null);
+      try {
+        const res = await fetch('/api/deerflow/models');
+        if (!res.ok) {
+          if (!cancelled) {
+            setDeerflowError(`Failed to fetch DeerFlow models: HTTP ${res.status}`);
+          }
+          return;
+        }
+
+        const data = await res.json();
+        if (!cancelled) {
+          setDeerflowApiModels(Array.isArray(data.models) ? data.models.filter((model: unknown): model is string => typeof model === 'string' && model.length > 0) : []);
+          if (data.error) {
+            setDeerflowError(data.error);
+          }
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setDeerflowApiModels([]);
+          setDeerflowError(error instanceof Error ? error.message : 'Failed to connect to DeerFlow service');
+        }
+      } finally {
+        if (!cancelled) {
+          setDeerflowLoading(false);
+        }
+      }
+    }
+
+    fetchDeerFlowApiModels();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Fetch TradingAgents metadata
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchTradingAgentsModels() {
+      setTradingAgentsLoading(true);
+      setTradingAgentsError(null);
+      try {
+        const res = await fetch('/api/tradingagents/models');
+        if (!res.ok) {
+          if (!cancelled) {
+            setTradingAgentsProviders([]);
+            setTradingAgentsModels([]);
+            setTradingAgentsSource('llm-fallback');
+            setTradingAgentsError(`Failed to fetch: HTTP ${res.status}`);
+          }
+          return;
+        }
+
+        const data: TradingAgentsMetadataResponse = await res.json();
+        if (!cancelled) {
+          // Use withStaleOption to preserve saved values if not in current list
+          const savedProvider = settings.stageRouting?.analystLlmProvider;
+          const savedDeepModel = settings.stageRouting?.analystDeepThinkLlm;
+          const savedQuickModel = settings.stageRouting?.analystQuickThinkLlm;
+
+          const providersWithStale = withStaleOption(data.providers, savedProvider);
+          const modelsWithStale = withStaleOption(
+            data.models,
+            savedDeepModel || savedQuickModel || null
+          );
+
+          setTradingAgentsProviders(providersWithStale);
+          setTradingAgentsModels(modelsWithStale);
+          setTradingAgentsSource(data.source);
+          setTradingAgentsError(data.error || null);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setTradingAgentsProviders([]);
+          setTradingAgentsModels([]);
+          setTradingAgentsSource('llm-fallback');
+          setTradingAgentsError(e instanceof Error ? e.message : 'Network error');
+        }
+      } finally {
+        if (!cancelled) setTradingAgentsLoading(false);
+      }
+    }
+
+    fetchTradingAgentsModels();
+    return () => {
+      cancelled = true;
+    };
+    // Refetch when relevant settings change to update stale options
+  }, [settings.stageRouting?.analystLlmProvider, settings.stageRouting?.analystDeepThinkLlm, settings.stageRouting?.analystQuickThinkLlm]);
+
   // ── updaters ─────────────────────────────────────────────────────────────
   const toggleVenue = (venue: Venue) => {
     setSettings((s) => ({
@@ -133,6 +372,16 @@ export function StrategyHub() {
 
   const updateNumber = (key: keyof StrategySettings, val: number) => {
     setSettings((s) => ({ ...s, [key]: val }));
+  };
+
+  const updateStageRouting = (
+    key: keyof StageServiceMapping,
+    val: string | number | boolean
+  ) => {
+    setSettings((s) => ({
+      ...s,
+      stageRouting: { ...(s.stageRouting || DEFAULT_STAGE_ROUTING), [key]: val },
+    }));
   };
 
   const updatePromptVersion = (role: string, version: number) => {
@@ -386,7 +635,7 @@ export function StrategyHub() {
                     {role}
                   </span>
                   <Select
-                    value={String(settings.promptVersion[role] ?? 1)}
+                    value={String(settings.promptVersion?.[role] ?? 1)}
                     onValueChange={(v) =>
                       updatePromptVersion(role, Number(v))
                     }
@@ -408,6 +657,617 @@ export function StrategyHub() {
       </div>
 
 
+
+       {/* ─── Model Configuration ─── */}
+       <Card className="border-gray-800 bg-gray-900">
+         <CardHeader className="pb-3">
+           <div className="flex items-center justify-between">
+             <div>
+               <CardTitle className="flex items-center gap-2 text-base text-white">
+                 <Cpu className="h-4 w-4 text-cyan-400" />
+                 Default Model
+               </CardTitle>
+               <CardDescription className="text-gray-500">
+                 Fallback model for all agents when stage-specific model is not set
+               </CardDescription>
+             </div>
+             <Button
+               variant="ghost"
+               size="sm"
+               className="h-7 gap-1.5 text-[11px] text-gray-400"
+               onClick={fetchModels}
+               disabled={modelsLoading}
+             >
+               {modelsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+               Refresh
+             </Button>
+           </div>
+         </CardHeader>
+         <CardContent className="space-y-3">
+           {modelsError && (
+             <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] text-red-400">
+               <AlertTriangle className="h-3 w-3 shrink-0" />
+               {modelsError}
+             </div>
+           )}
+
+           {availableModels.length === 0 && !modelsLoading && !modelsError && (
+             <div className="flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-400">
+               <Cpu className="h-3 w-3 shrink-0" />
+               No models found — ensure your LLM Provider credential is configured and tested
+             </div>
+           )}
+
+           <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-800/40 px-4 py-2.5">
+             <div className="min-w-0">
+               <p className="text-sm text-gray-300">Default Fallback Model</p>
+               <p className="text-[10px] text-gray-600">Used when no stage-specific model is configured</p>
+             </div>
+             <div className="flex items-center gap-2 shrink-0">
+               <Select
+                 value={settings.defaultModel || ''}
+                 onValueChange={(v) => setSettings((s) => ({ ...s, defaultModel: v || undefined }))}
+               >
+                   <SelectTrigger className="w-52 border-gray-700 bg-gray-800 text-white text-xs">
+                     <SelectValue placeholder="paper_lite" />
+                   </SelectTrigger>
+                     <SelectContent className="border-gray-700 bg-gray-900 max-h-64">
+                       {availableModels.map((modelId) => (
+                             <SelectItem key={modelId} value={modelId} className="text-xs font-mono">
+                               {modelId}
+                             </SelectItem>
+                           ))
+                       }
+                     </SelectContent>
+                 </Select>
+              </div>
+            </div>
+
+            <p className="text-[10px] text-gray-600">
+              Stage-specific model assignment is configured in the Service-to-Stage Routing card above.
+           </p>
+         </CardContent>
+       </Card>
+
+       {/* ─── Stage Service Routing ─── */}
+       <Card className="border-gray-800 bg-gray-900">
+         <CardHeader className="pb-3">
+           <CardTitle className="flex items-center gap-2 text-base text-white">
+             <Route className="h-4 w-4 text-violet-400" />
+             Service-to-Stage Routing
+           </CardTitle>
+           <CardDescription className="text-gray-500">
+             Assign which LLM model and service each pipeline stage uses
+           </CardDescription>
+         </CardHeader>
+         <CardContent className="space-y-3">
+           {STAGE_MODEL_ROLES.map(({ key, label, desc, icon: Icon }) => (
+             <div
+               key={key}
+               className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-800/40 px-4 py-2.5"
+             >
+               <div className="flex items-center gap-3 min-w-0">
+                 <Icon className="h-4 w-4 shrink-0 text-gray-500" />
+                 <div className="min-w-0">
+                   <p className="text-sm text-gray-300">{label}</p>
+                   <p className="text-[10px] text-gray-600">{desc}</p>
+                 </div>
+               </div>
+               <div className="flex items-center gap-2 shrink-0">
+                 {settings.stageRouting?.[key] && (
+                   <button
+                     onClick={() => updateStageRouting(key, '')}
+                     className="text-[10px] text-gray-600 hover:text-gray-400 transition-colors"
+                   >
+                     clear
+                   </button>
+                 )}
+                 <Select
+                   value={settings.stageRouting?.[key] || ''}
+                   onValueChange={(v) => updateStageRouting(key, v)}
+                 >
+                   <SelectTrigger className="w-52 border-gray-700 bg-gray-800 text-white text-xs">
+                     <SelectValue placeholder="Use default" />
+                   </SelectTrigger>
+                    <SelectContent className="border-gray-700 bg-gray-900 max-h-64">
+                      {key === 'mirofishPredictionModel'
+                        ? mirofishModels.map((m) => (
+                            <SelectItem key={m.id} value={m.id} className="text-xs">
+                              <span className="font-mono">{m.id}</span>
+                              <Badge variant="outline" className={`ml-2 text-[9px] px-1 py-0 ${
+                                m.isFree ? 'border-emerald-700 text-emerald-400' : 'border-amber-700 text-amber-400'
+                              }`}>{m.tier}</Badge>
+                            </SelectItem>
+                          ))
+                        : availableModels.map((modelId) => (
+                            <SelectItem key={modelId} value={modelId} className="text-xs font-mono">
+                              {modelId}
+                            </SelectItem>
+                          ))
+                      }
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            ))}
+             <Separator className="bg-gray-800" />
+            {/* Service Usage Info */}
+            <div className="rounded-lg border border-gray-700 bg-gray-800/20 p-3 space-y-2">
+              <p className="text-[11px] font-medium text-gray-400">Services each stage uses:</p>
+              <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                <Cpu className="h-3 w-3" />
+                <span>LLM Provider credential for triage, bull, bear, contradiction, judge</span>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                <Search className="h-3 w-3" />
+                <span>SearXNG credential for web search (all depths)</span>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                <Brain className="h-3 w-3" />
+                <span>DeerFlow credential for deep research (or falls back to LLM Provider)</span>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                <Database className="h-3 w-3" />
+                <span>Qdrant credential for research memory</span>
+              </div>
+              <p className="text-[10px] text-gray-600">Configure credentials on the Credentials page. Add a "DeerFlow Research" credential to use a separate LLM for deep research.</p>
+            </div>
+            {/* Research Providers Health */}
+            <div className="rounded-lg border border-gray-800 bg-gray-800/40 px-4 py-3 space-y-2.5">
+              <div className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-gray-500" />
+                <span className="text-sm text-gray-300">Research Providers</span>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {[
+                  { key: 'deerflow', label: 'DeerFlow', fallback: 'Firecrawl' },
+                  { key: 'firecrawl', label: 'Firecrawl', fallback: null },
+                  { key: 'mirofis', label: 'MiroFish', fallback: null },
+                ].map(({ key, label, fallback }) => {
+                  const status = serviceHealth[key] || 'UNKNOWN';
+                  const color = status === 'UP' ? 'bg-emerald-500' : status === 'DOWN' ? 'bg-red-500' : 'bg-gray-500';
+                  return (
+                    <div key={key} className="flex items-center justify-between rounded bg-gray-800/60 px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`h-2 w-2 rounded-full ${color}`} />
+                        <span className="text-xs text-gray-300">{label}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {status === 'DOWN' && fallback ? (
+                          <span className="text-[10px] text-amber-400">→ {fallback}</span>
+                        ) : null}
+                        <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${
+                          status === 'UP' ? 'border-emerald-700 text-emerald-400' :
+                          status === 'DOWN' ? 'border-red-700 text-red-400' :
+                          'border-gray-600 text-gray-400'
+                        }`}>{status}</Badge>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+             {/* Agent-Reach Controls */}
+             <div className="rounded-lg border border-gray-800 bg-gray-800/40 px-4 py-3 space-y-3">
+               <div className="flex items-center justify-between gap-3">
+                 <div className="flex items-center gap-3 min-w-0">
+                   <Search className="h-4 w-4 shrink-0 text-gray-500" />
+                   <div className="min-w-0">
+                     <p className="text-sm text-gray-300">Agent-Reach</p>
+                     <p className="text-[10px] text-gray-600">Optional remote research adapter for external evidence gathering</p>
+                   </div>
+                 </div>
+                 <Switch
+                   checked={Boolean(settings.stageRouting?.agentReachEnabled)}
+                   onCheckedChange={(checked) => updateStageRouting('agentReachEnabled', checked)}
+                 />
+               </div>
+               <div className="grid gap-3 sm:grid-cols-2">
+                 <div className="space-y-1">
+                   <Label className="text-[11px] text-gray-400">Service URL</Label>
+                   <Input
+                     value={settings.stageRouting?.agentReachServiceUrl || ''}
+                     onChange={(e) => updateStageRouting('agentReachServiceUrl', e.target.value)}
+                     placeholder="http://192.168.88.96:7234"
+                     className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                   />
+                 </div>
+                 <div className="space-y-1">
+                   <Label className="text-[11px] text-gray-400">Tool Name</Label>
+                   <Input
+                     value={settings.stageRouting?.agentReachToolName || ''}
+                     onChange={(e) => updateStageRouting('agentReachToolName', e.target.value)}
+                     placeholder="research"
+                     className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                   />
+                 </div>
+               </div>
+             </div>
+             {/* Vector DB Collection Override */}
+             <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-800/40 px-4 py-2.5">
+               <div className="flex items-center gap-3 min-w-0">
+                 <Database className="h-4 w-4 shrink-0 text-gray-500" />
+                 <div className="min-w-0">
+                   <p className="text-sm text-gray-300">Vector DB Collection</p>
+                   <p className="text-[10px] text-gray-600">Override research memory collection (leave empty for default)</p>
+                 </div>
+               </div>
+               <Input
+                 value={settings.stageRouting?.vectorDbCollection || ''}
+                 onChange={(e) => updateStageRouting('vectorDbCollection', e.target.value)}
+                 placeholder="research_memory"
+                 className="h-8 w-48 border-gray-700 bg-gray-800 text-xs text-white"
+               />
+             </div>
+
+            <p className="text-[10px] text-gray-600">
+              Leave model fields empty to fall back to Default, then to &quot;paper_lite&quot;. All services use credentials from the Credentials page.
+            </p>
+         </CardContent>
+       </Card>
+
+       {/* ─── Research Depth & DeerFlow ─── */}
+       <Card className="border-gray-800 bg-gray-900">
+         <CardHeader className="pb-3">
+           <CardTitle className="flex items-center gap-2 text-base text-white">
+             <Layers className="h-4 w-4 text-amber-400" />
+             Research Depth
+           </CardTitle>
+           <CardDescription className="text-gray-500">
+             Choose how deeply the pipeline researches each market
+           </CardDescription>
+         </CardHeader>
+         <CardContent className="space-y-4">
+           {/* Research Depth */}
+           <div className="space-y-2">
+             <Label className="text-sm font-medium text-gray-300">Research Depth</Label>
+             <div className="grid grid-cols-3 gap-3">
+               {RESEARCH_DEPTH_OPTIONS.map((opt) => (
+                 <button
+                   key={opt.value}
+                   onClick={() => updateStageRouting('researchDepth', opt.value)}
+                   className={cn(
+                     'flex flex-col items-center gap-1 rounded-lg border p-3 transition-colors',
+                     (settings.stageRouting?.researchDepth || 'DEEP') === opt.value
+                       ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'
+                       : 'border-gray-800 bg-gray-800/40 text-gray-400 hover:border-gray-700'
+                   )}
+                 >
+                   <span className="text-sm font-medium">{opt.label}</span>
+                   <span className="text-[10px]">{opt.desc}</span>
+                 </button>
+               ))}
+             </div>
+              {['DEERFLOW', 'FULL'].includes(settings.stageRouting?.researchDepth || 'DEEP') && (
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-300">
+                  DeerFlow uses your LLM Provider and SearXNG credentials. FULL depth also runs TradingAgents in parallel and merges the provider outputs.
+                </div>
+              )}
+            </div>
+
+            {/* DeerFlow and TradingAgents settings for DEERFLOW/FULL research */}
+            {['DEERFLOW', 'FULL'].includes(settings.stageRouting?.researchDepth || 'DEEP') && (
+
+             <>
+               <Separator className="bg-gray-800" />
+               <div className="space-y-3">
+                 <Label className="text-sm font-medium text-gray-300">DeerFlow Parameters</Label>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="space-y-1">
+                    <Label className="text-[11px] text-gray-400">Search Iterations</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={settings.stageRouting?.deerflowSearchIterations ?? 3}
+                      onChange={(e) => updateStageRouting('deerflowSearchIterations', Number(e.target.value))}
+                      className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px] text-gray-400">Questions per Iteration</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={settings.stageRouting?.deerflowQuestionsPerIteration ?? 3}
+                      onChange={(e) => updateStageRouting('deerflowQuestionsPerIteration', Number(e.target.value))}
+                      className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[11px] text-gray-400">Max Depth</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={5}
+                      value={settings.stageRouting?.deerflowMaxDepth ?? 3}
+                      onChange={(e) => updateStageRouting('deerflowMaxDepth', Number(e.target.value))}
+                      className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-[11px] text-gray-400">DeerFlow API Model</Label>
+                    {deerflowLoading && <Loader2 className="h-3 w-3 animate-spin text-gray-500" />}
+                  </div>
+                  
+                  {/* DeerFlow Error Display */}
+                  {deerflowError && (
+                    <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] text-red-400">
+                      <AlertTriangle className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{deerflowError}</span>
+                    </div>
+                  )}
+                  {(() => {
+                    // Convert deerflowApiModels to MetadataOption[] and apply withStaleOption
+                    const deerflowOptions: MetadataOption[] = deerflowApiModels.map((id) => ({ id, label: id }));
+                    const savedDeerflowModel = settings.stageRouting?.deerflowApiModel;
+                    const deerflowOptionsWithStale = withStaleOption(deerflowOptions, savedDeerflowModel);
+
+                    return deerflowOptionsWithStale.length > 0 ? (
+                      <div className="flex items-center gap-2">
+                        <Select
+                          value={settings.stageRouting?.deerflowApiModel || ''}
+                          onValueChange={(value) => updateStageRouting('deerflowApiModel', value)}
+                        >
+                          <SelectTrigger className="h-8 w-full border-gray-700 bg-gray-800 text-xs text-white">
+                            <SelectValue placeholder="Use DeerFlow service default" />
+                          </SelectTrigger>
+                          <SelectContent className="border-gray-700 bg-gray-900 max-h-64">
+                            {deerflowOptionsWithStale.map((model) => (
+                              <SelectItem
+                                key={model.id}
+                                value={model.id}
+                                className={`text-xs font-mono ${model.stale ? 'text-amber-400' : ''}`}
+                              >
+                                {model.label}
+                                {model.stale && ' (stale)'}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {settings.stageRouting?.deerflowApiModel && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 px-2 text-[11px] text-gray-400 hover:text-gray-200"
+                            onClick={() => updateStageRouting('deerflowApiModel', '')}
+                          >
+                            Clear
+                          </Button>
+                        )}
+                      </div>
+                    ) : (
+                      <Input
+                        value={settings.stageRouting?.deerflowApiModel || ''}
+                        onChange={(e) => updateStageRouting('deerflowApiModel', e.target.value)}
+                        placeholder="Use DeerFlow service default"
+                        className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                      />
+                    );
+                  })()}
+                  <p className="text-[10px] text-gray-600">
+                    {deerflowApiModels.length > 0
+                      ? 'Optional override for DeerFlow API runs.'
+                      : 'Model list unavailable. Leave empty to use the DeerFlow service default, or enter a model manually.'}
+                  </p>
+                </div>
+                <p className="text-[10px] text-gray-600">
+                  More iterations and depth increase research quality but take longer and use more LLM tokens.
+                </p>
+              </div>
+
+
+                {/* TradingAgents Config */}
+                <Separator className="bg-gray-800" />
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-sm font-medium text-gray-300">TradingAgents Analyst Team</Label>
+                    {tradingAgentsLoading && <Loader2 className="h-3 w-3 animate-spin text-gray-500" />}
+                  </div>
+                  <p className="text-[10px] text-gray-600">
+                    Multi-source analysts (News, Sentiment, Technical) run in parallel via TradingAgents Docker service.
+                  </p>
+
+                  {/* Source label */}
+                  <div className="flex items-center gap-2 text-[11px] text-gray-500">
+                    <Database className="h-3 w-3" />
+                    <span>{getTradingAgentsSourceLabel(tradingAgentsSource)}</span>
+                  </div>
+
+                  {/* Error display */}
+                  {tradingAgentsError && (
+                    <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] text-red-400">
+                      <AlertTriangle className="h-3 w-3 shrink-0" />
+                      {tradingAgentsError}
+                    </div>
+                  )}
+
+                  {/* Dropdowns or manual input fallback */}
+                  {tradingAgentsProviders.length === 0 && tradingAgentsModels.length === 0 ? (
+                    // Manual input fallback when both arrays are empty
+                    <div className="grid gap-3 sm:grid-cols-4">
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">LLM Provider</Label>
+                        <Input
+                          value={settings.stageRouting?.analystLlmProvider || ''}
+                          onChange={(e) => updateStageRouting('analystLlmProvider', e.target.value)}
+                          placeholder="openai"
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Deep Think Model</Label>
+                        <Input
+                          value={settings.stageRouting?.analystDeepThinkLlm || ''}
+                          onChange={(e) => updateStageRouting('analystDeepThinkLlm', e.target.value)}
+                          placeholder="paper_proglm"
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Quick Think Model</Label>
+                        <Input
+                          value={settings.stageRouting?.analystQuickThinkLlm || ''}
+                          onChange={(e) => updateStageRouting('analystQuickThinkLlm', e.target.value)}
+                          placeholder="paper_lite"
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Debate Rounds</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={5}
+                          value={settings.stageRouting?.analystMaxDebateRounds ?? 2}
+                          onChange={(e) => updateStageRouting('analystMaxDebateRounds', Number(e.target.value))}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    // Select dropdowns when metadata is available
+                    <div className="grid gap-3 sm:grid-cols-4">
+                      {/* LLM Provider dropdown */}
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">LLM Provider</Label>
+                        <div className="flex items-center gap-2">
+                          <Select
+                            value={settings.stageRouting?.analystLlmProvider || ''}
+                            onValueChange={(v) => updateStageRouting('analystLlmProvider', v)}
+                          >
+                            <SelectTrigger className="h-8 w-full border-gray-700 bg-gray-800 text-xs text-white">
+                              <SelectValue placeholder="Select provider" />
+                            </SelectTrigger>
+                            <SelectContent className="border-gray-700 bg-gray-900 max-h-64">
+                              {tradingAgentsProviders.map((provider) => (
+                                <SelectItem
+                                  key={provider.id}
+                                  value={provider.id}
+                                  className={`text-xs font-mono ${provider.stale ? 'text-amber-400' : ''}`}
+                                >
+                                  {provider.label}
+                                  {provider.stale && ' (stale)'}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {settings.stageRouting?.analystLlmProvider && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-[11px] text-gray-400 hover:text-gray-200"
+                              onClick={() => updateStageRouting('analystLlmProvider', '')}
+                            >
+                              Clear
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Deep Think Model dropdown */}
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Deep Think Model</Label>
+                        <div className="flex items-center gap-2">
+                          <Select
+                            value={settings.stageRouting?.analystDeepThinkLlm || ''}
+                            onValueChange={(v) => updateStageRouting('analystDeepThinkLlm', v)}
+                          >
+                            <SelectTrigger className="h-8 w-full border-gray-700 bg-gray-800 text-xs text-white">
+                              <SelectValue placeholder="Select model" />
+                            </SelectTrigger>
+                            <SelectContent className="border-gray-700 bg-gray-900 max-h-64">
+                              {tradingAgentsModels.map((model) => (
+                                <SelectItem
+                                  key={model.id}
+                                  value={model.id}
+                                  className={`text-xs font-mono ${model.stale ? 'text-amber-400' : ''}`}
+                                >
+                                  {model.label}
+                                  {model.stale && ' (stale)'}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {settings.stageRouting?.analystDeepThinkLlm && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-[11px] text-gray-400 hover:text-gray-200"
+                              onClick={() => updateStageRouting('analystDeepThinkLlm', '')}
+                            >
+                              Clear
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Quick Think Model dropdown */}
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Quick Think Model</Label>
+                        <div className="flex items-center gap-2">
+                          <Select
+                            value={settings.stageRouting?.analystQuickThinkLlm || ''}
+                            onValueChange={(v) => updateStageRouting('analystQuickThinkLlm', v)}
+                          >
+                            <SelectTrigger className="h-8 w-full border-gray-700 bg-gray-800 text-xs text-white">
+                              <SelectValue placeholder="Select model" />
+                            </SelectTrigger>
+                            <SelectContent className="border-gray-700 bg-gray-900 max-h-64">
+                              {tradingAgentsModels.map((model) => (
+                                <SelectItem
+                                  key={model.id}
+                                  value={model.id}
+                                  className={`text-xs font-mono ${model.stale ? 'text-amber-400' : ''}`}
+                                >
+                                  {model.label}
+                                  {model.stale && ' (stale)'}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {settings.stageRouting?.analystQuickThinkLlm && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-8 px-2 text-[11px] text-gray-400 hover:text-gray-200"
+                              onClick={() => updateStageRouting('analystQuickThinkLlm', '')}
+                            >
+                              Clear
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Debate Rounds input (unchanged) */}
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Debate Rounds</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={5}
+                          value={settings.stageRouting?.analystMaxDebateRounds ?? 2}
+                          onChange={(e) => updateStageRouting('analystMaxDebateRounds', Number(e.target.value))}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                    </div>
+                  )}
+                  <p className="text-[10px] text-gray-600">
+                    Configure the TradingAgents credential on the Credentials page. Models are used by the Python TradingAgents service internally.
+                  </p>
+                </div>
+              </>
+            )}
+          </CardContent>
+       </Card>
 
        {/* ─── Trading Mode ─── */}
       <Card className="border-gray-800 bg-gray-900">
@@ -472,29 +1332,6 @@ export function StrategyHub() {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
-
-function FileText(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      {...props}
-    >
-      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
-      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
-      <path d="M10 9H8" />
-      <path d="M16 13H8" />
-      <path d="M16 17H8" />
-    </svg>
-  );
-}
 
 function RiskSliderRow({
   label,

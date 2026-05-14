@@ -24,7 +24,7 @@ export interface KalshiMarketsResponse {
 export async function getKalshiMarkets(): Promise<KalshiMarket[]> {
   try {
     const response = await fetch(`${KALSHI_BASE_URL}/markets?limit=100`, {
-      next: { revalidate: 60 }
+      cache: 'no-store'
     })
 
     if (!response.ok) {
@@ -42,7 +42,7 @@ export async function getKalshiMarkets(): Promise<KalshiMarket[]> {
 export async function getKalshiMarket(ticker: string): Promise<KalshiMarket | null> {
   try {
     const response = await fetch(`${KALSHI_BASE_URL}/markets/${ticker}`, {
-      next: { revalidate: 60 }
+      cache: 'no-store'
     })
 
     if (!response.ok) {

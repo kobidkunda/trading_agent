@@ -1,35 +1,22 @@
 import { db } from '@/lib/db';
 import { getEmbedding } from './embed';
+import { getVectorConfig } from '@/lib/engine/service-routing';
 
 async function getQdrantConfig(): Promise<{ baseUrl: string; apiKey: string; collectionName: string } | null> {
-  const cred = await db.credential.findFirst({
-    where: { service: 'qdrant', isActive: true },
-    orderBy: { createdAt: 'desc' },
-  });
-  if (!cred?.serviceUrl) return null;
-
-  let collectionName = 'research_memory';
   try {
-    const linkSetting = await db.settings.findUnique({
-      where: { key: `qdrant_collections_${cred.id}` },
-    });
-    if (linkSetting) {
-      const links = JSON.parse(linkSetting.value);
-      collectionName = links.researchMemory || collectionName;
-    }
-  } catch {}
+    const setting = await db.settings.findUnique({ where: { key: 'strategy_settings' } });
+    const strategy = setting ? JSON.parse(setting.value) : {};
+    const routing = strategy.stageRouting || {};
 
-  let apiKey = '';
-  const { isEncrypted, decrypt } = await import('@/lib/engine/crypto');
-  if (cred.encryptedData) {
-    try {
-      const rawData = isEncrypted(cred.encryptedData) ? decrypt(cred.encryptedData) : cred.encryptedData;
-      const parsed = JSON.parse(rawData);
-      apiKey = String(parsed.apiKey || '');
-    } catch {}
+    const vectorConfig = await getVectorConfig(routing);
+    return {
+      baseUrl: vectorConfig.baseUrl,
+      apiKey: vectorConfig.apiKey,
+      collectionName: vectorConfig.collection,
+    };
+  } catch {
+    return null;
   }
-
-  return { baseUrl: cred.serviceUrl.replace(/\/$/, ''), apiKey, collectionName };
 }
 
 async function qdrantFetch(path: string, method: string, body?: unknown): Promise<Response | null> {

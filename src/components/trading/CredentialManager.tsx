@@ -216,6 +216,75 @@ const SERVICES: ServiceDef[] = [
     credentialPlaceholder: 'Leave blank for local providers',
     testEndpoint: '/models',
   },
+  {
+    id: 'deerflow',
+    label: 'DeerFlow Research',
+    color: 'text-indigo-400',
+    iconBg: 'bg-indigo-500/10',
+    type: 'self-hosted',
+    defaultUrl: 'http://192.168.88.97:4444/v1',
+    defaultPort: 4444,
+    description: 'LLM endpoint for DeerFlow deep research agent (can be same as LLM Provider or separate)',
+    urlPlaceholder: 'http://localhost:11434/v1',
+    credentialLabel: 'API Key (optional)',
+    credentialPlaceholder: 'Leave blank for local providers',
+    testEndpoint: '/models',
+  },
+  {
+    id: 'tradingagents',
+    label: 'TradingAgents',
+    color: 'text-rose-400',
+    iconBg: 'bg-rose-500/10',
+    type: 'self-hosted',
+    defaultUrl: 'http://localhost:8100',
+    defaultPort: 8100,
+    description: 'Multi-source analyst team (News, Sentiment, Technical, Fundamentals) via TradingAgents framework',
+    urlPlaceholder: 'http://localhost:8100',
+    credentialLabel: 'API Key (optional)',
+    credentialPlaceholder: 'Leave blank for local Docker instance',
+    testEndpoint: '/health',
+  },
+  {
+    id: 'mirofis',
+    label: 'MiroFish',
+    color: 'text-cyan-400',
+    iconBg: 'bg-cyan-500/10',
+    type: 'self-hosted',
+    defaultUrl: 'http://192.168.88.96:5401',
+    defaultPort: 5401,
+    description: 'Multi-model LLM gateway for post-debate predictions (80+ models)',
+    urlPlaceholder: 'http://192.168.88.96:5401',
+    credentialLabel: 'API Key (optional)',
+    credentialPlaceholder: 'Leave blank if no auth required',
+    testEndpoint: '/health',
+  },
+  {
+    id: 'firecrawl',
+    label: 'Firecrawl',
+    color: 'text-orange-400',
+    iconBg: 'bg-orange-500/10',
+    type: 'cloud',
+    defaultUrl: 'https://api.firecrawl.dev',
+    description: 'Web scraping & deep research API for DeerFlow fallback',
+    urlPlaceholder: 'https://api.firecrawl.dev',
+    credentialLabel: 'API Key',
+    credentialPlaceholder: 'Enter Firecrawl API key (fc-...)',
+    docsUrl: 'https://docs.firecrawl.dev',
+  },
+  {
+    id: 'agent_reach',
+    label: 'Agent-Reach',
+    color: 'text-violet-400',
+    iconBg: 'bg-violet-500/10',
+    type: 'self-hosted',
+    defaultUrl: 'http://localhost:8200',
+    defaultPort: 8200,
+    description: 'Web content fetch & summarization for research pipeline',
+    urlPlaceholder: 'http://localhost:8200',
+    credentialLabel: 'API Key',
+    credentialPlaceholder: 'Enter Agent-Reach API key',
+    testEndpoint: '/health',
+  },
 ];
 
 function getServiceDef(serviceId: string): ServiceDef | undefined {
@@ -345,7 +414,7 @@ function AddCredentialDialog({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          service: serviceDef.label,
+          service: serviceDef.id,
           label: label.trim(),
           encryptedData: credentialValue.trim() ? JSON.stringify({ apiKey: credentialValue.trim() }) : JSON.stringify({}),
           serviceUrl: serviceUrl.trim(),
@@ -543,6 +612,9 @@ export function CredentialManager() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardCredId, setWizardCredId] = useState<string | null>(null);
   const [qdrantCollectionLinks, setQdrantCollectionLinks] = useState<Record<string, Record<string, string>>>({});
+  const [autoSetupCredId, setAutoSetupCredId] = useState<string | null>(null);
+  const [autoSetupRunning, setAutoSetupRunning] = useState(false);
+  const [autoSetupResults, setAutoSetupResults] = useState<Array<{ key: string; name: string; created: boolean; skipped: boolean; error: string | null }> | null>(null);
 
   useEffect(() => {
     async function fetchQdrantLinks() {
@@ -606,7 +678,10 @@ export function CredentialManager() {
         if (data.testResult === 'SUCCESS') {
           toast.success(`${cred.service}: Connected`, { description: data.details });
         } else {
-          toast.error(`${cred.service}: Connection failed`, { description: data.details });
+          toast.error(`${cred.service}: Test Failed`, {
+            description: data.details,
+            duration: 8000,
+          });
         }
       } else {
         toast.error(`Failed to test ${cred.service}`);
@@ -620,6 +695,44 @@ export function CredentialManager() {
 
   const addCredential = useCallback((cred: Credential) => {
     setCredentials((prev) => [...prev, cred]);
+  }, []);
+
+  const runAutoSetup = useCallback(async (credId: string) => {
+    setAutoSetupCredId(credId);
+    setAutoSetupRunning(true);
+    setAutoSetupResults(null);
+    try {
+      const res = await fetch('/api/qdrant/auto-setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credentialId: credId }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAutoSetupResults(data.results || []);
+        const links = data.links || {};
+        setQdrantCollectionLinks((prev) => ({ ...prev, [credId]: links }));
+        const created = (data.results || []).filter((r: { created: boolean }) => r.created).length;
+        const skipped = (data.results || []).filter((r: { skipped: boolean }) => r.skipped).length;
+        const errors = (data.results || []).filter((r: { error: string | null }) => r.error).length;
+        if (errors > 0) {
+          toast.warning(`Setup completed with ${errors} error(s)`, { description: `${created} created, ${skipped} already existed` });
+        } else if (created > 0) {
+          toast.success(`${created} collection(s) created`, { description: `${skipped} already existed` });
+        } else {
+          toast.success('All collections already configured');
+        }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || 'Auto-setup failed');
+        setAutoSetupResults(null);
+      }
+    } catch {
+      toast.error('Network error during auto-setup');
+      setAutoSetupResults(null);
+    } finally {
+      setAutoSetupRunning(false);
+    }
   }, []);
 
   const deleteCredential = useCallback(async (cred: Credential) => {
@@ -793,7 +906,7 @@ export function CredentialManager() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <p className={cn('text-sm font-semibold', serviceDef?.color ?? 'text-gray-200')}>
-                        {cred.service}
+                        {serviceDef?.label ?? cred.service}
                       </p>
                       <TypeBadge type={serviceDef?.type ?? 'cloud'} />
                       <StatusBadge testResult={cred.testResult} />
@@ -801,13 +914,18 @@ export function CredentialManager() {
                     <p className="mt-0.5 text-xs text-gray-500">{cred.label}</p>
                   </div>
 
-                  {/* URL badge */}
-                  {cred.serviceUrl && (
+                  {/* URL badge / failure reason */}
+                  {cred.testResult === 'FAILED' && cred.testDetails ? (
+                    <span className="hidden sm:flex items-center gap-1.5 max-w-[300px] text-[10px] text-red-400/80 truncate">
+                      <AlertTriangle className="h-2.5 w-2.5 shrink-0" />
+                      <span className="truncate">{cred.testDetails}</span>
+                    </span>
+                  ) : cred.serviceUrl ? (
                     <Badge variant="outline" className="hidden sm:flex gap-1 border-gray-700 text-[10px] text-gray-400 font-mono max-w-[250px]">
                       <Link2 className="h-2.5 w-2.5 shrink-0" />
                       <span className="truncate">{cred.serviceUrl}</span>
                     </Badge>
-                  )}
+                  ) : null}
 
                   {/* Actions */}
                   <div className="flex items-center gap-1 shrink-0">
@@ -937,41 +1055,81 @@ export function CredentialManager() {
                     )}
 
                     {serviceDef?.id === 'qdrant' && (
-                      <div className="flex items-center justify-between rounded-lg border border-orange-500/20 bg-orange-500/5 px-3 py-2.5">
-                        <div className="flex items-center gap-3">
-                          <Database className="h-3.5 w-3.5 shrink-0 text-orange-400" />
-                          <div className="flex items-center gap-1.5">
-                            {QDRANT_DEFAULT_COLLECTIONS.map((def) => {
-                              const links = qdrantCollectionLinks[cred.id];
-                              const isLinked = links && links[def.key];
-                              return (
-                                <button
-                                  key={def.key}
-                                  title={`${def.defaultName}: ${isLinked ? 'Linked' : 'Not linked'}`}
-                                  className={cn(
-                                    'h-3 w-3 rounded-full transition-colors',
-                                    isLinked ? 'bg-emerald-400' : 'bg-gray-700 hover:bg-gray-600'
-                                  )}
-                                />
-                              );
-                            })}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between rounded-lg border border-orange-500/20 bg-orange-500/5 px-3 py-2.5">
+                          <div className="flex items-center gap-3">
+                            <Database className="h-3.5 w-3.5 shrink-0 text-orange-400" />
+                            <div className="flex items-center gap-1.5">
+                              {QDRANT_DEFAULT_COLLECTIONS.map((def) => {
+                                const links = qdrantCollectionLinks[cred.id];
+                                const isLinked = links && links[def.key];
+                                return (
+                                  <button
+                                    key={def.key}
+                                    title={`${def.defaultName}: ${isLinked ? 'Linked' : 'Not linked'}`}
+                                    className={cn(
+                                      'h-3 w-3 rounded-full transition-colors',
+                                      isLinked ? 'bg-emerald-400' : 'bg-gray-700 hover:bg-gray-600'
+                                    )}
+                                  />
+                                );
+                              })}
+                            </div>
+                            <span className="text-[10px] text-gray-600">
+                              {Object.keys(qdrantCollectionLinks[cred.id] || {}).length}/{QDRANT_DEFAULT_COLLECTIONS.length} linked
+                            </span>
                           </div>
-                          <span className="text-[10px] text-gray-600">
-                            {Object.keys(qdrantCollectionLinks[cred.id] || {}).length}/{QDRANT_DEFAULT_COLLECTIONS.length} linked
-                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {Object.keys(qdrantCollectionLinks[cred.id] || {}).length < QDRANT_DEFAULT_COLLECTIONS.length && cred.testResult === 'SUCCESS' && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 gap-1.5 px-2 text-[11px] text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-300"
+                                disabled={autoSetupRunning && autoSetupCredId === cred.id}
+                                onClick={() => runAutoSetup(cred.id)}
+                              >
+                                {autoSetupRunning && autoSetupCredId === cred.id ? (
+                                  <><Loader2 className="h-3 w-3 animate-spin" /> Setting up...</>
+                                ) : (
+                                  <><Zap className="h-3 w-3" /> Auto-Setup</>
+                                )}
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 gap-1.5 px-2 text-[11px] text-orange-400 hover:bg-orange-500/10 hover:text-orange-300"
+                              onClick={() => {
+                                setWizardCredId(cred.id);
+                                setWizardOpen(true);
+                              }}
+                            >
+                              <Database className="h-3 w-3" />
+                              Manage
+                            </Button>
+                          </div>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 gap-1.5 px-2 text-[11px] text-orange-400 hover:bg-orange-500/10 hover:text-orange-300"
-                          onClick={() => {
-                            setWizardCredId(cred.id);
-                            setWizardOpen(true);
-                          }}
-                        >
-                          <Database className="h-3 w-3" />
-                          Manage Collections
-                        </Button>
+                        {autoSetupCredId === cred.id && autoSetupResults && (
+                          <div className="space-y-1 rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2">
+                            {autoSetupResults.map((r) => (
+                              <div key={r.key} className="flex items-center gap-2 text-[11px]">
+                                {r.created ? (
+                                  <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-400" />
+                                ) : r.skipped ? (
+                                  <Link2 className="h-3 w-3 shrink-0 text-gray-500" />
+                                ) : (
+                                  <XCircle className="h-3 w-3 shrink-0 text-red-400" />
+                                )}
+                                <span className={cn('font-mono', r.created ? 'text-emerald-400' : r.skipped ? 'text-gray-500' : 'text-red-400')}>
+                                  {r.name}
+                                </span>
+                                <span className="text-gray-600">
+                                  {r.created ? '(created)' : r.skipped ? '(already exists)' : r.error}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
 

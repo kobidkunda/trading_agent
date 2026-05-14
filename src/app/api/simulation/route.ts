@@ -3,7 +3,16 @@ import { getSimState, startSimulation, stopSimulation, updateConfig } from '@/li
 
 // GET: Get current simulation state (poll this for live updates)
 export async function GET() {
-  return NextResponse.json(getSimState());
+  const simState = getSimState();
+
+  return NextResponse.json({
+    ...simState,
+    currentStage: simState.currentStage,
+    currentStageStartedAt: simState.currentStageStartedAt,
+    activityEvents: simState.activityEvents,
+    marketProgress: simState.marketProgress,
+    lastCompletedMarket: simState.lastCompletedMarket,
+  });
 }
 
 // POST: Start, stop, or reconfigure the live simulation
@@ -14,11 +23,11 @@ export async function POST(request: NextRequest) {
 
     if (action === 'start') {
       const config = body.config ? {
-        venues: body.config.venues,
-        categories: body.config.categories,
-        scanIntervalSec: body.config.scanIntervalSec,
-        marketsPerScan: body.config.marketsPerScan,
-        maxPortfolioExposure: body.config.maxPortfolioExposure,
+        ...(body.config.venues ? { venues: body.config.venues } : {}),
+        ...(body.config.categories ? { categories: body.config.categories } : {}),
+        ...(body.config.scanIntervalSec != null ? { scanIntervalSec: body.config.scanIntervalSec } : {}),
+        ...(body.config.marketsPerScan != null ? { marketsPerScan: body.config.marketsPerScan } : {}),
+        ...(body.config.maxPortfolioExposure != null ? { maxPortfolioExposure: body.config.maxPortfolioExposure } : {}),
       } : undefined;
       const newState = startSimulation(config);
       return NextResponse.json(newState);

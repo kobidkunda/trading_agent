@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { SystemHealth } from '@/lib/types';
 import { isEncrypted, decrypt } from '@/lib/engine/crypto';
+import { resolveResearchProvider } from '@/lib/engine/service-routing';
 
 export async function GET() {
   try {
@@ -61,23 +62,53 @@ export async function GET() {
     const credentials = await db.credential.findMany({ where: { isActive: true } });
     const apiHealth: Record<string, 'UP' | 'DOWN' | 'DEGRADED'> = {};
 
+    const SERVICE_DISPLAY_MAP: Record<string, string> = {
+      qdrant: 'Qdrant',
+      ollama: 'Ollama',
+      searxng: 'SearXNG',
+      mem0: 'Mem0',
+      llm: 'LLM',
+      openai: 'OpenAI',
+      polymarket: 'Polymarket',
+      kalshi: 'Kalshi',
+      gemini: 'Gemini',
+      deerflow: 'DeerFlow',
+      tradingagents: 'TradingAgents',
+      mirofis: 'MiroFish',
+      firecrawl: 'Firecrawl',
+      'agent_reach': 'Agent-Reach',
+    };
+
+    const SERVICE_ENDPOINTS: Record<string, string> = {
+      qdrant: '/healthz',
+      ollama: '/api/tags',
+      searxng: '/search?q=test&format=json',
+      mem0: '/health',
+      llm: '/models',
+      openai: '/models',
+      deerflow: '/health',
+      tradingagents: '/health',
+      mirofis: '/health',
+      'agent_reach': '/health',
+    };
+
     for (const cred of credentials) {
-      if (!cred.serviceUrl || cred.testResult !== 'SUCCESS') {
-        apiHealth[cred.service.toLowerCase()] = 'DOWN' as const;
+      let serviceId = cred.service.toLowerCase();
+      if (serviceId === 'llm provider') serviceId = 'llm';
+
+      const displayName = SERVICE_DISPLAY_MAP[serviceId] || cred.service;
+      const endpoint = SERVICE_ENDPOINTS[serviceId];
+
+      if (!cred.serviceUrl) {
+        apiHealth[displayName] = 'DOWN' as const;
         continue;
       }
 
-      const serviceEndpoints: Record<string, string> = {
-        qdrant: '/healthz',
-        ollama: '/api/tags',
-        searxng: '/search?q=test&format=json',
-        mem0: '/health',
-        llm: '/models',
-        'llm provider': '/models',
-        openai: '/models',
-      };
+      if (cred.testResult && cred.testResult !== 'SUCCESS') {
+        apiHealth[displayName] = 'DOWN' as const;
+        continue;
+      }
 
-      const endpoint = serviceEndpoints[cred.service.toLowerCase()];
       if (!endpoint) continue;
 
       try {
@@ -97,13 +128,20 @@ export async function GET() {
           headers,
           signal: AbortSignal.timeout(5000),
         });
-        apiHealth[cred.service.toLowerCase()] = res.ok ? 'UP' as const : 'DEGRADED' as const;
+        apiHealth[displayName] = res.ok ? 'UP' as const : 'DEGRADED' as const;
       } catch {
-        apiHealth[cred.service.toLowerCase()] = 'DOWN' as const;
+        apiHealth[displayName] = 'DOWN' as const;
       }
     }
 
-    const vectorStatus = apiHealth['qdrant'] || ('DOWN' as const);
+    const vectorStatus = apiHealth['Qdrant'] || ('DOWN' as const);
+
+    // Research provider resolution
+    let researchProvider: string | null = null;
+    try {
+      researchProvider = await resolveResearchProvider();
+    } catch {}
+    const checkedAt = new Date().toISOString();
 
     // Build the health response
     const health: SystemHealth & {
@@ -125,6 +163,8 @@ export async function GET() {
       jobsByStatus: Object.fromEntries(jobsByStatus.map((j) => [j.status, j._count.id])),
       recentErrors,
       recentCompleted,
+      researchProvider,
+      checkedAt,
     };
 
     return NextResponse.json(health);
@@ -141,6 +181,8 @@ export async function GET() {
         lastScanAt: null,
         uptimeSeconds: process.uptime(),
         error: 'Failed to fetch system health',
+        researchProvider: null,
+        checkedAt: new Date().toISOString(),
       },
       { status: 503 },
     );

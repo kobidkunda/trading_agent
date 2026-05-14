@@ -4,35 +4,9 @@ services:
   # ── Core Database ──────────────────────────────────────────────────────────
   # Not needed here since we use SQLite for the Next.js app
 
-  # ── Optional Self-Hosted Services ─────────────────────────────────────────
-  # Uncomment the services you want to run
+  # ── Self-Hosted Services ───────────────────────────────────────────────────
 
-  # Qdrant - Vector Database for RAG memory and semantic search
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: tcc-qdrant
-    restart: unless-stopped
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    profiles:
-      - services
-
-  # Ollama - Local LLM inference server for research agents
-  ollama:
-    image: ollama/ollama:latest
-    container_name: tcc-ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    profiles:
-      - services
-
-  # SearXNG - Privacy-focused metasearch engine for web research
+  # SearXNG - Privacy-focused metasearch engine
   searxng:
     image: searxng/searxng:latest
     container_name: tcc-searxng
@@ -40,26 +14,59 @@ services:
     ports:
       - "8888:8080"
     environment:
-      - SEARXNG_BASE_URL=http://localhost:8888
-      - SEARXNG_SECRET=changeme
+      - SEARXNG_BASE_URL=http://localhost:8888/
+      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-change-it-to-a-random-string}
+      - SEARXNG_BIND_ADDRESS=0.0.0.0
     volumes:
-      - searxng_data:/etc/searxng
+      - searxng_data:/etc/searxng:rw
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
     profiles:
       - services
 
-  # Mem0 - Long-term memory layer for agent conversations
-  mem0:
-    image: mem0ai/mem0:latest
-    container_name: tcc-mem0
+  # TradingAgents - Multi-source analyst team (News, Sentiment, Technical, Fundamentals)
+  # Uses the same OpenAI-compatible LLM Provider that serves all models (GPT, Claude, Gemini, etc.)
+  # Exposes POST /analyze { query, date, depth } → returns full analyst reports
+  tradingagents:
+    build:
+      context: ./ta-service
+      dockerfile: Dockerfile
+    container_name: tcc-tradingagents
     restart: unless-stopped
+    depends_on:
+      - searxng
     ports:
-      - "8000:8000"
+      - "6503:8100"
     environment:
-      - MEM0_API_KEY=changeme
+      # ── Single LLM Provider (OpenAI-compatible, serves all models) ──────────
+      # Keep provider + model selection app-driven where possible.
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://192.168.88.97:4444/v1}
+      # ── TradingAgents runtime defaults ─────────────────────────────────────
+      # The app can override provider and models per request.
+      - TA_LLM_PROVIDER=${TA_LLM_PROVIDER:-openai}
+      - TA_DEEP_THINK_LLM=${TA_DEEP_THINK_LLM:-paper_proglm}
+      - TA_QUICK_THINK_LLM=${TA_QUICK_THINK_LLM:-paper_lite}
+      # ── Search / social discovery ──────────────────────────────────────────
+      - TA_SEARXNG_URL=http://searxng:8080
+      - AGENT_REACH_URL=${AGENT_REACH_URL:-}
+      - AGENT_REACH_API_KEY=${AGENT_REACH_API_KEY:-}
+      # ── Optional finance data vendors ───────────────────────────────────────
+      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      # ── Debate & Analysis Settings ──────────────────────────────────────────
+      - TA_MAX_DEBATE_ROUNDS=${TA_MAX_DEBATE_ROUNDS:-2}
+    volumes:
+      - ta_data:/app/data
     profiles:
       - services
 
 volumes:
   qdrant_data:
-  ollama_data:
   searxng_data:
+  ta_data:

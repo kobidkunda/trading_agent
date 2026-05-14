@@ -424,7 +424,8 @@ export interface SimulationReport {
     triagedRelevant: number;
     researched: number;
     judged: number;
-    riskBuy: number;
+    riskBid: number;
+    riskWatch: number;
     riskSkip: number;
     executed: number;
     totalEstimatedPnl: number;
@@ -652,14 +653,6 @@ export async function runSimulation(config: SimulationConfig): Promise<Simulatio
         },
       });
 
-      await db.researchRun.update({
-        where: { id: researchRun.id },
-        data: {
-          status: 'COMPLETED',
-          completedAt: new Date(),
-        },
-      });
-
       // ── Step 4: Judge ──
       const judgeStart = Date.now();
       const judgeOutput = generateJudgeOutput(
@@ -696,6 +689,15 @@ export async function runSimulation(config: SimulationConfig): Promise<Simulatio
           output: JSON.stringify(judgeOutput),
           tokenCount: randInt(600, 1500),
           latencyMs: randInt(300, 900),
+        },
+      });
+
+      // Mark ResearchRun as COMPLETED only after all agent outputs (including judge) are created
+      await db.researchRun.update({
+        where: { id: researchRun.id },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
         },
       });
 
@@ -837,7 +839,7 @@ export async function runSimulation(config: SimulationConfig): Promise<Simulatio
 
       // ── Step 6: Simulated Execution ──
       let simulatedOrder: { side: string; price: number; size: number; estimatedPnl: number } | null = null;
-      if (riskResult.action === 'BUY') {
+      if (riskResult.action === 'BID' || riskResult.action === 'WATCH') {
         const execStart = Date.now();
         const orderSize = riskResult.adjustedSize || riskResult.maxSize;
         const orderPrice = riskResult.side === 'YES'
@@ -956,7 +958,8 @@ export async function runSimulation(config: SimulationConfig): Promise<Simulatio
     triagedRelevant: results.filter((r) => r.triageResult.status === 'RELEVANT').length,
     researched: results.filter((r) => r.bullOutput !== null).length,
     judged: results.filter((r) => r.judgeOutput !== null).length,
-    riskBuy: results.filter((r) => r.riskResult?.action === 'BUY').length,
+    riskBid: results.filter((r) => r.riskResult?.action === 'BID').length,
+    riskWatch: results.filter((r) => r.riskResult?.action === 'WATCH').length,
     riskSkip: results.filter((r) => r.riskResult?.action === 'SKIP').length,
     executed: results.filter((r) => r.simulatedOrder !== null).length,
     totalEstimatedPnl: results.reduce((s, r) => s + (r.simulatedOrder?.estimatedPnl ?? 0), 0),

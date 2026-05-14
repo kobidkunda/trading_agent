@@ -1,0 +1,25 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e4]:
+      - button "Back" [ref=e5]
+      - generic [ref=e6]
+      - button "Refresh" [ref=e12]
+      - button "Copy" [ref=e13]
+      - button "Export" [ref=e14]
+    - generic [ref=e15]:
+      - generic [ref=e16]
+      - generic [ref=e68]
+      - generic [ref=e101]
+      - generic [ref=e167]
+      - generic [ref=e176]
+      - generic [ref=e180]
+      - generic [ref=e197]
+      - generic [ref=e216]
+      - generic [ref=e235]
+      - generic [ref=e299]
+      - generic [ref=e311]: "Last updated: 4/19/2026, 3:15:47 PM • Market ID: cmo5kad5g00004tlm72fw92tk"
+  - region "Notifications (F8)":
+    - list
+  - button "Open Next.js Dev Tools" [ref=e317] [cursor=pointer]:
+    - img [ref=e318]
+  - alert [ref=e321]

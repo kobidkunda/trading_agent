@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { isEncrypted, decrypt } from '@/lib/engine/crypto';
 import { QDRANT_DEFAULT_COLLECTIONS } from '@/lib/constants';
 import type { QdrantCollectionInfo, QdrantDiscoverResult } from '@/lib/types';
 
@@ -25,7 +26,8 @@ export async function POST(request: NextRequest) {
     let parsedData: Record<string, unknown> = {};
     try {
       if (credential.encryptedData) {
-        parsedData = JSON.parse(credential.encryptedData);
+        const rawData = isEncrypted(credential.encryptedData) ? decrypt(credential.encryptedData) : credential.encryptedData;
+        parsedData = JSON.parse(rawData);
       }
     } catch {}
 

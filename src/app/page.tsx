@@ -15,6 +15,7 @@ import {
   Clock,
   FlaskConical,
   Database,
+  Network,
 } from 'lucide-react';
 import { useTradingStore, type PageView } from '@/store/trading-store';
 import { Button } from '@/components/ui/button';
@@ -36,6 +37,8 @@ import { LiveStatus } from '@/components/trading/LiveStatus';
 import { SimulationLab } from '@/components/trading/SimulationLab';
 import { PipelineSettings } from '@/components/trading/PipelineSettings';
 import { VectorDB } from '@/components/trading/VectorDB';
+import { SystemMap } from '@/components/trading/SystemMap';
+import { ResearchProvider } from '@/components/trading/ResearchProvider';
 
 interface NavItem {
   id: PageView;
@@ -54,6 +57,8 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'health', label: 'System Health', icon: Activity },
   { id: 'vectorDb', label: 'Vector DB', icon: Database },
   { id: 'pipelineSettings', label: 'Pipeline', icon: Settings },
+  { id: 'map', label: 'System Map', icon: Network },
+  { id: 'researchProvider', label: 'Research Provider', icon: BookOpen },
 ];
 
 function TopBar() {
@@ -68,7 +73,6 @@ function TopBar() {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
     const tick = () => {
       setCurrentTime(
         new Date().toLocaleTimeString('en-US', {
@@ -79,6 +83,8 @@ function TopBar() {
         })
       );
     };
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- mounted flag for hydration safety
+    setMounted(true);
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
@@ -291,6 +297,10 @@ function PageContent() {
       return <VectorDB />;
     case 'pipelineSettings':
       return <PipelineSettings />;
+    case 'map':
+      return <SystemMap />;
+    case 'researchProvider':
+      return <ResearchProvider />;
     default:
       return <SimulationLab />;
   }

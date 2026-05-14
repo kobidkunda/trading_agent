@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type PageView = 'strategy' | 'credentials' | 'triage' | 'research' | 'prompts' | 'simulation' | 'live' | 'health' | 'vectorDb' | 'pipelineSettings';
+export type PageView = 'strategy' | 'credentials' | 'triage' | 'research' | 'prompts' | 'simulation' | 'live' | 'health' | 'vectorDb' | 'pipelineSettings' | 'map' | 'researchProvider';
 
 interface TradingStore {
   activePage: PageView;

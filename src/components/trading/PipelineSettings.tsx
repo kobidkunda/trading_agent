@@ -65,9 +65,9 @@ interface QdrantLinks {
 }
 
 const REQUIRED_SERVICES = [
-  { key: 'qdrant', label: 'Qdrant', icon: Database },
-  { key: 'ollama', label: 'Ollama / LLM', icon: Cpu },
-  { key: 'searxng', label: 'SearXNG', icon: Search },
+  { key: 'qdrant', healthKey: 'Qdrant', label: 'Qdrant', icon: Database, credServices: ['qdrant'] },
+  { key: 'llm', healthKey: 'LLM', label: 'Ollama / LLM', icon: Cpu, credServices: ['llm', 'ollama', 'LLM Provider'] },
+  { key: 'searxng', healthKey: 'SearXNG', label: 'SearXNG', icon: Search, credServices: ['searxng'] },
 ] as const;
 
 function StatusDot({ status }: { status: 'UP' | 'DOWN' | 'DEGRADED' | null | undefined }) {
@@ -191,12 +191,13 @@ export function PipelineSettings() {
     }
   }, [fetchAll]);
 
-  const getCredStatus = useCallback((serviceKey: string): { has: boolean; status: string | null; label: string } => {
-    const cred = credentials.find((c) => c.service.toLowerCase() === serviceKey);
+  const getCredStatus = useCallback((credServices: readonly string[]): { has: boolean; status: string | null; label: string; url: string | null } => {
+    const cred = credentials.find((c) => credServices.some((s) => c.service.toLowerCase() === s.toLowerCase()));
     return {
       has: !!cred,
       status: cred?.testResult ?? null,
       label: cred?.label ?? 'Not configured',
+      url: cred?.serviceUrl ?? null,
     };
   }, [credentials]);
 
@@ -340,8 +341,8 @@ export function PipelineSettings() {
         <CardContent>
           <div className="space-y-2">
             {REQUIRED_SERVICES.map((svc) => {
-              const cred = getCredStatus(svc.key);
-              const apiStatus = healthApi[svc.key];
+              const cred = getCredStatus(svc.credServices);
+              const apiStatus = healthApi[svc.healthKey];
               const Icon = svc.icon;
               return (
                 <div key={svc.key} className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-800/30 px-4 py-3">
@@ -351,7 +352,7 @@ export function PipelineSettings() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-white">{svc.label}</p>
-                      <p className="text-xs text-gray-500">{cred.has ? cred.label : 'Not configured'}</p>
+                      <p className="text-xs text-gray-500">{cred.has ? (cred.url ? `${cred.label} — ${cred.url}` : cred.label) : 'Not configured'}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">

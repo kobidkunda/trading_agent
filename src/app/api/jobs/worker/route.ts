@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { db } from '@/lib/db';
 
 export async function GET() {
   const { getWorkerState } = await import('@/lib/engine/worker');
@@ -14,7 +15,23 @@ export async function POST(request: NextRequest) {
     const { setTestMode } = await import('@/lib/engine/mode');
     setTestMode(body.dryRun !== false);
     const intervalMs = body.intervalMs || 5000;
-    return NextResponse.json(startWorker(intervalMs));
+
+    const pendingScan = await db.job.findFirst({
+      where: { type: 'SCAN', status: 'PENDING' },
+    });
+    if (!pendingScan) {
+      await db.job.create({
+        data: {
+          type: 'SCAN',
+          status: 'PENDING',
+          priority: 10,
+          payload: JSON.stringify({ trigger: 'pipeline_start' }),
+        },
+      });
+    }
+
+    const result = startWorker(intervalMs);
+    return NextResponse.json(result);
   }
 
   if (action === 'stop') {

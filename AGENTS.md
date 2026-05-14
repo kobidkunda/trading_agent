@@ -33,7 +33,7 @@
    cp -r public .next/standalone/
    ```
 
-3. **Port via env var** — Next.js standalone does NOT support `-p` flag. Use `PORT=3000` environment variable.
+3. **Port via env var** — Next.js standalone does NOT support `-p` flag. Use `PORT=6501` environment variable.
 
 4. **TS build errors are ignored** — `ignoreBuildErrors: true` in next.config.ts. TypeScript errors won't block builds but will still cause IDE warnings.
 
@@ -51,9 +51,9 @@
 /home/z/my-project/
 ├── .env                          # DATABASE_URL=file:/home/z/my-project/db/custom.db
 ├── next.config.ts                # standalone output, ignoreBuildErrors
-├── start.sh                      # Production: watchdog auto-restart on port 3000
+├── start.sh                      # Production: watchdog auto-restart on port 6501
 ├── docker-compose.yml            # Optional: Qdrant, Ollama, SearXNG, Mem0
-├── Caddyfile                     # Reverse proxy port 81 → 3000
+├── Caddyfile                     # Reverse proxy port 6502 → 6501
 ├── prisma/
 │   └── schema.prisma             # 16 models (SQLite)
 ├── db/
@@ -183,14 +183,14 @@ Job (type, status, priority, payload, result)
 
 ```bash
 # Development
-npm run dev              # Start dev server on port 3000
+npm run dev              # Start dev server on port 6500
 npx prisma db push       # Sync schema to database
 npx prisma generate      # Regenerate Prisma client
 
 # Production
 npm run build            # Build + copy static assets
 ./start.sh               # Run with watchdog auto-restart
-PORT=3001 node .next/standalone/server.js  # Custom port
+PORT=6501 node .next/standalone/server.js  # Custom port
 
 # Linting
 npm run lint             # ESLint check
@@ -207,7 +207,25 @@ npm run db:reset         # Reset database (destructive)
 
 - **Missing icon import** → Client-side crash. Always check that every `lucide-react` icon used in JSX is in the import statement.
 - **Editing `src/components/ui/*` manually** → Will be overwritten. Use `npx shadcn@latest add` instead.
-- **Using `-p` flag with standalone** → Won't work. Use `PORT=3000` env var.
+- **Using `-p` flag with standalone** → Won't work. Use `PORT=6501` env var.
 - **Forgetting to copy static files after build** → CSS/JS 404. The `build` script handles this, but manual builds need: `cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/`.
 - **Creating `new PrismaClient()` outside `db.ts`** → Connection leaks. Always use `import { db } from '@/lib/db'`.
 - **Importing z-ai-web-dev-sdk in client components** → Build error. Only use in API routes.
+
+
+<claude-mem-context>
+# Memory Context
+
+# claude-mem status
+
+This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
+
+Memory injection starts on your second session in a project.
+
+`/learn-codebase` is available if the user wants to front-load the entire repo into memory in a single pass (~5 minutes on a typical repo, optional). Otherwise memory builds passively as work happens.
+
+Live activity: http://localhost:37777
+How it works: `/how-it-works`
+
+This message disappears once the first observation lands.
+</claude-mem-context>
