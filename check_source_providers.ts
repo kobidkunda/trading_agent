@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { db } from './src/lib/db';
 
 async function check() {

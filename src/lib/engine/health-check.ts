@@ -63,9 +63,9 @@ export async function checkServiceHealth(serviceName: string): Promise<ServiceHe
     const cred = await db.credential.findFirst({
       where: {
         OR: [
-          { service: { equals: serviceName, mode: 'insensitive' } },
-          { service: { equals: normalizedName, mode: 'insensitive' } },
-          { service: { equals: displayName, mode: 'insensitive' } },
+          { service: serviceName },
+          { service: normalizedName },
+          { service: displayName },
         ],
         isActive: true,
       },

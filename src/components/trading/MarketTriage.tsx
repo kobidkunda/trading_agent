@@ -48,8 +48,12 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 import type { Venue, TriageStatus, CandidateStage } from '@/lib/types';
 import { VENUE_OPTIONS, STAGE_COLORS } from '@/lib/constants';
+import { buildMarketTriageDetails } from '@/lib/engine/market-triage-view-model';
+import { filterMarketsForMode } from '@/lib/engine/market-triage-mode-filter';
+import { useTradingStore } from '@/store/trading-store';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -57,10 +61,14 @@ import { VENUE_OPTIONS, STAGE_COLORS } from '@/lib/constants';
 interface MarketApiRecord {
   id: string;
   title: string;
+  externalId?: string;
   venue: string;
   description: string | null;
   category: string;
   status: string;
+  dataSource?: 'MOCK' | 'REAL';
+  lastSeenAt?: string | null;
+  duplicateStatus?: 'UNIQUE' | 'DUPLICATE' | 'COOLDOWN';
   resolutionTime: string | null;
   createdAt: string;
   updatedAt: string;
@@ -80,6 +88,8 @@ interface MarketApiRecord {
     triageStatus: string | null;
     triageReason: string | null;
     researchQueued: boolean;
+    candidateScore?: number | null;
+    nextEligibleAt?: string | null;
   }>
 }
 
@@ -175,7 +185,9 @@ interface DecisionData {
 // Flattened row used by the UI
 interface MarketRow {
   id: string;
+  candidateId: string | null;
   title: string;
+  externalId: string | null;
   venue: Venue;
   liquidity: number;
   spread: number;
@@ -186,15 +198,33 @@ interface MarketRow {
   stage: CandidateStage;
   description: string;
   snapshotAt: string;
+  snapshotAgeMinutes: number;
   category: string;
+  dataSource: 'MOCK' | 'REAL';
+  candidateScore: number | null;
+  nextEligibleAt: string | null;
+  duplicateStatus: 'UNIQUE' | 'DUPLICATE' | 'COOLDOWN';
+  lastSeenAt: string | null;
 }
 
 function flattenMarketRecord(m: MarketApiRecord): MarketRow {
   const snapshot = m.snapshots[0];
   const candidate = m.tradeCandidates[0];
+  const details = buildMarketTriageDetails({
+    snapshotAt: snapshot?.timestamp ?? m.updatedAt,
+    now: new Date().toISOString(),
+    externalId: m.externalId ?? null,
+    dataSource: m.dataSource ?? 'REAL',
+    candidateScore: candidate?.candidateScore ?? null,
+    nextEligibleAt: candidate?.nextEligibleAt ?? null,
+    duplicateStatus: m.duplicateStatus ?? 'UNIQUE',
+    lastSeenAt: m.lastSeenAt ?? null,
+  });
   return {
     id: m.id,
+    candidateId: candidate?.id ?? null,
     title: m.title,
+    externalId: details.externalId,
     venue: m.venue as Venue,
     liquidity: snapshot?.liquidity ?? 0,
     spread: snapshot?.spread ?? 0,
@@ -205,7 +235,13 @@ function flattenMarketRecord(m: MarketApiRecord): MarketRow {
     stage: (candidate?.stage as CandidateStage) ?? 'SCANNED',
     description: m.description ?? '',
     snapshotAt: snapshot?.timestamp ?? m.updatedAt,
+    snapshotAgeMinutes: details.snapshotAgeMinutes,
     category: m.category,
+    dataSource: details.dataSource,
+    candidateScore: details.candidateScore,
+    nextEligibleAt: details.nextEligibleAt,
+    duplicateStatus: details.duplicateStatus,
+    lastSeenAt: details.lastSeenAt,
   };
 }
 
@@ -272,6 +308,7 @@ function InlineMarketDetail({
   onClose: () => void;
 }) {
   const router = useRouter();
+  const [forcingResearch, setForcingResearch] = useState(false);
   const [research, setResearch] = useState<ResearchRunData[]>([]);
   const [decisions, setDecisions] = useState<DecisionData[]>([]);
   const [loading, setLoading] = useState(false);
@@ -344,6 +381,37 @@ function InlineMarketDetail({
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              try {
+                setForcingResearch(true);
+                if (!market.candidateId) {
+                  toast.error('No candidate available for force research');
+                  return;
+                }
+
+                const res = await fetch(`/api/trading/candidates/${market.candidateId}/force-research`, {
+                  method: 'POST',
+                });
+                if (!res.ok) {
+                  toast.error('Failed to queue force research');
+                  return;
+                }
+                toast.success('Force research queued');
+              } catch {
+                toast.error('Failed to queue force research');
+              } finally {
+                setForcingResearch(false);
+              }
+            }}
+            disabled={forcingResearch}
+            className="h-6 text-[10px] border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+          >
+            {forcingResearch ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <RefreshCw className="h-3 w-3 mr-1" />}
+            Force Research
+          </Button>
           <Button 
             variant="outline" 
             size="sm" 
@@ -381,6 +449,37 @@ function InlineMarketDetail({
           <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
             <p className="text-[11px] text-gray-500"><Clock className="mr-1 inline h-3 w-3" />Last Snapshot</p>
             <p className="mt-1 text-sm font-bold text-gray-200">{new Date(market.snapshotAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+            <p className="text-[11px] text-gray-500">External ID</p>
+            <p className="mt-1 text-xs font-bold text-gray-200 break-all">{market.externalId ?? '—'}</p>
+          </div>
+          <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+            <p className="text-[11px] text-gray-500">Snapshot Age</p>
+            <p className="mt-1 text-sm font-bold text-gray-200">{market.snapshotAgeMinutes}m</p>
+          </div>
+          <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+            <p className="text-[11px] text-gray-500">Candidate Score</p>
+            <p className="mt-1 text-sm font-bold text-gray-200">{market.candidateScore ?? '—'}</p>
+          </div>
+          <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+            <p className="text-[11px] text-gray-500">Data Source</p>
+            <p className="mt-1 text-sm font-bold text-gray-200">{market.dataSource}</p>
+          </div>
+          <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+            <p className="text-[11px] text-gray-500">Duplicate Status</p>
+            <p className="mt-1 text-sm font-bold text-gray-200">{market.duplicateStatus}</p>
+          </div>
+          <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+            <p className="text-[11px] text-gray-500">Next Eligible</p>
+            <p className="mt-1 text-xs font-bold text-gray-200">{market.nextEligibleAt ? new Date(market.nextEligibleAt).toLocaleString() : '—'}</p>
+          </div>
+          <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+            <p className="text-[11px] text-gray-500">Last Seen</p>
+            <p className="mt-1 text-xs font-bold text-gray-200">{market.lastSeenAt ? new Date(market.lastSeenAt).toLocaleString() : '—'}</p>
           </div>
         </div>
 
@@ -843,6 +942,7 @@ function venueColor(v: Venue): string {
 // ── component ────────────────────────────────────────────────────────────────
 
 export function MarketTriage() {
+  const { tradingMode } = useTradingStore();
   const [markets, setMarkets] = useState<MarketRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -892,14 +992,14 @@ export function MarketTriage() {
   }, []);
 
   const filtered = useMemo(() => {
-    return markets.filter((m) => {
+    return filterMarketsForMode(markets, tradingMode).filter((m) => {
       if (search && !m.title.toLowerCase().includes(search.toLowerCase()))
         return false;
       if (venueFilter !== 'ALL' && m.venue !== venueFilter) return false;
       if (statusFilter !== 'ALL' && m.triageStatus !== statusFilter) return false;
       return true;
     });
-  }, [markets, search, venueFilter, statusFilter]);
+  }, [markets, tradingMode, search, venueFilter, statusFilter]);
 
   const summaryStats = useMemo(() => {
     const total = markets.length;
@@ -1060,6 +1160,7 @@ export function MarketTriage() {
                       <TableHead className="text-right text-gray-500">
                         Imp. Prob
                       </TableHead>
+                      <TableHead className="text-gray-500">Meta</TableHead>
                       <TableHead className="text-gray-500">Triage</TableHead>
                       <TableHead className="text-gray-500">Stage</TableHead>
                     </TableRow>
@@ -1068,7 +1169,7 @@ export function MarketTriage() {
                     {filtered.length === 0 ? (
                       <TableRow className="border-gray-800">
                         <TableCell
-                          colSpan={8}
+                          colSpan={9}
                           className="py-8 text-center text-sm text-gray-600"
                         >
                           No markets match the current filters
@@ -1137,12 +1238,20 @@ export function MarketTriage() {
                                 {(m.impliedProb * 100).toFixed(1)}%
                               </span>
                             </TableCell>
+                            <TableCell>
+                              <div className="space-y-1 text-[10px] text-gray-400">
+                                <p>ID: {m.externalId ?? '—'}</p>
+                                <p>Age: {m.snapshotAgeMinutes}m</p>
+                                <p>Score: {m.candidateScore ?? '—'}</p>
+                                <p>Src: {m.dataSource}</p>
+                              </div>
+                            </TableCell>
                             <TableCell>{triageBadge(m.triageStatus)}</TableCell>
                             <TableCell>{stageBadge(m.stage)}</TableCell>
                           </TableRow>
                           {expandedId === m.id && (
                             <TableRow key={`${m.id}-detail`} className="border-gray-800 bg-gray-900/80">
-                              <TableCell colSpan={8} className="p-0">
+                              <TableCell colSpan={9} className="p-0">
                                 <InlineMarketDetail market={m} onClose={() => setExpandedId(null)} />
                               </TableCell>
                             </TableRow>

@@ -110,7 +110,7 @@ export async function resolveAllPaperBetsForMarket(marketId: string, actualOutco
     where: { marketId, actualOutcome: null },
   });
 
-  const results = [];
+  const results: Array<Awaited<ReturnType<typeof resolvePaperBet>>> = [];
   for (const bet of bets) {
     const result = await resolvePaperBet(bet.id, actualOutcome, resolvedProb);
     results.push(result);

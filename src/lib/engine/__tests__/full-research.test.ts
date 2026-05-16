@@ -1,37 +1,53 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
-vi.mock('../research/search', () => ({
-  getCredentialForService: vi.fn(),
+const getCredentialForServiceMock: any = mock(async () => null);
+const runDeerFlowResearchMock: any = mock(async () => null);
+const runAgentReachResearchMock: any = mock(async () => null);
+const canRunStageMock = mock(async () => ({ canRun: true, skipReason: null }));
+const isServiceReachableMock = mock(async () => true);
+const checkServiceHealthMock = mock(async () => ({
+  name: 'Mock Service',
+  status: 'UP' as const,
+  lastChecked: new Date().toISOString(),
 }));
 
-import { getCredentialForService } from '../research/search';
-import { runFullResearch } from '../research/full-research';
-import { runTradingAgentsSimple } from '../research/tradingagents-api';
-import { runDeerFlowResearch } from '../research/deerflow';
-
-vi.mock('../research/deerflow', () => ({
-  runDeerFlowResearch: vi.fn(),
+mock.module('../research/search', () => ({
+  getCredentialForService: getCredentialForServiceMock,
 }));
 
-vi.mock('../research/tradingagents-api', async () => {
-  const actual = await vi.importActual<typeof import('../research/tradingagents-api')>('../research/tradingagents-api');
-  return {
-    ...actual,
-    runTradingAgentsSimple: vi.fn(),
-  };
-});
+mock.module('../research/deerflow', () => ({
+  runDeerFlowResearch: runDeerFlowResearchMock,
+}));
 
-vi.mock('../research/agent-reach', () => ({
-  runAgentReachResearch: vi.fn(),
+mock.module('../research/agent-reach', () => ({
+  runAgentReachResearch: runAgentReachResearchMock,
+}));
+
+mock.module('@/lib/engine/health-check', () => ({
+  canRunStage: canRunStageMock,
+  isServiceReachable: isServiceReachableMock,
+  checkServiceHealth: checkServiceHealthMock,
 }));
 
 describe('full research orchestrator', () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    getCredentialForServiceMock.mockClear();
+    runDeerFlowResearchMock.mockClear();
+    runAgentReachResearchMock.mockClear();
+    canRunStageMock.mockClear();
+    isServiceReachableMock.mockClear();
+    canRunStageMock.mockResolvedValue({ canRun: true, skipReason: null });
+    isServiceReachableMock.mockResolvedValue(true);
+    getCredentialForServiceMock.mockResolvedValue({
+      baseUrl: 'http://configured-tradingagents.local',
+      apiKey: 'secret-key',
+    });
   });
 
   it('runs all full research providers in parallel and returns the combined result shape', async () => {
-    vi.mocked(runDeerFlowResearch).mockResolvedValue({
+    const { runFullResearch } = await import('../research/full-research');
+
+    runDeerFlowResearchMock.mockResolvedValue({
       summary: 'DeerFlow summary',
       keyFindings: ['finding'],
       contradictions: [],
@@ -39,25 +55,28 @@ describe('full research orchestrator', () => {
       sourceQuality: 0.7,
       allSearchResults: [],
       allExtractedContent: [],
-    } as Awaited<ReturnType<typeof runDeerFlowResearch>>);
-    vi.mocked(runTradingAgentsSimple).mockResolvedValue({
-      status: 'completed',
-      query: 'Will BTC hit 100k?',
-      newsReport: { outlook: 'bullish' },
-      sentimentReport: null,
-      technicalReport: null,
-      fundamentalsReport: null,
-      redditReport: null,
-      xReport: null,
-      error: null,
     });
-    const { runAgentReachResearch } = await import('../research/agent-reach');
-    vi.mocked(runAgentReachResearch).mockResolvedValue({
+    runAgentReachResearchMock.mockResolvedValue({
       provider: 'agent_reach',
       status: 'completed',
       summary: 'Agent Reach summary',
       sources: [{ title: 'Source A', url: 'https://example.com/a', snippet: 'Evidence A' }],
     });
+    global.fetch = mock(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: 'completed',
+        query: 'Will BTC hit 100k?',
+        news_report: { outlook: 'bullish' },
+        sentiment_report: null,
+        technical_report: null,
+        fundamentals_report: null,
+        reddit_report: null,
+        x_report: null,
+        error: null,
+      }),
+    })) as unknown as typeof fetch;
 
     const result = await runFullResearch({
       marketId: 'm1',
@@ -82,25 +101,30 @@ describe('full research orchestrator', () => {
   });
 
   it('returns degraded when one provider fails and others succeed', async () => {
-    vi.mocked(runDeerFlowResearch).mockRejectedValue(new Error('timeout'));
-    vi.mocked(runTradingAgentsSimple).mockResolvedValue({
-      status: 'completed',
-      query: 'Will BTC hit 100k?',
-      newsReport: { outlook: 'bullish' },
-      sentimentReport: null,
-      technicalReport: null,
-      fundamentalsReport: null,
-      redditReport: null,
-      xReport: null,
-      error: null,
-    });
-    const { runAgentReachResearch } = await import('../research/agent-reach');
-    vi.mocked(runAgentReachResearch).mockResolvedValue({
+    const { runFullResearch } = await import('../research/full-research');
+
+    runDeerFlowResearchMock.mockRejectedValue(new Error('timeout'));
+    runAgentReachResearchMock.mockResolvedValue({
       provider: 'agent_reach',
       status: 'completed',
       summary: 'Agent Reach summary',
       sources: [],
     });
+    global.fetch = mock(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: 'completed',
+        query: 'Will BTC hit 100k?',
+        news_report: { outlook: 'bullish' },
+        sentiment_report: null,
+        technical_report: null,
+        fundamentals_report: null,
+        reddit_report: null,
+        x_report: null,
+        error: null,
+      }),
+    })) as unknown as typeof fetch;
 
     const result = await runFullResearch({
       marketId: 'm1',
@@ -125,28 +149,30 @@ describe('full research orchestrator', () => {
 
 describe('tradingagents simple request body', () => {
   beforeEach(() => {
-    vi.resetAllMocks();
-    vi.mocked(getCredentialForService).mockResolvedValue({
+    getCredentialForServiceMock.mockClear();
+    getCredentialForServiceMock.mockResolvedValue({
       baseUrl: 'http://configured-tradingagents.local',
       apiKey: 'secret-key',
     });
   });
 
   it('includes llm_provider and max_debate_rounds when provided', async () => {
-    global.fetch = vi.fn().mockResolvedValue({
+    const { runTradingAgentsSimple } = await import('../research/tradingagents-api');
+
+    global.fetch = mock(async () => ({
       ok: true,
       json: async () => ({ status: 'completed', query: 'Will BTC hit 100k?' }),
-    }) as unknown as typeof fetch;
+      status: 200,
+    })) as unknown as typeof fetch;
 
-    await vi.importActual<typeof import('../research/tradingagents-api')>('../research/tradingagents-api')
-      .then((module) => module.runTradingAgentsSimple(
-        'Will BTC hit 100k?',
-        '2026-04-19',
-        'paper_proglm',
-        'paper_lite',
-        'openai',
-        3,
-      ));
+    await runTradingAgentsSimple(
+      'Will BTC hit 100k?',
+      '2026-04-19',
+      'paper_proglm',
+      'paper_lite',
+      'openai',
+      3,
+    );
 
     expect(global.fetch).toHaveBeenCalledWith(
       'http://configured-tradingagents.local/analyze/all',

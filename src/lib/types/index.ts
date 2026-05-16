@@ -208,6 +208,14 @@ export interface RiskEngineInput {
   dailyExposure: number;
   categoryExposure: number;
   openPositions: number;
+  maxPositionSize?: number;
+  maxDailyExposure?: number;
+  maxCategoryExposure?: number;
+  minLiquidity?: number;
+  maxSpread?: number;
+  remainingMarketCapacity?: number;
+  remainingDailyCapacity?: number;
+  remainingCategoryCapacity?: number;
   marketLiquidity: number;
   marketSpread: number;
   catalystTiming?: string;

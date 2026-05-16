@@ -9,22 +9,26 @@ import { runTradingAgentsSimple } from '@/lib/engine/research/tradingagents-api'
 import { runFullResearch } from '@/lib/engine/research/full-research';
 import { synthesizeFindings, formatAgentReachAsSource, formatDeerFlowAsSource, formatSearchAsSource, formatTradingAgentsAsSource, formatRedditAsSource, formatXAsSource } from '@/lib/engine/research/synthesis';
 import { writeResearchToQdrant, retrieveSimilarMarkets } from '@/lib/engine/memory/qdrant';
-import { isTestMode } from '@/lib/engine/mode';
+import { isTestMode, getTradingMode, getModeState } from '@/lib/engine/mode';
 import { getStageRouting, getResearchDepth, getModelForStage } from '@/lib/engine/service-routing';
 import { createPaperBet } from '@/lib/engine/paper-bets';
+import { buildPaperOrderRecord, buildPaperPositionRecord, resolvePaperExecutionSize } from '@/lib/engine/paper-execution';
+import { createOrderCompat } from '@/lib/engine/prisma-runtime-compat';
 import { canRunStage, isServiceReachable } from '@/lib/engine/health-check';
 import { resolveResearchProvider } from '@/lib/engine/service-routing';
 import { runFirecrawlResearch } from '@/lib/engine/research/firecrawl-research';
 import { runPostDebatePrediction } from '@/lib/engine/post-debate-prediction';
+import { computeExposureTotals } from '@/lib/engine/risk-exposure';
+import { buildWatchlistPayload, shouldCreateExecutionJob, shouldCreateWatchlistEntry } from '@/lib/engine/pipeline-decision-helpers';
 import { getPolymarketMarkets } from '@/lib/venues/polymarket';
 import { getKalshiMarkets } from '@/lib/venues/kalshi';
-import type { JudgeOutput, LivePipelineStage, ResearchDepth, TransparencySourceRef } from '@/lib/types';
+import type { LivePipelineStage, ResearchDepth, TransparencySourceRef } from '@/lib/types';
 
 export interface PipelineStageEvent {
   stage: LivePipelineStage;
-  type?: 'started' | 'completed' | 'failed' | 'progress';
+  type?: 'started' | 'completed' | 'failed' | 'progress' | 'skipped';
   message: string;
-  provider?: 'deerflow' | 'tradingagents' | 'agent_reach' | 'system';
+  provider?: 'deerflow' | 'tradingagents' | 'agent_reach' | 'system' | 'firecrawl';
   serviceName?: string;
   model?: string | null;
   failureReason?: string | null;
@@ -242,7 +246,8 @@ export async function runPipelineForMarket(
 
     if (market.venue === 'POLYMARKET') {
       try {
-        const fresh = (await getPolymarketMarkets(100)).find((m: { externalId: string }) => m.externalId === market.externalId);
+        const polymarketResult = await getPolymarketMarkets(100);
+        const fresh = polymarketResult.markets.find((m: { externalId: string }) => m.externalId === market.externalId);
         if (fresh) {
           impliedProb = fresh.impliedProb;
           liquidity = fresh.liquidity;
@@ -253,7 +258,8 @@ export async function runPipelineForMarket(
       } catch (e) { console.warn('[Pipeline] Fresh Polymarket fetch failed, using cached snapshot:', e); }
     } else if (market.venue === 'KALSHI') {
       try {
-        const freshList = await getKalshiMarkets();
+        const kalshiResult = await getKalshiMarkets();
+        const freshList = kalshiResult.markets;
         const fresh = freshList.find((m: { ticker: string }) => m.ticker === market.externalId);
         if (fresh) {
           impliedProb = fresh.last_price / 100;
@@ -708,7 +714,7 @@ export async function runPipelineForMarket(
          return [];
        });
        const maxResults = routing.searchMaxResults ?? 50;
-       researchContext = searchResults.map((r) => `${r.title}: ${r.snippet}`).join('\n');
+       researchContext = searchResults.map((r: { title: string; snippet: string }) => `${r.title}: ${r.snippet}`).join('\n');
 
        // Additional parallel searches for more reach
        const extraSearches = await Promise.allSettled([
@@ -1059,19 +1065,18 @@ export async function runPipelineForMarket(
 
     const strategyDailyLimit = typeof strategy.maxDailyExposure === 'number' ? strategy.maxDailyExposure : 50000;
     const strategyCategoryLimit = typeof strategy.maxCategoryExposure === 'number' ? strategy.maxCategoryExposure : 10000;
+    const strategyPositionLimit = typeof strategy.maxExposurePerMarket === 'number' ? strategy.maxExposurePerMarket : 5000;
+    const strategyMinLiquidity = typeof strategy.minLiquidity === 'number' ? strategy.minLiquidity : 1000;
+    const strategyMaxSpread = typeof strategy.maxSpread === 'number' ? strategy.maxSpread : 0.05;
 
-    const openPositions = await db.position.findMany({ where: { status: 'OPEN' } });
+    const openPositions = await db.position.findMany({
+      where: { status: 'OPEN' },
+      include: { market: { select: { category: true } } },
+    });
 
-    let actualDailyExposure = 0;
-    let actualCategoryExposure = 0;
-    const today = new Date().toISOString().split('T')[0];
-
-    for (const pos of openPositions) {
-      actualDailyExposure += Number(pos.amount || 0);
-      if (pos.marketCategory === market.category) {
-        actualCategoryExposure += Number(pos.amount || 0);
-      }
-    }
+    const exposureTotals = computeExposureTotals(openPositions, market.category);
+    const actualDailyExposure = exposureTotals.dailyExposure;
+    const actualCategoryExposure = exposureTotals.categoryExposure;
 
     const dailyExposureBlocked = actualDailyExposure >= strategyDailyLimit;
     const categoryExposureBlocked = actualCategoryExposure >= strategyCategoryLimit;
@@ -1088,6 +1093,14 @@ export async function runPipelineForMarket(
       dailyExposure: dailyExposureBlocked ? strategyDailyLimit : actualDailyExposure,
       categoryExposure: categoryExposureBlocked ? strategyCategoryLimit : actualCategoryExposure,
       openPositions: openPositions.length,
+      maxPositionSize: strategyPositionLimit,
+      maxDailyExposure: strategyDailyLimit,
+      maxCategoryExposure: strategyCategoryLimit,
+      minLiquidity: strategyMinLiquidity,
+      maxSpread: strategyMaxSpread,
+      remainingMarketCapacity: Math.max(0, strategyPositionLimit),
+      remainingDailyCapacity: Math.max(0, strategyDailyLimit - actualDailyExposure),
+      remainingCategoryCapacity: Math.max(0, strategyCategoryLimit - actualCategoryExposure),
       marketLiquidity: liquidity,
       marketSpread: snapshot?.spread ?? 0.05,
       catalystTiming: undefined,
@@ -1124,61 +1137,94 @@ export async function runPipelineForMarket(
       });
     }
 
-    if (riskResult.action === 'BID' || riskResult.action === 'WATCH') {
-      result.stages.push('EXECUTE');
-      const isWatch = riskResult.action === 'WATCH';
-      const fullSize = riskResult.adjustedSize || riskResult.maxSize || computePositionSize(riskResult.edge, debateResult.finalConfidence, debateResult.finalUncertainty);
-      const orderSize = isWatch ? Math.round(fullSize * 0.5 * 100) / 100 : fullSize;
-      const orderPrice = riskResult.side === 'YES' ? impliedProb : 1 - impliedProb;
-      const prefix = isWatch ? 'WATCH_PAPER' : 'PAPER';
-
-      await db.order.create({
-        data: {
+    if (shouldCreateWatchlistEntry(riskResult.action as 'BID' | 'WATCH' | 'SKIP')) {
+      await db.watchlist.create({
+        data: buildWatchlistPayload({
           marketId,
-          venueOrderId: `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          side: riskResult.side ?? 'YES',
-          price: orderPrice,
-          size: orderSize,
-          filledSize: orderSize,
-          status: isWatch ? 'WATCH' : 'FILLED',
-          submittedAt: new Date(),
-          filledAt: isWatch ? null : new Date(),
-        },
+          decisionId: decision.id,
+          reason: riskResult.reason,
+          targetPrice: riskResult.side === 'YES' ? impliedProb : 1 - impliedProb,
+        }),
       });
-
-      await db.position.create({
-        data: {
-          marketId,
-          side: riskResult.side ?? 'YES',
-          entryPrice: orderPrice,
-          currentSize: orderSize,
-          avgEntryPrice: orderPrice,
-          unrealizedPnl: (debateResult.finalProbability - orderPrice) * orderSize,
-          realizedPnl: 0,
-          status: isWatch ? 'WATCH' : 'OPEN',
-        },
-      });
-
-      await createPaperBet({
-        marketId,
-        decisionId: decision.id,
-        predictionType: riskResult.action as 'BID' | 'WATCH',
-        predictedProb: debateResult.finalProbability,
-        predictedSide: riskResult.side ?? 'YES',
-        impliedProb,
-        edge: riskResult.edge,
-        confidence: debateResult.finalConfidence,
-        stake: orderSize,
-        entryPrice: orderPrice,
-      });
-
-      result.orderId = `${prefix}_${Date.now()}`;
 
       if (candidate) {
         await db.tradeCandidate.update({
           where: { id: candidate.id },
-          data: { stage: isWatch ? 'WATCHING' : 'EXECUTED' },
+          data: { stage: 'WATCHING' },
         });
+      }
+    }
+
+    if (shouldCreateExecutionJob(riskResult.action as 'BID' | 'WATCH' | 'SKIP')) {
+      result.stages.push('EXECUTE');
+      const orderSize = resolvePaperExecutionSize({
+        adjustedSize: riskResult.adjustedSize,
+        maxSize: riskResult.maxSize,
+        fallbackSize: computePositionSize(riskResult.edge, debateResult.finalConfidence, debateResult.finalUncertainty),
+      });
+
+      if (orderSize == null) {
+        await emitStage({
+          stage: 'DECISION',
+          type: 'skipped' as const,
+          message: 'Risk engine produced no executable paper order size',
+          provider: 'system',
+          serviceName: 'paper-execution',
+        });
+      } else {
+        const orderPrice = riskResult.side === 'YES' ? impliedProb : 1 - impliedProb;
+        const prefix = 'PAPER';
+        const now = new Date();
+        const venueOrderId = `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const mode = getTradingMode();
+        const dataSource = getModeState(mode).dataSource;
+
+        const order = await createOrderCompat(
+          buildPaperOrderRecord({
+            marketId,
+            venueOrderId,
+            side: riskResult.side ?? 'YES',
+            price: orderPrice,
+            size: orderSize,
+            now,
+            dataSource,
+          }) as unknown as Record<string, unknown>,
+        );
+
+        // Position is created by order-tracker when order is filled
+        // No instant position creation
+
+        await createPaperBet({
+          marketId,
+          decisionId: decision.id,
+          predictionType: 'BID',
+          predictedProb: debateResult.finalProbability,
+          predictedSide: riskResult.side ?? 'YES',
+          impliedProb,
+          edge: riskResult.edge,
+          confidence: debateResult.finalConfidence,
+          stake: orderSize,
+          entryPrice: orderPrice,
+        });
+
+        result.orderId = venueOrderId;
+
+        // Create lifecycle job to track this order
+        await db.job.create({
+          data: {
+            type: 'ORDER_TRACK',
+            status: 'PENDING',
+            priority: 4,
+            payload: JSON.stringify({ marketId }),
+          },
+        }).catch(() => {});
+
+        if (candidate) {
+          await db.tradeCandidate.update({
+            where: { id: candidate.id },
+            data: { stage: 'EXECUTED' },
+          });
+        }
       }
     }
 

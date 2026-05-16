@@ -12,17 +12,17 @@ export async function POST(request: NextRequest) {
 
   if (action === 'start') {
     const { startWorker } = await import('@/lib/engine/worker');
-    const { setTestMode } = await import('@/lib/engine/mode');
-    setTestMode(body.dryRun !== false);
+    const { setTradingMode, normalizeTradingMode } = await import('@/lib/engine/mode');
+    setTradingMode(normalizeTradingMode(body.mode ?? (body.dryRun === false ? 'LIVE' : 'PAPER')));
     const intervalMs = body.intervalMs || 5000;
 
     const pendingScan = await db.job.findFirst({
-      where: { type: 'SCAN', status: 'PENDING' },
+      where: { type: 'SCAN_VENUE', status: 'PENDING' },
     });
     if (!pendingScan) {
       await db.job.create({
         data: {
-          type: 'SCAN',
+          type: 'SCAN_VENUE',
           status: 'PENDING',
           priority: 10,
           payload: JSON.stringify({ trigger: 'pipeline_start' }),

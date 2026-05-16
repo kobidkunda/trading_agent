@@ -39,10 +39,12 @@ export async function GET(
       },
     });
     
-    const isInDatabase = !!latestResearch;
-    const isCompleteInDb = latestResearch?.endedAt !== null;
-    const isStale = latestResearch && 
-      new Date(latestResearch.endedAt || latestResearch.startedAt).getTime() < Date.now() - 300000; // 5 min old
+    const latestResearchAny = latestResearch as (typeof latestResearch & Record<string, any>) | null;
+    const isInDatabase = !!latestResearchAny;
+    const completedAt = latestResearchAny?.completedAt ?? latestResearchAny?.endedAt ?? null;
+    const isCompleteInDb = completedAt !== null;
+    const isStale = latestResearchAny &&
+      new Date(completedAt || latestResearchAny.startedAt).getTime() < Date.now() - 300000; // 5 min old
     
     // Determine overall status
     let status: 'idle' | 'scanning' | 'triaging' | 'researching' | 'judging' | 'risk_checking' | 'deciding' | 'completed' | 'error';
@@ -59,7 +61,7 @@ export async function GET(
       else status = 'researching';
     } else if (liveProgress?.status === 'completed' || (isInDatabase && isCompleteInDb && !isStale)) {
       status = 'completed';
-    } else if (liveProgress?.status === 'failed' || liveProgress?.status === 'error') {
+    } else if (liveProgress?.status === 'failed') {
       status = 'error';
     } else {
       status = 'idle';

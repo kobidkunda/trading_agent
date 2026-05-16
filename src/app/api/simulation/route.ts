@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSimState, startSimulation, stopSimulation, updateConfig } from '@/lib/engine/live-simulation';
+import { db } from '@/lib/db';
+import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
+import { getSimulationAccess } from '@/lib/engine/simulation-access';
 
 // GET: Get current simulation state (poll this for live updates)
 export async function GET() {
@@ -21,7 +24,24 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const action = body.action as string;
 
+    const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
+      db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_MODE_KEY } }),
+    ]);
+
+    const tradingConfig = getEffectiveTradingConfig({
+      strategySettings: strategySetting ? JSON.parse(strategySetting.value) : null,
+      tradingConfig: tradingConfigSetting ? JSON.parse(tradingConfigSetting.value) : null,
+      tradingMode: tradingModeSetting?.value ?? null,
+    });
+
     if (action === 'start') {
+      const access = getSimulationAccess(tradingConfig.mode);
+      if (!access.allowed) {
+        return NextResponse.json({ error: access.reason }, { status: 409 });
+      }
+
       const config = body.config ? {
         ...(body.config.venues ? { venues: body.config.venues } : {}),
         ...(body.config.categories ? { categories: body.config.categories } : {}),
@@ -29,7 +49,7 @@ export async function POST(request: NextRequest) {
         ...(body.config.marketsPerScan != null ? { marketsPerScan: body.config.marketsPerScan } : {}),
         ...(body.config.maxPortfolioExposure != null ? { maxPortfolioExposure: body.config.maxPortfolioExposure } : {}),
       } : undefined;
-      const newState = startSimulation(config);
+      const newState = await startSimulation(config);
       return NextResponse.json(newState);
     }
 
@@ -45,6 +65,11 @@ export async function POST(request: NextRequest) {
 
     // Legacy: single-run simulation still supported
     if (action === 'run') {
+      const access = getSimulationAccess(tradingConfig.mode);
+      if (!access.allowed) {
+        return NextResponse.json({ error: access.reason }, { status: 409 });
+      }
+
       const { runSimulation } = await import('@/lib/engine/simulation');
       const { DEFAULT_STRATEGY } = await import('@/lib/engine/risk');
       const marketCount = Math.min(Math.max(body.marketCount ?? 5, 1), 20);

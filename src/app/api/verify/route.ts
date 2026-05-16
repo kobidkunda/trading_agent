@@ -13,7 +13,7 @@ import { getAccuracyMetrics } from '@/lib/engine/paper-bets';
  */
 
 export async function GET() {
-  const results: Record<string, unknown> = {};
+  const results: Record<string, any> = {};
   const errors: string[] = [];
 
   try {

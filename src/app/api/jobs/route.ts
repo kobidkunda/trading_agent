@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'type is required' }, { status: 400 });
     }
 
-    const validTypes = ['SCAN', 'TRIAGE', 'RESEARCH', 'JUDGE', 'RISK', 'EXECUTE', 'SETTLE'];
+    const validTypes = ['SCAN', 'SCAN_VENUE', 'SCORE_CANDIDATES', 'TRIAGE', 'TRIAGE_MARKET', 'RESEARCH', 'RESEARCH_MARKET', 'JUDGE', 'JUDGE_MARKET', 'RISK', 'RISK_CHECK', 'EXECUTE', 'PAPER_EXECUTE', 'LIVE_EXECUTE', 'ORDER_TRACK', 'SETTLE', 'RESOLUTION_CHECK'];
     if (!validTypes.includes(body.type)) {
       return NextResponse.json(
         { error: `type must be one of: ${validTypes.join(', ')}` },

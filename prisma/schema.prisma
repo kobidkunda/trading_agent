@@ -7,22 +7,59 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum TradingMode {
+  DEMO
+  PAPER
+  LIVE
+}
+
+enum DataSource {
+  MOCK
+  REAL
+}
+
+enum ExecutionMode {
+  SIMULATED
+  REAL
+}
+
+enum OrderLifecycle {
+  PLANNED
+  SUBMITTED
+  PARTIALLY_FILLED
+  FILLED
+  CANCELLED
+  FAILED
+  EXPIRED
+}
+
 // ============ MARKETS ============
 
 model Market {
   id            String   @id @default(cuid())
-  externalId    String   @unique
+  externalId    String
   venue         String   // POLYMARKET | KALSHI | SX_BET | MANIFOLD
   title         String
+  normalizedTitle String?
+  titleHash     String?
   description   String?
   category      String   // politics, sports, crypto, science, etc.
   status        String   @default("ACTIVE") // ACTIVE, CLOSED, RESOLVED
   resolutionTime DateTime?
+  firstSeenAt   DateTime @default(now())
+  lastSeenAt    DateTime @default(now())
+  isActive      Boolean  @default(true)
+  isClosed      Boolean  @default(false)
+  isResolved    Boolean  @default(false)
+  dataSource    DataSource @default(REAL)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   snapshots        MarketSnapshot[]
   tradeCandidates  TradeCandidate[]
+  candidateRuns    CandidateRun[]
+  watchlistEntries Watchlist[]
+  scanRuns         ScanRun[]
   researchRuns     ResearchRun[]
   decisions        Decision[]
   orders           Order[]
@@ -30,19 +67,69 @@ model Market {
   outcomes         Outcome[]
   postmortems Postmortem[]
   paperBets PaperBet[]
+
+  @@unique([venue, externalId])
+  @@index([normalizedTitle])
+  @@index([titleHash])
+  @@index([lastSeenAt])
 }
 
 model MarketSnapshot {
   id             String   @id @default(cuid())
   marketId       String
   market         Market   @relation(fields: [marketId], references: [id])
+  venue          String?
+  price          Float?
   impliedProb    Float
+  impliedProbability Float?
   liquidity      Float
   spread         Float
   volume24h      Float    @default(0)
   bestBid        Float?
   bestAsk        Float?
+  yesPrice       Float?
+  noPrice        Float?
+  orderBookDepth Float?
+  rawJson        String?
   timestamp      DateTime @default(now())
+  capturedAt     DateTime @default(now())
+
+  @@index([marketId, capturedAt])
+}
+
+model ScanRun {
+  id             String      @id @default(cuid())
+  venue          String
+  mode           TradingMode @default(PAPER)
+  status         String      @default("PENDING")
+  startedAt      DateTime    @default(now())
+  finishedAt     DateTime?
+  marketsFetched Int         @default(0)
+  marketsCreated Int         @default(0)
+  marketsUpdated Int         @default(0)
+  marketsSkipped Int         @default(0)
+  queuedCandidates Int       @default(0)
+  errorMessage   String?
+  cursorStart    String?
+  cursorEnd      String?
+  metadataJson   String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  marketId       String?
+  market         Market?     @relation(fields: [marketId], references: [id])
+  candidateRuns  CandidateRun[]
+  tradeCandidates TradeCandidate[]
+}
+
+model VenueCursor {
+  id          String   @id @default(cuid())
+  venue       String   @unique
+  cursor      String?
+  lastScanAt  DateTime?
+  hasMore     Boolean  @default(false)
+  metadataJson String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 // ============ TRADE CANDIDATES ============
@@ -55,11 +142,47 @@ model TradeCandidate {
   triageStatus  String?  // RELEVANT, IRRELEVANT, AMBIGUOUS
   triageReason  String?
   researchQueued Boolean  @default(false)
+  lastProcessedAt DateTime?
+  nextEligibleAt DateTime?
+  processingLock String?
+  lockExpiresAt  DateTime?
+  retryCount     Int      @default(0)
+  lastError      String?
+  cooldownUntil  DateTime?
+  sourceScanRunId String?
+  sourceScanRun  ScanRun? @relation(fields: [sourceScanRunId], references: [id])
+  candidateScore Float?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   decisions      Decision[]
   researchRuns   ResearchRun[]
+
+  @@unique([marketId])
+  @@index([stage, nextEligibleAt])
+}
+
+model CandidateRun {
+  id                     String    @id @default(cuid())
+  marketId               String
+  market                 Market    @relation(fields: [marketId], references: [id])
+  scanRunId              String?
+  scanRun                ScanRun?  @relation(fields: [scanRunId], references: [id])
+  candidateScore         Float     @default(0)
+  liquidityScore         Float     @default(0)
+  spreadScore            Float     @default(0)
+  volumeScore            Float     @default(0)
+  freshnessScore         Float     @default(0)
+  priceMoveScore         Float     @default(0)
+  duplicatePenalty       Float     @default(0)
+  stalePenalty           Float     @default(0)
+  alreadyProcessedPenalty Float    @default(0)
+  decision               String?
+  reason                 String?
+  nextEligibleAt         DateTime?
+  createdAt              DateTime  @default(now())
+
+  @@index([marketId, createdAt])
 }
 
 // ============ RESEARCH ============
@@ -139,9 +262,29 @@ model Decision {
   urgency         String?  // LOW, MEDIUM, HIGH, IMMEDIATE
   fees            Float?
   slippage        Float?
+  mode            TradingMode @default(PAPER)
+  dataSource      DataSource  @default(REAL)
+  executionMode   ExecutionMode @default(SIMULATED)
   dryRun Boolean @default(true)
   paperBet PaperBet?
+  watchlistEntries Watchlist[]
   createdAt DateTime @default(now())
+}
+
+model Watchlist {
+  id          String   @id @default(cuid())
+  marketId    String
+  market      Market   @relation(fields: [marketId], references: [id])
+  decisionId  String?
+  decision    Decision? @relation(fields: [decisionId], references: [id])
+  reason      String?
+  targetPrice Float?
+  recheckAt   DateTime?
+  status      String   @default("ACTIVE")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([marketId, status])
 }
 
 // ============ ORDERS ============
@@ -151,18 +294,28 @@ model Order {
   marketId      String
   market        Market   @relation(fields: [marketId], references: [id])
   venueOrderId  String?
+  executionMode ExecutionMode @default(SIMULATED)
+  dataSource    DataSource @default(REAL)
+  lifecycleStatus OrderLifecycle @default(PLANNED)
   side          String   // YES, NO
   price         Float
   size          Float
   filledSize    Float    @default(0)
+  remainingSize Float    @default(0)
+  avgFillPrice  Float?
+  failureReason String?
   status        String   @default("PENDING") // PENDING, SUBMITTED, PARTIAL, FILLED, CANCELLED, FAILED
   retryCount    Int      @default(0)
   submittedAt   DateTime?
   filledAt      DateTime?
+  cancelledAt   DateTime?
+  expiredAt     DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   fills Fill[]
+
+  @@index([lifecycleStatus, submittedAt])
 }
 
 model Fill {

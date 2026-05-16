@@ -1,24 +1,27 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
-vi.mock('../research/search', () => ({
-  getCredentialForService: vi.fn(),
+const getCredentialForServiceMock: any = mock(async () => null);
+
+mock.module('../research/search', () => ({
+  getCredentialForService: getCredentialForServiceMock,
 }));
-
-import { getCredentialForService } from '../research/search';
-import { fetchTradingAgentsMetadata } from '../research/tradingagents-api';
 
 describe('fetchTradingAgentsMetadata', () => {
   beforeEach(() => {
-    vi.resetAllMocks();
+    getCredentialForServiceMock.mockClear();
+    getCredentialForServiceMock.mockResolvedValue(null);
+    delete process.env.TRADINGAGENTS_URL;
   });
 
   it('returns normalized metadata when TradingAgents /models succeeds', async () => {
-    vi.mocked(getCredentialForService).mockResolvedValue({
+    const { fetchTradingAgentsMetadata } = await import('../research/tradingagents-api');
+
+    getCredentialForServiceMock.mockResolvedValue({
       baseUrl: 'http://tradingagents.local',
       apiKey: 'test-key',
     });
 
-    global.fetch = vi.fn().mockResolvedValue({
+    global.fetch = mock(async () => ({
       ok: true,
       json: async () => ({
         providers: [
@@ -30,7 +33,7 @@ describe('fetchTradingAgentsMetadata', () => {
           { id: 'claude-3', name: 'Claude 3' },
         ],
       }),
-    }) as unknown as typeof fetch;
+    })) as unknown as typeof fetch;
 
     const result = await fetchTradingAgentsMetadata();
 
@@ -44,15 +47,17 @@ describe('fetchTradingAgentsMetadata', () => {
   });
 
   it('returns null when TradingAgents /models returns non-ok', async () => {
-    vi.mocked(getCredentialForService).mockResolvedValue({
+    const { fetchTradingAgentsMetadata } = await import('../research/tradingagents-api');
+
+    getCredentialForServiceMock.mockResolvedValue({
       baseUrl: 'http://tradingagents.local',
       apiKey: 'test-key',
     });
 
-    global.fetch = vi.fn().mockResolvedValue({
+    global.fetch = mock(async () => ({
       ok: false,
       status: 500,
-    }) as unknown as typeof fetch;
+    })) as unknown as typeof fetch;
 
     const result = await fetchTradingAgentsMetadata();
 
@@ -60,12 +65,16 @@ describe('fetchTradingAgentsMetadata', () => {
   });
 
   it('returns null when fetch throws', async () => {
-    vi.mocked(getCredentialForService).mockResolvedValue({
+    const { fetchTradingAgentsMetadata } = await import('../research/tradingagents-api');
+
+    getCredentialForServiceMock.mockResolvedValue({
       baseUrl: 'http://tradingagents.local',
       apiKey: 'test-key',
     });
 
-    global.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
+    global.fetch = mock(async () => {
+      throw new Error('Network error');
+    }) as unknown as typeof fetch;
 
     const result = await fetchTradingAgentsMetadata();
 
@@ -73,13 +82,15 @@ describe('fetchTradingAgentsMetadata', () => {
   });
 
   it('uses environment variable when no credential', async () => {
-    vi.mocked(getCredentialForService).mockResolvedValue(null);
+    const { fetchTradingAgentsMetadata } = await import('../research/tradingagents-api');
+
+    getCredentialForServiceMock.mockResolvedValue(null);
     process.env.TRADINGAGENTS_URL = 'http://env-tradingagents.local';
 
-    global.fetch = vi.fn().mockResolvedValue({
+    global.fetch = mock(async () => ({
       ok: true,
       json: async () => ({ providers: [], models: [] }),
-    }) as unknown as typeof fetch;
+    })) as unknown as typeof fetch;
 
     await fetchTradingAgentsMetadata();
 
@@ -92,17 +103,17 @@ describe('fetchTradingAgentsMetadata', () => {
         }),
       })
     );
-
-    delete process.env.TRADINGAGENTS_URL;
   });
 
   it('handles providers/models in data.data wrapper', async () => {
-    vi.mocked(getCredentialForService).mockResolvedValue({
+    const { fetchTradingAgentsMetadata } = await import('../research/tradingagents-api');
+
+    getCredentialForServiceMock.mockResolvedValue({
       baseUrl: 'http://tradingagents.local',
       apiKey: 'test-key',
     });
 
-    global.fetch = vi.fn().mockResolvedValue({
+    global.fetch = mock(async () => ({
       ok: true,
       json: async () => ({
         data: {
@@ -110,7 +121,7 @@ describe('fetchTradingAgentsMetadata', () => {
           models: [{ id: 'llama2', name: 'Llama 2' }],
         },
       }),
-    }) as unknown as typeof fetch;
+    })) as unknown as typeof fetch;
 
     const result = await fetchTradingAgentsMetadata();
 
@@ -122,12 +133,14 @@ describe('fetchTradingAgentsMetadata', () => {
   });
 
   it('filters out items with empty ids', async () => {
-    vi.mocked(getCredentialForService).mockResolvedValue({
+    const { fetchTradingAgentsMetadata } = await import('../research/tradingagents-api');
+
+    getCredentialForServiceMock.mockResolvedValue({
       baseUrl: 'http://tradingagents.local',
       apiKey: 'test-key',
     });
 
-    global.fetch = vi.fn().mockResolvedValue({
+    global.fetch = mock(async () => ({
       ok: true,
       json: async () => ({
         providers: [
@@ -140,7 +153,7 @@ describe('fetchTradingAgentsMetadata', () => {
           { id: '', name: 'Empty ID' },
         ],
       }),
-    }) as unknown as typeof fetch;
+    })) as unknown as typeof fetch;
 
     const result = await fetchTradingAgentsMetadata();
 
@@ -151,15 +164,17 @@ describe('fetchTradingAgentsMetadata', () => {
   });
 
   it('includes authorization header when apiKey is available', async () => {
-    vi.mocked(getCredentialForService).mockResolvedValue({
+    const { fetchTradingAgentsMetadata } = await import('../research/tradingagents-api');
+
+    getCredentialForServiceMock.mockResolvedValue({
       baseUrl: 'http://tradingagents.local',
       apiKey: 'secret-api-key',
     });
 
-    global.fetch = vi.fn().mockResolvedValue({
+    global.fetch = mock(async () => ({
       ok: true,
       json: async () => ({ providers: [], models: [] }),
-    }) as unknown as typeof fetch;
+    })) as unknown as typeof fetch;
 
     await fetchTradingAgentsMetadata();
 
@@ -174,15 +189,17 @@ describe('fetchTradingAgentsMetadata', () => {
   });
 
   it('returns empty arrays when response has no providers/models', async () => {
-    vi.mocked(getCredentialForService).mockResolvedValue({
+    const { fetchTradingAgentsMetadata } = await import('../research/tradingagents-api');
+
+    getCredentialForServiceMock.mockResolvedValue({
       baseUrl: 'http://tradingagents.local',
       apiKey: 'test-key',
     });
 
-    global.fetch = vi.fn().mockResolvedValue({
+    global.fetch = mock(async () => ({
       ok: true,
       json: async () => ({}),
-    }) as unknown as typeof fetch;
+    })) as unknown as typeof fetch;
 
     const result = await fetchTradingAgentsMetadata();
 

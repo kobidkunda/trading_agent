@@ -90,12 +90,15 @@ export async function retrieveSimilarMarkets(
 
   try {
     const data = await response.json();
-    return (data.result || []).map((r: Record<string, unknown>) => ({
-      marketId: String(r.payload?.marketId || r.id),
-      title: String(r.payload?.title || ''),
+    return (data.result || []).map((r: Record<string, unknown>) => {
+      const payload = (r.payload || {}) as Record<string, unknown>;
+      return {
+      marketId: String(payload.marketId || r.id),
+      title: String(payload.title || ''),
       score: Number(r.score || 0),
-      payload: (r.payload || {}) as Record<string, unknown>,
-    }));
+      payload,
+    };
+    });
   } catch {
     return [];
   }

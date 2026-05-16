@@ -27,6 +27,8 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { getModeDisplayCopy, getModeToggleTarget } from '@/lib/engine/trading-view-model';
+import { syncTradingModeFromBackend } from '@/lib/engine/trading-mode-client';
 import { StrategyHub } from '@/components/trading/StrategyHub';
 import { CredentialManager } from '@/components/trading/CredentialManager';
 import { MarketTriage } from '@/components/trading/MarketTriage';
@@ -63,8 +65,9 @@ const NAV_ITEMS: NavItem[] = [
 
 function TopBar() {
   const {
-    dryRunMode,
+    tradingMode,
     globalKillSwitch,
+    setTradingMode,
     setDryRunMode,
     setGlobalKillSwitch,
     toggleSidebar,
@@ -90,6 +93,50 @@ function TopBar() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    syncTradingModeFromBackend().catch(() => {
+      // keep local defaults when backend mode unavailable
+    });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncSimulationStatus = async () => {
+      try {
+        const response = await fetch('/api/simulation', { cache: 'no-store' });
+        if (!response.ok || cancelled) return;
+
+        const payload = (await response.json()) as { status?: string };
+        setGlobalKillSwitch(payload.status !== 'RUNNING');
+      } catch {
+        // keep current UI state when simulation status is temporarily unavailable
+      }
+    };
+
+    void syncSimulationStatus();
+    const interval = setInterval(() => {
+      void syncSimulationStatus();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [setGlobalKillSwitch]);
+
+  const modeCopy = getModeDisplayCopy(tradingMode);
+  const nextMode = getModeToggleTarget(tradingMode);
+
+  const handleModeToggle = useCallback(() => {
+    if (tradingMode === 'PAPER') {
+      setDryRunMode(false);
+      return;
+    }
+
+    setTradingMode(nextMode);
+  }, [nextMode, setDryRunMode, setTradingMode, tradingMode]);
+
   return (
     <header className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-gray-800 bg-gray-950/90 px-4 backdrop-blur-md lg:px-6">
       <div className="flex items-center gap-3">
@@ -112,7 +159,7 @@ function TopBar() {
       </div>
 
       <div className="flex items-center gap-2">
-        {/* Dry-run / Live toggle */}
+        {/* Trading mode toggle */}
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -121,25 +168,31 @@ function TopBar() {
                 size="sm"
                 className={cn(
                   'gap-2 text-xs font-medium',
-                  dryRunMode
+                  tradingMode === 'DEMO'
                     ? 'text-amber-400 hover:text-amber-300'
-                    : 'text-emerald-400 hover:text-emerald-300'
+                    : tradingMode === 'LIVE'
+                      ? 'text-red-400 hover:text-red-300'
+                      : 'text-emerald-400 hover:text-emerald-300'
                 )}
-                onClick={() => setDryRunMode(!dryRunMode)}
+                onClick={handleModeToggle}
               >
                 <span
                   className={cn(
                     'h-2 w-2 rounded-full',
-                    dryRunMode ? 'bg-amber-400' : 'animate-pulse bg-emerald-400'
+                    tradingMode === 'DEMO'
+                      ? 'bg-amber-400'
+                      : tradingMode === 'LIVE'
+                        ? 'bg-red-400'
+                        : 'animate-pulse bg-emerald-400'
                   )}
                 />
                 <span className="hidden sm:inline">
-                  {dryRunMode ? 'DRY-RUN' : 'LIVE'}
+                  {tradingMode}
                 </span>
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              <p>Click to switch to {dryRunMode ? 'Live' : 'Dry-Run'} mode</p>
+              <p>Click to switch to {nextMode} mode</p>
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -166,16 +219,14 @@ function TopBar() {
                 onClick={() => setGlobalKillSwitch(!globalKillSwitch)}
               >
                 <OctagonX className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">
-                  {globalKillSwitch ? 'STOPPED' : 'E-STOP'}
-                </span>
+                <span className="hidden sm:inline">{globalKillSwitch ? 'STOPPED' : 'E-STOP'}</span>
               </Button>
             </TooltipTrigger>
             <TooltipContent>
               <p>
                 {globalKillSwitch
                   ? 'Emergency stop active — click to resume'
-                  : 'Emergency stop — halts all trading activity'}
+                  : `${modeCopy.label} emergency stop — halts all trading activity`}
               </p>
             </TooltipContent>
           </Tooltip>

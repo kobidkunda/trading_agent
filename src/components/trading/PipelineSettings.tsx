@@ -29,6 +29,9 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { useTradingStore } from '@/store/trading-store';
+import { getPipelineModeSummary } from '@/lib/engine/pipeline-settings-view-model';
+import { summarizePipelineObservability, hasPipelineData } from '@/lib/engine/pipeline-observability-view-model';
 
 interface WorkerState {
   status: 'STOPPED' | 'RUNNING';
@@ -64,6 +67,22 @@ interface QdrantLinks {
   tradeHistory?: string;
 }
 
+interface ScanRunSummary {
+  id: string;
+}
+
+interface CandidateSummary {
+  id: string;
+}
+
+interface WatchlistSummary {
+  id: string;
+}
+
+interface OpenOrderSummary {
+  id: string;
+}
+
 const REQUIRED_SERVICES = [
   { key: 'qdrant', healthKey: 'Qdrant', label: 'Qdrant', icon: Database, credServices: ['qdrant'] },
   { key: 'llm', healthKey: 'LLM', label: 'Ollama / LLM', icon: Cpu, credServices: ['llm', 'ollama', 'LLM Provider'] },
@@ -94,21 +113,31 @@ function formatTime(iso: string | null): string {
 }
 
 export function PipelineSettings() {
+  const { tradingMode } = useTradingStore();
+  const modeSummary = getPipelineModeSummary(tradingMode);
   const [worker, setWorker] = useState<WorkerState | null>(null);
   const [health, setHealth] = useState<HealthData | null>(null);
   const [credentials, setCredentials] = useState<CredentialSummary[]>([]);
   const [qdrantLinks, setQdrantLinks] = useState<QdrantLinks>({});
+  const [scanRuns, setScanRuns] = useState<ScanRunSummary[]>([]);
+  const [candidates, setCandidates] = useState<CandidateSummary[]>([]);
+  const [watchlist, setWatchlist] = useState<WatchlistSummary[]>([]);
+  const [openOrders, setOpenOrders] = useState<OpenOrderSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
   const fetchAll = useCallback(async () => {
     try {
-      const [workerRes, healthRes, credsRes, settingsRes] = await Promise.all([
+      const [workerRes, healthRes, credsRes, settingsRes, scanRunsRes, candidatesRes, watchlistRes, openOrdersRes] = await Promise.all([
         fetch('/api/jobs/worker'),
         fetch('/api/health'),
         fetch('/api/credentials'),
         fetch('/api/settings'),
+        fetch('/api/trading/scan-runs'),
+        fetch('/api/trading/candidates?limit=50'),
+        fetch('/api/trading/watchlist'),
+        fetch('/api/trading/orders/open'),
       ]);
 
       if (workerRes.ok) {
@@ -135,6 +164,22 @@ export function PipelineSettings() {
         }
         setQdrantLinks(links);
       }
+      if (scanRunsRes.ok) {
+        const data = await scanRunsRes.json();
+        setScanRuns(data.scanRuns || []);
+      }
+      if (candidatesRes.ok) {
+        const data = await candidatesRes.json();
+        setCandidates(data.candidates || []);
+      }
+      if (watchlistRes.ok) {
+        const data = await watchlistRes.json();
+        setWatchlist(data.watchlist || []);
+      }
+      if (openOrdersRes.ok) {
+        const data = await openOrdersRes.json();
+        setOpenOrders(data.orders || []);
+      }
     } catch {
       toast.error('Failed to fetch pipeline data');
     } finally {
@@ -156,7 +201,7 @@ export function PipelineSettings() {
       const res = await fetch('/api/jobs/worker', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, dryRun: true }),
+        body: JSON.stringify({ action, mode: tradingMode }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -171,7 +216,7 @@ export function PipelineSettings() {
     } finally {
       setToggling(false);
     }
-  }, [worker, fetchAll]);
+  }, [worker, fetchAll, tradingMode]);
 
   const syncMarkets = useCallback(async () => {
     setSyncing(true);
@@ -214,6 +259,8 @@ export function PipelineSettings() {
 
   const isRunning = worker?.status === 'RUNNING';
   const healthApi = health?.apiHealth ?? {};
+  const observability = summarizePipelineObservability({ scanRuns, candidates, watchlist, openOrders });
+  const showObservability = hasPipelineData({ scanRuns, candidates, watchlist, openOrders });
 
   return (
     <div className="space-y-6">
@@ -263,6 +310,58 @@ export function PipelineSettings() {
           </Button>
         </div>
       </div>
+
+      <Card className="border-gray-800 bg-gray-900">
+        <CardContent className="p-4">
+          <div className="grid gap-3 sm:grid-cols-4">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.2em] text-gray-500">Mode</p>
+              <p className="mt-1 text-sm font-semibold text-white">{modeSummary.title}</p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.2em] text-gray-500">Data source</p>
+              <p className="mt-1 text-sm font-semibold text-white">{modeSummary.dataSource}</p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.2em] text-gray-500">Execution</p>
+              <p className="mt-1 text-sm font-semibold text-white">{modeSummary.executionMode}</p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.2em] text-gray-500">Mode warning</p>
+              <p className="mt-1 text-sm text-gray-300">{modeSummary.warning}</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {showObservability && (
+        <Card className="border-gray-800 bg-gray-900">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold text-white">Pipeline Observability</CardTitle>
+            <CardDescription className="text-xs text-gray-500">Counts from scan runs, candidates, watchlist, and open orders.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+                <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500">Scan Runs</p>
+                <p className="mt-1 font-mono text-lg font-semibold text-white">{observability.scanRunsCount}</p>
+              </div>
+              <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+                <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500">Candidates</p>
+                <p className="mt-1 font-mono text-lg font-semibold text-white">{observability.candidatesCount}</p>
+              </div>
+              <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+                <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500">Watchlist</p>
+                <p className="mt-1 font-mono text-lg font-semibold text-white">{observability.watchlistCount}</p>
+              </div>
+              <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+                <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500">Open Orders</p>
+                <p className="mt-1 font-mono text-lg font-semibold text-white">{observability.openOrdersCount}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Worker State */}
       <Card className="border-gray-800 bg-gray-900">

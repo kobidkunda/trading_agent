@@ -20,23 +20,28 @@ const MIN_LIQUIDITY = 1000;
 const MAX_SPREAD = 0.05;
 
 export function computeRisk(input: RiskEngineInput): RiskEngineOutput {
+  const minLiquidity = input.minLiquidity ?? MIN_LIQUIDITY;
+  const maxSpread = input.maxSpread ?? MAX_SPREAD;
+  const maxDailyExposure = input.maxDailyExposure ?? MAX_DAILY_EXPOSURE;
+  const maxCategoryExposure = input.maxCategoryExposure ?? MAX_CATEGORY_EXPOSURE;
+  const maxPositionSize = input.maxPositionSize ?? MAX_POSITION_SIZE;
   const edge = Math.abs(input.judgeProbability - input.impliedProbability);
   const effectiveEdge = edge - input.fees - input.slippage;
 
-  if (input.marketLiquidity < MIN_LIQUIDITY) {
-    return skip('LOW_LIQUIDITY', `Market liquidity ${input.marketLiquidity} below minimum ${MIN_LIQUIDITY}`, edge, input);
+  if (input.marketLiquidity < minLiquidity) {
+    return skip('LOW_LIQUIDITY', `Market liquidity ${input.marketLiquidity} below minimum ${minLiquidity}`, edge, input);
   }
 
-  if (input.marketSpread > MAX_SPREAD) {
-    return skip('WIDE_SPREAD', `Market spread ${(input.marketSpread * 100).toFixed(2)}% exceeds max ${(MAX_SPREAD * 100).toFixed(2)}%`, edge, input);
+  if (input.marketSpread > maxSpread) {
+    return skip('WIDE_SPREAD', `Market spread ${(input.marketSpread * 100).toFixed(2)}% exceeds max ${(maxSpread * 100).toFixed(2)}%`, edge, input);
   }
 
-  if (input.dailyExposure >= MAX_DAILY_EXPOSURE) {
-    return skip('DAILY_LIMIT_REACHED', `Daily exposure ${input.dailyExposure} reached limit ${MAX_DAILY_EXPOSURE}`, edge, input);
+  if (input.dailyExposure >= maxDailyExposure) {
+    return skip('DAILY_LIMIT_REACHED', `Daily exposure ${input.dailyExposure} reached limit ${maxDailyExposure}`, edge, input);
   }
 
-  if (input.categoryExposure >= MAX_CATEGORY_EXPOSURE) {
-    return skip('CORRELATED_RISK', `Category exposure ${input.categoryExposure} reached limit ${MAX_CATEGORY_EXPOSURE}`, edge, input);
+  if (input.categoryExposure >= maxCategoryExposure) {
+    return skip('CORRELATED_RISK', `Category exposure ${input.categoryExposure} reached limit ${maxCategoryExposure}`, edge, input);
   }
 
   if (input.catalystTiming === 'CLOSE') {
@@ -58,7 +63,13 @@ export function computeRisk(input: RiskEngineInput): RiskEngineOutput {
   // ── BID: Strong edge + high confidence ──
   if (effectiveEdge >= BID_EDGE_THRESHOLD && input.confidence >= BID_CONFIDENCE_THRESHOLD) {
     const baseSize = computePositionSize(effectiveEdge, input.confidence, input.uncertainty);
-    const adjustedSize = Math.min(baseSize, MAX_POSITION_SIZE - input.openPositions);
+    const adjustedSize = Math.min(
+      baseSize,
+      maxPositionSize,
+      input.remainingMarketCapacity ?? maxPositionSize,
+      input.remainingDailyCapacity ?? maxDailyExposure,
+      input.remainingCategoryCapacity ?? maxCategoryExposure,
+    );
     const side: OrderSide = input.judgeProbability > input.impliedProbability ? 'YES' : 'NO';
     const urgency = computeUrgency(effectiveEdge, input.confidence);
     return {

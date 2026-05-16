@@ -48,6 +48,8 @@ import { cn } from '@/lib/utils';
 import { useTradingStore } from '@/store/trading-store';
 import { VENUE_OPTIONS, CATEGORY_OPTIONS } from '@/lib/constants';
 import { DEFAULT_STRATEGY, DEFAULT_STAGE_ROUTING } from '@/lib/engine/risk';
+import { syncTradingModeFromBackend } from '@/lib/engine/trading-mode-client';
+import { getModeDisplayCopy } from '@/lib/engine/trading-view-model';
 import type { StrategySettings, Venue, StageServiceMapping, ResearchDepth, MetadataOption, TradingAgentsMetadataResponse } from '@/lib/types';
 import { withStaleOption } from '@/lib/engine/research/transparency';
 
@@ -103,7 +105,7 @@ function getTradingAgentsSourceLabel(source: TradingAgentsMetadataResponse['sour
 // ── component ────────────────────────────────────────────────────────────────
 
 export function StrategyHub() {
-  const { dryRunMode, setDryRunMode } = useTradingStore();
+  const { tradingMode, setTradingMode } = useTradingStore();
   const [settings, setSettings] = useState<StrategySettings>(DEFAULT_STRATEGY);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -116,6 +118,7 @@ export function StrategyHub() {
         const res = await fetch('/api/strategy');
         if (res.ok && !cancelled) {
           const data = await res.json();
+          setTradingMode(data.mode ?? 'PAPER');
           // Merge with defaults to ensure all fields exist
           setSettings({
             ...DEFAULT_STRATEGY,
@@ -145,12 +148,18 @@ export function StrategyHub() {
   const saveSettings = useCallback(async () => {
     setSaving(true);
     try {
+      const responseBody = {
+        ...settings,
+        mode: tradingMode,
+      };
+
       const res = await fetch('/api/strategy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify(responseBody),
       });
       if (res.ok) {
+        await syncTradingModeFromBackend();
         toast.success('Strategy settings saved');
       } else {
         toast.error('Failed to save settings');
@@ -160,13 +169,15 @@ export function StrategyHub() {
     } finally {
       setSaving(false);
     }
-  }, [settings]);
+  }, [settings, tradingMode, setTradingMode]);
 
   const resetSettings = useCallback(() => {
     setSettings(DEFAULT_STRATEGY);
-    setDryRunMode(true);
+    setTradingMode('PAPER');
     toast.info('Settings reset to defaults');
-  }, [setDryRunMode]);
+  }, [setTradingMode]);
+
+  const modeCopy = getModeDisplayCopy(tradingMode);
 
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -1273,57 +1284,86 @@ export function StrategyHub() {
       <Card className="border-gray-800 bg-gray-900">
         <CardHeader className="pb-3">
           <CardTitle className="text-base text-white">Trading Mode</CardTitle>
-          <CardDescription className="text-gray-500">
-            Switch between dry-run simulation and live trading
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
-            <div className="flex items-center gap-4 rounded-xl border border-gray-800 bg-gray-800/40 p-4">
-              <div
-                className={cn(
-                  'flex h-14 w-14 items-center justify-center rounded-full',
-                  dryRunMode ? 'bg-amber-500/20' : 'bg-emerald-500/20'
-                )}
-              >
-                <div
-                  className={cn(
-                    'h-6 w-6 rounded-full transition-colors',
-                    dryRunMode ? 'bg-amber-400' : 'animate-pulse bg-emerald-400'
-                  )}
-                />
-              </div>
-              <div>
-                <p
-                  className={cn(
-                    'text-lg font-bold',
-                    dryRunMode ? 'text-amber-400' : 'text-emerald-400'
-                  )}
-                >
-                  {dryRunMode ? 'DRY-RUN MODE' : 'LIVE MODE'}
-                </p>
-                <p className="text-xs text-gray-500">
-                  {dryRunMode
-                    ? 'No real trades will be executed'
-                    : 'Real money is at risk'}
-                </p>
-              </div>
-            </div>
+           <CardDescription className="text-gray-500">
+             Switch between demo, paper, and live trading modes
+           </CardDescription>
+         </CardHeader>
+         <CardContent>
+           <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center">
+             <div className="flex items-center gap-4 rounded-xl border border-gray-800 bg-gray-800/40 p-4">
+               <div
+                 className={cn(
+                   'flex h-14 w-14 items-center justify-center rounded-full',
+                   modeCopy.badgeTone === 'amber'
+                     ? 'bg-amber-500/20'
+                     : modeCopy.badgeTone === 'red'
+                       ? 'bg-red-500/20'
+                       : 'bg-emerald-500/20'
+                 )}
+               >
+                 <div
+                   className={cn(
+                     'h-6 w-6 rounded-full transition-colors',
+                     modeCopy.badgeTone === 'amber'
+                       ? 'bg-amber-400'
+                       : modeCopy.badgeTone === 'red'
+                         ? 'bg-red-400'
+                         : 'animate-pulse bg-emerald-400'
+                   )}
+                 />
+               </div>
+               <div>
+                 <p
+                   className={cn(
+                     'text-lg font-bold',
+                     modeCopy.badgeTone === 'amber'
+                       ? 'text-amber-400'
+                       : modeCopy.badgeTone === 'red'
+                         ? 'text-red-400'
+                         : 'text-emerald-400'
+                   )}
+                 >
+                   {modeCopy.label}
+                 </p>
+                 <p className="text-xs text-gray-500">{modeCopy.description}</p>
+               </div>
+             </div>
 
-            <Switch
-              checked={!dryRunMode}
-              onCheckedChange={(checked) => setDryRunMode(!checked)}
-              className="data-[state=checked]:bg-emerald-600"
-            />
+             <div className="flex flex-wrap gap-2">
+               {(['DEMO', 'PAPER', 'LIVE'] as const).map((modeOption) => {
+                 const active = tradingMode === modeOption;
+                 return (
+                   <Button
+                     key={modeOption}
+                     type="button"
+                     variant="ghost"
+                     size="sm"
+                     className={cn(
+                       'border border-gray-800',
+                       active
+                         ? modeOption === 'DEMO'
+                           ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                           : modeOption === 'LIVE'
+                             ? 'bg-red-500/10 text-red-300 border-red-500/30'
+                             : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                         : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                     )}
+                     onClick={() => setTradingMode(modeOption)}
+                   >
+                     {modeOption}
+                   </Button>
+                 );
+               })}
+             </div>
 
-            {!dryRunMode && (
-              <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2">
-                <AlertTriangle className="h-4 w-4 text-red-400" />
-                <span className="text-xs font-medium text-red-400">
-                  Real funds will be used — proceed with caution
-                </span>
-              </div>
-            )}
+             {tradingMode === 'LIVE' && (
+               <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2">
+                 <AlertTriangle className="h-4 w-4 text-red-400" />
+                 <span className="text-xs font-medium text-red-400">
+                   Live execution remains safety-gated until connectors are enabled
+                 </span>
+               </div>
+             )}
           </div>
         </CardContent>
       </Card>

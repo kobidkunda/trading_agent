@@ -1,20 +1,48 @@
 import { db } from '@/lib/db';
-import { getPolymarketMarkets } from '@/lib/venues/polymarket';
-import { getKalshiMarkets } from '@/lib/venues/kalshi';
+import { getPolymarketMarkets, getAllPolymarketMarkets, savePolymarketCursor } from '@/lib/venues/polymarket';
+import { getKalshiMarkets, getAllKalshiMarkets, saveKalshiCursor } from '@/lib/venues/kalshi';
+import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
+import { upsertScannedMarket } from '@/lib/engine/scanner-upsert';
+import { normalizeTradingMode } from '@/lib/engine/mode';
 
 export async function runScanner(
   venues?: string[],
   categories?: string[],
 ): Promise<Record<string, unknown>> {
-  const strategySetting = await db.settings.findUnique({ where: { key: 'strategy_settings' } });
-  const strategy = strategySetting ? JSON.parse(strategySetting.value) : {};
-  const enabledVenues = venues || strategy.enabledVenues || ['POLYMARKET', 'KALSHI'];
-  const enabledCategories = categories || strategy.enabledCategories || [];
+  const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
+    db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
+    db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
+    db.settings.findUnique({ where: { key: TRADING_MODE_KEY } }),
+  ]);
+
+  const config = getEffectiveTradingConfig({
+    strategySettings: strategySetting ? JSON.parse(strategySetting.value) : null,
+    tradingConfig: tradingConfigSetting ? JSON.parse(tradingConfigSetting.value) : null,
+    tradingMode: tradingModeSetting?.value ?? null,
+  });
+
+  const enabledVenues = venues || config.enabledVenues || ['POLYMARKET', 'KALSHI'];
+  const enabledCategories = categories || config.enabledCategories || [];
+  const mode = normalizeTradingMode(config.mode);
+
+  // Skip real scanning in DEMO mode
+  if (mode === 'DEMO') {
+    return { totalScanned: 0, totalNew: 0, venues: [], mode: 'DEMO', message: 'DEMO mode: no real scanning' };
+  }
 
   let totalScanned = 0;
   let totalNew = 0;
 
   for (const venue of enabledVenues) {
+    const scanRun = await db.scanRun.create({
+      data: {
+        venue,
+        mode,
+        status: 'RUNNING',
+        startedAt: new Date(),
+      },
+    });
+
     try {
       let markets: Array<{
         externalId: string;
@@ -31,10 +59,19 @@ export async function runScanner(
         bestAsk?: number;
       }> = [];
 
+      let marketsCreated = 0;
+      let marketsUpdated = 0;
+      let marketsSkipped = 0;
+      let nextCursor: string | null = null;
+
       if (venue === 'POLYMARKET') {
-        markets = await getPolymarketMarkets();
+        markets = await getAllPolymarketMarkets();
+        nextCursor = null;
+        await savePolymarketCursor(nextCursor, false);
       } else if (venue === 'KALSHI') {
-        const kalshiRaw = await getKalshiMarkets();
+        const kalshiRaw = await getAllKalshiMarkets();
+        nextCursor = null;
+        await saveKalshiCursor(nextCursor, false);
         markets = kalshiRaw.map((m) => ({
           externalId: m.ticker,
           title: m.title,
@@ -54,65 +91,57 @@ export async function runScanner(
       }
 
       for (const m of markets) {
-        if (enabledCategories.length > 0 && !enabledCategories.includes(m.category)) continue;
+        if (enabledCategories.length > 0 && !enabledCategories.includes(m.category)) {
+          marketsSkipped++;
+          continue;
+        }
 
-        const existing = await db.market.findFirst({
-          where: { externalId: m.externalId, venue: m.venue },
+        const upsertResult = await upsertScannedMarket({
+          market: m,
+          scanRunId: scanRun.id,
         });
 
-        if (!existing) {
-          const created = await db.market.create({
-            data: {
-              externalId: m.externalId,
-              venue: m.venue,
-              title: m.title,
-              description: m.description || '',
-              category: m.category,
-              status: m.status,
-            },
-          });
-
-          await db.marketSnapshot.create({
-            data: {
-              marketId: created.id,
-              impliedProb: m.impliedProb,
-              liquidity: m.liquidity,
-              spread: m.spread,
-              volume24h: m.volume24h || 0,
-              bestBid: m.bestBid ?? m.impliedProb - m.spread / 2,
-              bestAsk: m.bestAsk ?? m.impliedProb + m.spread / 2,
-            },
-          });
-
-          await db.tradeCandidate.create({
-            data: { marketId: created.id, stage: 'SCANNED' },
-          });
-
+        if (upsertResult.created) {
           totalNew++;
-        } else {
-          await db.marketSnapshot.create({
-            data: {
-              marketId: existing.id,
-              impliedProb: m.impliedProb,
-              liquidity: m.liquidity,
-              spread: m.spread,
-              volume24h: m.volume24h || 0,
-              bestBid: m.bestBid ?? m.impliedProb - m.spread / 2,
-              bestAsk: m.bestAsk ?? m.impliedProb + m.spread / 2,
-            },
-          });
+          marketsCreated++;
         }
+
+        if (upsertResult.updated) {
+          marketsUpdated++;
+        }
+
         totalScanned++;
       }
+
+      await db.scanRun.update({
+        where: { id: scanRun.id },
+        data: {
+          status: 'COMPLETED',
+          finishedAt: new Date(),
+          marketsFetched: markets.length,
+          marketsCreated,
+          marketsUpdated,
+          marketsSkipped,
+          cursorEnd: nextCursor,
+        },
+      });
 
       await db.auditLog.create({
         data: {
           action: `SCAN_${venue}`,
           entityType: 'Market',
-          details: `Scanned ${markets.length} ${venue} markets, ${totalNew} new`,
+          details: `Scanned ${markets.length} ${venue} markets, ${totalNew} new, cursor=${(nextCursor as string | null)?.slice(0, 20) || 'none'}`,
         },
       });
     } catch (error) {
+      await db.scanRun.update({
+        where: { id: scanRun.id },
+        data: {
+          status: 'FAILED',
+          finishedAt: new Date(),
+          errorMessage: error instanceof Error ? error.message : 'Scan failed',
+        },
+      });
       console.error(`Failed to scan ${venue}:`, error);
     }
   }
@@ -123,5 +152,5 @@ export async function runScanner(
     create: { key: 'last_scan_time', value: new Date().toISOString() },
   });
 
-  return { totalScanned, totalNew, venues: enabledVenues };
+  return { totalScanned, totalNew, venues: enabledVenues, mode };
 }

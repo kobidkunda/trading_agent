@@ -231,6 +231,7 @@ export async function runAgentReachResearch(
   const cred = await getCredentialForService('agent-reach');
   const baseUrl = routing.agentReachServiceUrl || cred?.baseUrl || process.env.AGENT_REACH_URL;
   const toolName = routing.agentReachToolName || 'research';
+  const credentialToolName = (cred as { toolName?: string } | null)?.toolName;
 
   console.log('[Agent-Reach] Configuration:', {
     baseUrl: baseUrl || 'NOT SET',
@@ -259,7 +260,7 @@ export async function runAgentReachResearch(
       console.log('[Agent-Reach] Attempting MCP protocol...');
       data = await callMCPMethod(
         baseUrl,
-        cred?.toolName || toolName,
+        credentialToolName || toolName,
         { 
           query,
           targetSourceCount,

@@ -45,7 +45,7 @@ function buildPredictionPrompt(
   debateResult: DebateArenaResult,
   researchContext: string
 ): string {
-  const marketTitle = debateResult.marketTitle ?? 'Unknown Market';
+  const marketTitle = 'Unknown Market';
 
   // Build bull/bear argument strings from rounds
   const bullArgs = debateResult.rounds

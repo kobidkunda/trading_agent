@@ -1,6 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
+type LegacySource = {
+  id: string;
+  title?: string | null;
+  url?: string | null;
+  content?: string | null;
+  sourceType?: string | null;
+  provider?: string | null;
+};
+
+type LegacyAgentOutput = {
+  role: string;
+  output: string;
+  summary?: string | null;
+  provider?: string | null;
+  modelUsed?: string | null;
+  rawOutput?: string | null;
+  referencesJson?: string | null;
+  failureReason?: string | null;
+  startedAt?: Date | null;
+  endedAt?: Date | null;
+  confidence?: number | null;
+};
+
 function safeJsonParse<T>(value: string | null | undefined): T | null {
   if (!value) return null;
   try {
@@ -48,16 +71,20 @@ export async function GET(
       return NextResponse.json({ error: 'Market not found' }, { status: 404 });
     }
 
-    const latestSnapshot = market.snapshots[0];
-    const latestResearch = market.researchRuns[0];
-    const latestDecision = market.decisions[0];
-    const latestOutcome = market.outcomes[0];
+    const marketAny = market as typeof market & Record<string, any>;
+    const latestSnapshot = marketAny.snapshots[0];
+    const latestResearch = marketAny.researchRuns[0] as (Record<string, any> & {
+      sources?: LegacySource[];
+      agentOutputs?: LegacyAgentOutput[];
+    }) | undefined;
+    const latestDecision = marketAny.decisions[0] as Record<string, any> | undefined;
+    const latestOutcome = marketAny.outcomes[0] as Record<string, any> | undefined;
 
     // Group sources by provider (handle both provider field and sourceType field)
-    const sources = latestResearch?.sources || [];
+    const sources = (latestResearch?.sources || []) as LegacySource[];
     
     // If provider is null, infer from sourceType or URL
-    const sourcesWithProvider = sources.map(s => {
+    const sourcesWithProvider = sources.map((s) => {
       if (s.provider) return s;
       
       // Infer provider from sourceType or URL patterns
@@ -192,7 +219,7 @@ export async function GET(
     agentReachSources = dedupeByUrl(agentReachSources);
 
     // Parse synthesis from latest research
-    let synthesis = null;
+    let synthesis: Record<string, unknown> | null = null;
     if (latestResearch?.synthesis) {
       try {
         const syn = typeof latestResearch.synthesis === 'string' 
@@ -226,19 +253,19 @@ export async function GET(
 
     // Parse debate from agent outputs (handle both old format 'BULL' and new format 'DEBATE_ROUND_1_BULL')
     // Pick the best/latest round - prefer ROUND_2 over ROUND_1 if available and has more content
-    let debate = null;
+    let debate: Record<string, unknown> | null = null;
     if (latestResearch?.agentOutputs) {
       // Find all bull/bear outputs and pick the one with most content
-      const allBullOutputs = latestResearch.agentOutputs.filter(a => 
+      const allBullOutputs = latestResearch.agentOutputs.filter((a) => 
         a.role === 'BULL' || a.role.includes('BULL')
       );
-      const allBearOutputs = latestResearch.agentOutputs.filter(a => 
+      const allBearOutputs = latestResearch.agentOutputs.filter((a) => 
         a.role === 'BEAR' || a.role.includes('BEAR')
       );
-      const allContradictionOutputs = latestResearch.agentOutputs.filter(a => 
+      const allContradictionOutputs = latestResearch.agentOutputs.filter((a) => 
         a.role === 'CONTRADICTION' || a.role.includes('CONTRADICTION')
       );
-      const allJudgeOutputs = latestResearch.agentOutputs.filter(a => 
+      const allJudgeOutputs = latestResearch.agentOutputs.filter((a) => 
         a.role === 'JUDGE' || a.role.includes('JUDGE') || a.role.includes('ARBITER')
       );
       
@@ -268,7 +295,7 @@ export async function GET(
     }
 
     // Parse risk from latest decision
-    let risk = null;
+    let risk: Record<string, unknown> | null = null;
     if (latestDecision) {
       try {
         const riskChecks = typeof latestDecision.riskChecks === 'string'
@@ -303,7 +330,7 @@ export async function GET(
     } : null;
 
     // Paper bet data
-    let paperBet = null;
+    let paperBet: Record<string, unknown> | null = null;
     if (includePaperBet && latestOutcome) {
       paperBet = {
         id: latestOutcome.id,
@@ -321,11 +348,11 @@ export async function GET(
 
     // Pipeline stages from transparency stages in research
     const pipeline = {
-      stages: (latestResearch?.transparencyStages as any[])?.map((stage: any) => ({
+      stages: ((latestResearch?.transparencyStages as any[]) || []).map((stage: any) => ({
         stage: stage.stage || 'UNKNOWN',
         status: stage.status || 'completed',
         startedAt: stage.startedAt || latestResearch?.startedAt?.toISOString(),
-        endedAt: stage.endedAt || latestResearch?.endedAt?.toISOString(),
+        endedAt: stage.endedAt || latestResearch?.completedAt?.toISOString(),
         duration: stage.duration || stage.latencyMs || 0,
         serviceName: stage.serviceName || '',
         provider: stage.provider || '',
@@ -336,7 +363,7 @@ export async function GET(
     };
 
     // Agent outputs
-    const agentOutputs = (latestResearch?.agentOutputs || []).map(a => ({
+    const agentOutputs = (latestResearch?.agentOutputs || []).map((a) => ({
       role: a.role,
       stage: a.role,
       serviceName: 'TradingAgents',
@@ -370,7 +397,7 @@ export async function GET(
         spread: latestSnapshot?.spread || 0,
         liquidity: latestSnapshot?.liquidity || 0,
         resolutionTime: market.resolutionTime?.toISOString() || null,
-        resolutionCriteria: market.resolutionCriteria || '',
+        resolutionCriteria: marketAny.resolutionCriteria || '',
         category: market.category,
       },
       pipeline,

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { Prisma } from '@prisma/client';
 import { getKalshiMarkets } from '@/lib/venues/kalshi';
+import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
+import { filterMarketsForMode } from '@/lib/engine/market-triage-mode-filter';
 
 export async function GET(request: NextRequest) {
   try {
@@ -19,6 +21,18 @@ export async function GET(request: NextRequest) {
     if (category) where.category = category;
     if (search) where.title = { contains: search };
 
+    const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
+      db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_MODE_KEY } }),
+    ]);
+
+    const tradingConfig = getEffectiveTradingConfig({
+      strategySettings: strategySetting ? JSON.parse(strategySetting.value) : null,
+      tradingConfig: tradingConfigSetting ? JSON.parse(tradingConfigSetting.value) : null,
+      tradingMode: tradingModeSetting?.value ?? null,
+    });
+
     const markets = await db.market.findMany({
       where,
       include: {
@@ -30,9 +44,23 @@ export async function GET(request: NextRequest) {
       skip: offset,
     });
 
-    const total = await db.market.count({ where });
+    const visibleMarkets = filterMarketsForMode(markets, tradingConfig.mode);
 
-    return NextResponse.json({ markets, total, limit, offset });
+    const enrichedMarkets = visibleMarkets.map((market) => {
+      const candidate = market.tradeCandidates[0];
+      const duplicateStatus = candidate?.cooldownUntil
+        ? 'COOLDOWN'
+        : candidate?.processingLock
+          ? 'DUPLICATE'
+          : 'UNIQUE';
+
+      return {
+        ...market,
+        duplicateStatus,
+      };
+    });
+
+    return NextResponse.json({ markets: enrichedMarkets, total: enrichedMarkets.length, limit, offset });
   } catch (error) {
     return NextResponse.json({ error: 'Failed to fetch markets' }, { status: 500 });
   }
@@ -43,7 +71,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
 
     if (body.action === 'sync_kalshi') {
-      const kalshiMarkets = await getKalshiMarkets();
+      const kalshiResult = await getKalshiMarkets(); const kalshiMarkets = kalshiResult.markets;
       
       const created: string[] = [];
       for (const market of kalshiMarkets) {

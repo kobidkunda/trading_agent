@@ -1,5 +1,7 @@
 'use server'
 
+import { db } from '@/lib/db';
+
 const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
 
 export interface KalshiMarket {
@@ -21,9 +23,10 @@ export interface KalshiMarketsResponse {
   cursor: string
 }
 
-export async function getKalshiMarkets(): Promise<KalshiMarket[]> {
+export async function getKalshiMarkets(limit: number = 100, cursor?: string): Promise<KalshiMarketsResponse> {
   try {
-    const response = await fetch(`${KALSHI_BASE_URL}/markets?limit=100`, {
+    const cursorParam = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
+    const response = await fetch(`${KALSHI_BASE_URL}/markets?limit=${limit}${cursorParam}`, {
       cache: 'no-store'
     })
 
@@ -32,11 +35,29 @@ export async function getKalshiMarkets(): Promise<KalshiMarket[]> {
     }
 
     const data: KalshiMarketsResponse = await response.json()
-    return data.markets
+    return data
   } catch (error) {
     console.error('Failed to fetch Kalshi markets:', error)
-    return []
+    return { markets: [], cursor: '' }
   }
+}
+
+export async function getAllKalshiMarkets(maxPages: number = 3): Promise<KalshiMarket[]> {
+  const allMarkets: KalshiMarket[] = [];
+  let cursor: string | undefined;
+  let pageCount = 0;
+
+  while (pageCount < maxPages) {
+    const result = await getKalshiMarkets(100, cursor);
+    if (!result.markets || result.markets.length === 0) break;
+    allMarkets.push(...result.markets);
+    if (!result.cursor) break;
+    cursor = result.cursor;
+    pageCount++;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+
+  return allMarkets;
 }
 
 export async function getKalshiMarket(ticker: string): Promise<KalshiMarket | null> {
@@ -54,5 +75,37 @@ export async function getKalshiMarket(ticker: string): Promise<KalshiMarket | nu
   } catch (error) {
     console.error('Failed to fetch Kalshi market:', error)
     return null
+  }
+}
+
+export async function saveKalshiCursor(cursor: string | null, hasMore: boolean): Promise<void> {
+  if (!cursor) return;
+  try {
+    await db.venueCursor.upsert({
+      where: { venue: 'KALSHI' },
+      update: {
+        cursor,
+        hasMore,
+        lastScanAt: new Date(),
+        updatedAt: new Date(),
+      },
+      create: {
+        venue: 'KALSHI',
+        cursor,
+        hasMore,
+        lastScanAt: new Date(),
+      },
+    });
+  } catch (error) {
+    console.warn('Failed to save Kalshi cursor:', error);
+  }
+}
+
+export async function loadKalshiCursor(): Promise<string | null> {
+  try {
+    const record = await db.venueCursor.findUnique({ where: { venue: 'KALSHI' } });
+    return record?.cursor ?? null;
+  } catch {
+    return null;
   }
 }
