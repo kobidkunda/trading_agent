@@ -1,0 +1,80 @@
+wing: tb
+rooms:
+- name: ta_service
+  description: Files from ta-service/
+  keywords:
+  - ta_service
+  - ta-service
+- name: prisma
+  description: Files from prisma/
+  keywords:
+  - prisma
+  - prisma
+- name: mini_services
+  description: Files from mini-services/
+  keywords:
+  - mini_services
+  - mini-services
+- name: documentation
+  description: Files from docs/
+  keywords:
+  - documentation
+  - docs
+- name: graphify_out
+  description: Files from graphify-out/
+  keywords:
+  - graphify_out
+  - graphify-out
+- name: public
+  description: Files from public/
+  keywords:
+  - public
+  - public
+- name: download
+  description: Files from download/
+  keywords:
+  - download
+  - download
+- name: examples
+  description: Files from examples/
+  keywords:
+  - examples
+  - examples
+- name: scripts
+  description: Files from scripts/
+  keywords:
+  - scripts
+  - scripts
+- name: backend
+  description: Files from db/
+  keywords:
+  - backend
+  - db
+- name: skills
+  description: Files from skills/
+  keywords:
+  - skills
+  - skills
+- name: src
+  description: Files from src/
+  keywords:
+  - src
+  - src
+- name: design
+  description: Files from designs/
+  keywords:
+  - design
+  - designs
+- name: costs
+  description: Files from finance/
+  keywords:
+  - costs
+  - finance
+- name: frontend
+  description: Files from components/
+  keywords:
+  - frontend
+  - components
+- name: general
+  description: Files that don't fit other rooms
+  keywords: []
