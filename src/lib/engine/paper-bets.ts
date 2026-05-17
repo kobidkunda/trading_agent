@@ -1,4 +1,7 @@
 import { db } from '@/lib/db';
+import type { PaperBetExecutionStatus } from '@/lib/types';
+
+const EXECUTED_PAPER_BET_STATUSES: PaperBetExecutionStatus[] = ['FILLED', 'PARTIAL'];
 
 export interface PaperBetScore {
   betId: string;
@@ -12,9 +15,12 @@ export interface PaperBetScore {
 export async function createPaperBet(params: {
   marketId: string;
   decisionId: string;
+  orderId?: string | null;
   predictionType: 'BID' | 'WATCH';
   setupType?: 'A_PLUS_BET' | 'STANDARD_BET';
   aPlusStatus?: 'PASSED' | 'FAILED' | 'HEURISTIC';
+  executionStatus?: PaperBetExecutionStatus;
+  executedAt?: Date | null;
   predictedProb: number;
   predictedSide: 'YES' | 'NO';
   impliedProb: number;
@@ -27,9 +33,12 @@ export async function createPaperBet(params: {
     data: {
       marketId: params.marketId,
       decisionId: params.decisionId,
+      orderId: params.orderId ?? null,
       predictionType: params.predictionType,
       setupType: params.setupType ?? null,
       aPlusStatus: params.aPlusStatus ?? null,
+      executionStatus: params.executionStatus ?? 'SUBMITTED',
+      executedAt: params.executedAt ?? null,
       predictedProb: params.predictedProb,
       predictedSide: params.predictedSide,
       impliedProb: params.impliedProb,
@@ -40,6 +49,10 @@ export async function createPaperBet(params: {
     },
   });
   return bet.id;
+}
+
+export function isExecutedPaperBetStatus(status: string | null | undefined): status is PaperBetExecutionStatus {
+  return EXECUTED_PAPER_BET_STATUSES.includes(status as PaperBetExecutionStatus);
 }
 
 export function scorePaperBet(
@@ -82,7 +95,7 @@ export function scorePaperBet(
 
 export async function resolvePaperBet(betId: string, actualOutcome: 'YES' | 'NO' | 'CANCELLED', resolvedProb?: number) {
   const bet = await db.paperBet.findUnique({ where: { id: betId } });
-  if (!bet || bet.actualOutcome) return null;
+  if (!bet || bet.actualOutcome || !isExecutedPaperBetStatus(bet.executionStatus)) return null;
 
   const score = scorePaperBet(
     bet.predictedProb,
@@ -111,7 +124,7 @@ export async function resolvePaperBet(betId: string, actualOutcome: 'YES' | 'NO'
 
 export async function resolveAllPaperBetsForMarket(marketId: string, actualOutcome: 'YES' | 'NO' | 'CANCELLED', resolvedProb?: number) {
   const bets = await db.paperBet.findMany({
-    where: { marketId, actualOutcome: null },
+    where: { marketId, actualOutcome: null, executionStatus: { in: EXECUTED_PAPER_BET_STATUSES } },
   });
 
   const results: Array<Awaited<ReturnType<typeof resolvePaperBet>>> = [];
@@ -186,6 +199,7 @@ export async function getAccuracyMetrics(limit: number = 100): Promise<AccuracyM
     where: {
       market: { dataSource: 'REAL' },
       decision: { mode: 'PAPER' },
+      executionStatus: { in: EXECUTED_PAPER_BET_STATUSES },
     },
     include: { market: { select: { title: true } } },
     orderBy: { createdAt: 'desc' },

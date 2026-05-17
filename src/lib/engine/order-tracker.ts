@@ -1,6 +1,7 @@
 import { db } from '@/lib/db';
 import { updateOrderCompat } from '@/lib/engine/prisma-runtime-compat';
-import type { FillModel } from '@/lib/types';
+import { normalizeFillModel } from '@/lib/engine/paper-execution';
+import type { FillModel, FillModelInput, PaperBetExecutionStatus } from '@/lib/types';
 
 export type OrderTrackerLifecycle = 'PLANNED' | 'SUBMITTED' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'FAILED' | 'EXPIRED';
 
@@ -22,10 +23,25 @@ export function derivePositionStatusAfterFill(lifecycleStatus: OrderTrackerLifec
   return null;
 }
 
+export function derivePaperBetExecutionStatus(params: {
+  lifecycleStatus: OrderTrackerLifecycle;
+  filledSize: number;
+}): PaperBetExecutionStatus {
+  if (params.filledSize > 0) {
+    return params.lifecycleStatus === 'FILLED' ? 'FILLED' : 'PARTIAL';
+  }
+
+  if (params.lifecycleStatus === 'FAILED') return 'FAILED';
+  if (params.lifecycleStatus === 'EXPIRED') return 'EXPIRED';
+  if (params.lifecycleStatus === 'PLANNED') return 'PLANNED';
+
+  return 'SUBMITTED';
+}
+
 export async function processPaperOrderFill(params: {
   orderId: string;
   marketId: string;
-  fillModel: FillModel;
+  fillModel: FillModelInput;
   liquidity: number;
   fillProbability?: number | null;
   priceImpact?: number | null;
@@ -43,12 +59,33 @@ export async function processPaperOrderFill(params: {
     throw new Error(`Order not found: ${params.orderId}`);
   }
 
+  if (order.orderExpiryAt && order.orderExpiryAt < new Date()) {
+    await updateOrderCompat(params.orderId, {
+      lifecycleStatus: 'EXPIRED',
+      status: 'EXPIRED',
+      expiredAt: new Date(),
+      lastFillAttemptAt: new Date(),
+      fillAttemptCount: { increment: 1 },
+    });
+    await db.paperBet.updateMany({
+      where: { orderId: params.orderId },
+      data: { executionStatus: 'EXPIRED' },
+    });
+    return {
+      filledSize: 0,
+      avgFillPrice: 0,
+      isFullyFilled: false,
+      orderStatus: 'EXPIRED',
+    };
+  }
+
   const { resolvePaperFill } = await import('./paper-execution');
+  const fillModel = normalizeFillModel(params.fillModel);
 
   const fillResult = resolvePaperFill({
     size: Math.max(0, order.remainingSize || order.size),
     price: order.price,
-    fillModel: params.fillModel,
+    fillModel,
     liquidity: params.liquidity,
     fillProbability: params.fillProbability,
     priceImpact: params.priceImpact,
@@ -74,14 +111,19 @@ export async function processPaperOrderFill(params: {
       : nextFilledSize >= order.size * 0.999
         ? 'FILLED'
         : fillResult.lifecycleStatus;
+  const paperBetExecutionStatus = derivePaperBetExecutionStatus({
+    lifecycleStatus: newLifecycleStatus,
+    filledSize: nextFilledSize,
+  });
+  const fillTimestamp = new Date();
 
   await updateOrderCompat(params.orderId, {
     lifecycleStatus: newLifecycleStatus,
     filledSize: nextFilledSize,
     remainingSize: nextRemainingSize,
     avgFillPrice: nextAvgFillPrice,
-    filledAt: newLifecycleStatus === 'FILLED' ? new Date() : null,
-    lastFillAttemptAt: new Date(),
+    filledAt: newLifecycleStatus === 'FILLED' ? fillTimestamp : null,
+    lastFillAttemptAt: fillTimestamp,
     fillAttemptCount: { increment: 1 },
     failureReason: newLifecycleStatus === 'FAILED' ? 'Paper fill conditions not met' : null,
     status:
@@ -91,11 +133,40 @@ export async function processPaperOrderFill(params: {
           ? 'FILLED'
           : newLifecycleStatus === 'PARTIALLY_FILLED'
             ? 'PARTIALLY_FILLED'
-            : 'SUBMITTED',
+          : 'SUBMITTED',
   });
 
-  // Create position only when partially or fully filled
   if (incrementalFill > 0) {
+    await db.fill.create({
+      data: {
+        orderId: params.orderId,
+        price: fillResult.avgFillPrice,
+        size: incrementalFill,
+        fee: 0,
+        fillModel,
+        metadataJson: JSON.stringify({
+          liquidity: params.liquidity,
+          fillProbability: params.fillProbability ?? null,
+          priceImpact: params.priceImpact ?? null,
+          bidDepth: params.bidDepth ?? null,
+          askDepth: params.askDepth ?? null,
+          spread: params.spread ?? null,
+        }),
+        fillTime: fillTimestamp,
+      },
+    });
+
+    await db.paperBet.updateMany({
+      where: { orderId: params.orderId },
+      data: {
+        executionStatus: paperBetExecutionStatus,
+        executedAt: fillTimestamp,
+        stake: nextFilledSize,
+        entryPrice: nextAvgFillPrice ?? order.price,
+      },
+    });
+
+    // Create position only when partially or fully filled
     const existingPosition = await db.position.findFirst({
       where: { marketId: params.marketId, status: { in: ['OPEN', 'WATCH'] } },
     });
@@ -127,6 +198,11 @@ export async function processPaperOrderFill(params: {
         },
       });
     }
+  } else {
+    await db.paperBet.updateMany({
+      where: { orderId: params.orderId },
+      data: { executionStatus: paperBetExecutionStatus },
+    });
   }
 
   return {

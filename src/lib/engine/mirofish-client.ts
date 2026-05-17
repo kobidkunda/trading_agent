@@ -1,4 +1,4 @@
-const MIROFISH_BASE = 'http://192.168.88.96:5401';
+const MIROFISH_BASE = process.env.MIROFISH_URL || '';
 const DEFAULT_TIMEOUT = 15000;
 
 export type MiroFishModelTier = 'free' | 'paid' | 'paper' | 'premium' | 'unknown';

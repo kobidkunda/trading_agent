@@ -4,6 +4,13 @@ import { db } from '@/lib/db';
 
 const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
 
+export interface GetAllKalshiMarketsOptions {
+  maxPages?: number;
+  startCursor?: string | null;
+  scanUntilNoCursor?: boolean;
+  rateLimitMs?: number;
+}
+
 export interface KalshiMarket {
   ticker: string
   title: string
@@ -42,22 +49,35 @@ export async function getKalshiMarkets(limit: number = 100, cursor?: string): Pr
   }
 }
 
-export async function getAllKalshiMarkets(maxPages: number = 3): Promise<KalshiMarket[]> {
+export async function getAllKalshiMarkets(
+  options: GetAllKalshiMarketsOptions = {},
+): Promise<{ markets: KalshiMarket[]; nextCursor: string | null; pagesScanned: number; hasMore: boolean }> {
   const allMarkets: KalshiMarket[] = [];
-  let cursor: string | undefined;
+  const maxPages = options.maxPages ?? 3;
+  const scanUntilNoCursor = options.scanUntilNoCursor ?? false;
+  const rateLimitMs = options.rateLimitMs ?? 300;
+  let cursor: string | undefined = options.startCursor ?? undefined;
   let pageCount = 0;
 
-  while (pageCount < maxPages) {
+  while (pageCount < maxPages || scanUntilNoCursor) {
     const result = await getKalshiMarkets(100, cursor);
     if (!result.markets || result.markets.length === 0) break;
     allMarkets.push(...result.markets);
+    pageCount++;
     if (!result.cursor) break;
     cursor = result.cursor;
-    pageCount++;
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, rateLimitMs));
+    if (!scanUntilNoCursor && pageCount >= maxPages) {
+      break;
+    }
   }
 
-  return allMarkets;
+  return {
+    markets: allMarkets,
+    nextCursor: cursor ?? null,
+    pagesScanned: pageCount,
+    hasMore: Boolean(cursor),
+  };
 }
 
 export async function getKalshiMarket(ticker: string): Promise<KalshiMarket | null> {

@@ -82,7 +82,7 @@ export async function checkServiceHealth(serviceName: string): Promise<ServiceHe
         agent_reach: process.env.AGENT_REACH_URL || '',
         openai: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
         ollama: process.env.OLLAMA_URL || 'http://localhost:11434',
-        mirofis: process.env.MIROFISH_URL || 'http://192.168.88.96:5401',
+        mirofis: process.env.MIROFISH_URL || '',
       };
       serviceUrl = envUrlMap[normalizedName] || envUrlMap[serviceName.toLowerCase()] || '';
     }

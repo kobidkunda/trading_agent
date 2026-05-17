@@ -35,6 +35,7 @@ describe('trading mode api', () => {
     findUniqueMock.mockClear();
     upsertMock.mockClear();
     auditCreateMock.mockClear();
+    process.env.LOCAL_DEV_AUTH_BYPASS = 'true';
   });
 
   it('returns normalized paper mode defaults on GET', async () => {
@@ -73,5 +74,16 @@ describe('trading mode api', () => {
     });
 
     expect(upsertMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects spoofed x-role headers when local bypass is disabled', async () => {
+    process.env.LOCAL_DEV_AUTH_BYPASS = 'false';
+    const { GET } = await import('../../../app/api/trading/mode/route');
+
+    const response = await GET(new Request('http://localhost/api/trading/mode', {
+      headers: { 'x-role': 'Admin' },
+    }) as never);
+
+    expect(response.status).toBe(401);
   });
 });

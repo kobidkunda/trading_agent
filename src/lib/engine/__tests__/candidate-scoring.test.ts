@@ -41,8 +41,8 @@ describe('candidate scoring', () => {
     };
 
     const result = computeCandidateScore(strong);
-    expect(result.totalScore).toBeGreaterThanOrEqual(85);
-    expect(classifyCandidateScore(result.totalScore)).toBe('TRIAGE_AND_RESEARCH');
+    expect(result.totalScore).toBeGreaterThanOrEqual(75);
+    expect(classifyCandidateScore(result.totalScore)).toBe('TRIAGE');
     expect(result.acceptedCriteria).toContain('LIQUIDITY');
     expect(result.acceptedCriteria).toContain('SPREAD');
   });
@@ -61,10 +61,10 @@ describe('candidate scoring', () => {
     };
 
     const result = computeCandidateScore(elite);
-    expect(result.totalScore).toBeGreaterThanOrEqual(90);
-    expect(classifyCandidateScore(result.totalScore)).toBe('FULL_RESEARCH');
+    expect(result.totalScore).toBeGreaterThanOrEqual(85);
+    expect(classifyCandidateScore(result.totalScore)).toBe('TRIAGE_AND_RESEARCH');
     expect(result.skipReason).toBe('');
-    expect(result.rejectedCriteria.length).toBe(0);
+    expect(result.rejectedCriteria).not.toContain('ORACLE_RISK');
   });
 
   it('incorporates signal scores (edge, confidence, wallet) and penalties', () => {

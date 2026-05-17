@@ -29,7 +29,7 @@ async function retryWithoutUnsupportedFields<T>(
 
 export async function createMarketCompat(data: Record<string, unknown>) {
   return retryWithoutUnsupportedFields(
-    (sanitized) => db.market.create({ data: sanitized }),
+    (sanitized) => db.market.create({ data: sanitized as any }),
     data,
     ['dataSource', 'normalizedTitle', 'titleHash', 'firstSeenAt', 'lastSeenAt', 'isActive', 'isClosed', 'isResolved'],
   );
@@ -37,16 +37,16 @@ export async function createMarketCompat(data: Record<string, unknown>) {
 
 export async function createOrderCompat(data: Record<string, unknown>) {
   return retryWithoutUnsupportedFields(
-    (sanitized) => db.order.create({ data: sanitized }),
+    (sanitized) => db.order.create({ data: sanitized as any }),
     data,
-    ['executionMode', 'dataSource', 'lifecycleStatus', 'remainingSize', 'avgFillPrice', 'failureReason', 'retryCount', 'cancelledAt', 'expiredAt'],
+    ['executionMode', 'dataSource', 'lifecycleStatus', 'remainingSize', 'avgFillPrice', 'failureReason', 'retryCount', 'cancelledAt', 'expiredAt', 'fillAttemptCount', 'lastFillAttemptAt', 'orderExpiryAt', 'fillModel', 'executionNotesJson'],
   );
 }
 
 export async function updateOrderCompat(orderId: string, data: Record<string, unknown>) {
   return retryWithoutUnsupportedFields(
-    (sanitized) => db.order.update({ where: { id: orderId }, data: sanitized }),
+    (sanitized) => db.order.update({ where: { id: orderId }, data: sanitized as any }),
     data,
-    ['lifecycleStatus', 'remainingSize', 'avgFillPrice', 'cancelledAt', 'expiredAt'],
+    ['lifecycleStatus', 'remainingSize', 'avgFillPrice', 'cancelledAt', 'expiredAt', 'fillAttemptCount', 'lastFillAttemptAt', 'orderExpiryAt', 'fillModel', 'executionNotesJson'],
   );
 }

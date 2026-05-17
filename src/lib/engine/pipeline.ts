@@ -21,7 +21,7 @@ import { runFirecrawlResearch } from '@/lib/engine/research/firecrawl-research';
 import { runPostDebatePrediction } from '@/lib/engine/post-debate-prediction';
 import { runEnsemblePipeline } from '@/lib/engine/ensemble-probability';
 import { computeCandidateScore } from '@/lib/engine/candidate-scoring';
-import { computeExposureTotals } from '@/lib/engine/risk-exposure';
+import { computeClusterAwareExposure, computeExposureTotals } from '@/lib/engine/risk-exposure';
 import { buildWatchlistPayload, shouldCreateExecutionJob, shouldCreateWatchlistEntry } from '@/lib/engine/pipeline-decision-helpers';
 import { causalTreeEngine } from '@/lib/engine/causal-tree';
 import { getPolymarketMarkets } from '@/lib/venues/polymarket';
@@ -31,6 +31,7 @@ import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, T
 import { evaluateAPlusSignalGate } from '@/lib/engine/a-plus/signal-gate';
 import { getWalletSignalTrustContext } from '@/lib/engine/wallet-signal';
 import { getLiveGovernanceSettings } from '@/lib/engine/live-governance';
+import { tailRiskAnalyzer } from '@/lib/engine/correlation-risk';
 
 export interface PipelineStageEvent {
   stage: LivePipelineStage;
@@ -1230,8 +1231,29 @@ export async function runPipelineForMarket(
     });
 
     const exposureTotals = computeExposureTotals(openPositions, market.category);
+    const clusterExposureTotals = await computeClusterAwareExposure(
+      marketId,
+      openPositions.map((position) => ({
+        currentSize: position.currentSize,
+        market: {
+          id: position.marketId,
+          category: position.market.category,
+        },
+      })),
+      market.category,
+    );
     const actualDailyExposure = exposureTotals.dailyExposure;
     const actualCategoryExposure = exposureTotals.categoryExposure;
+    const tailRiskWarnings = tailRiskAnalyzer.findWipeoutRisk(
+      openPositions.map((position) =>
+        tailRiskAnalyzer.analyzePosition(
+          position.marketId,
+          position.side,
+          position.currentSize,
+          position.entryPrice,
+        ),
+      ),
+    );
 
     const dailyExposureBlocked = actualDailyExposure >= strategyDailyLimit;
     const categoryExposureBlocked = actualCategoryExposure >= strategyCategoryLimit;
@@ -1261,14 +1283,44 @@ export async function runPipelineForMarket(
       catalystTiming: undefined,
     };
 
-    const riskResult = computeRisk(riskInput);
+    const riskResult = computeRisk(riskInput, {
+      clusterExposures: clusterExposureTotals.clusterExposures,
+      clusterOverlapCount: clusterExposureTotals.clusterOverlapCount,
+      tailRiskWarnings,
+    });
     const latestOrderbook = await db.orderbookSnapshot.findFirst({
       where: { marketId },
       orderBy: { capturedAt: 'desc' },
     });
-    const oracleRiskScore = candidate?.oracleRiskPenalty != null ? Math.min(1, candidate.oracleRiskPenalty / 20) : 0;
-    const correlationExposure = Math.min(1, actualCategoryExposure / Math.max(strategyCategoryLimit, 1));
-    const tailRiskScore = Math.min(1, ensembleUncertaintyBoost + (judgeUncertainty * 0.25));
+    const oracleCheckPresent = market.oracleCheck != null;
+    const oracleRiskScore =
+      oracleCheckPresent && candidate?.oracleRiskPenalty != null
+        ? Math.min(1, candidate.oracleRiskPenalty / 20)
+        : 1;
+    const maxClusterUtilization = clusterExposureTotals.clusterExposures.reduce(
+      (highest, exposure) => Math.max(highest, exposure.utilization),
+      0,
+    );
+    const correlationExposure = Math.min(
+      1,
+      Math.max(
+        actualCategoryExposure / Math.max(strategyCategoryLimit, 1),
+        maxClusterUtilization,
+      ),
+    );
+    const tailRiskScore = Math.min(
+      1,
+      Math.max(
+        ensembleUncertaintyBoost + (judgeUncertainty * 0.25),
+        tailRiskWarnings.some((warning) => warning.severity === 'CRITICAL')
+          ? 1
+          : tailRiskWarnings.some((warning) => warning.severity === 'HIGH')
+            ? 0.85
+            : tailRiskWarnings.some((warning) => warning.severity === 'MEDIUM')
+              ? 0.6
+              : 0,
+      ),
+    );
     const orderbookQuality =
       latestOrderbook == null
         ? 0
@@ -1288,7 +1340,7 @@ export async function runPipelineForMarket(
     const manualReviewApproved =
       market.oracleCheck?.manualReviewStatus === 'APPROVED' &&
       (!market.oracleCheck.manualReviewExpiresAt || market.oracleCheck.manualReviewExpiresAt > new Date());
-    const oracleRiskLevel = market.oracleCheck?.riskLevel ?? 'LOW';
+    const oracleRiskLevel = market.oracleCheck?.riskLevel ?? 'UNKNOWN';
     const aPlusGate = evaluateAPlusSignalGate({
       candidateScore: candidate?.candidateScore ?? 0,
       adjustedEdge: riskResult.edge,
@@ -1304,6 +1356,7 @@ export async function runPipelineForMarket(
       orderbookQuality,
       dataSource: market.dataSource,
       spreadSource: latestOrderbook ? 'REAL_ORDERBOOK' : 'ESTIMATED',
+      oracleCheckPresent,
     });
     const aPlusGateReasons = [...aPlusGate.reasons];
     if (candidate?.walletSignalScore != null && candidate.walletSignalScore > 0 && !walletTrustContext.hasTrustedEligibleWalletSignal) {
@@ -1321,9 +1374,12 @@ export async function runPipelineForMarket(
     const walletTrustPassed =
       (candidate?.walletSignalScore ?? 0) <= 0 || walletTrustContext.hasTrustedEligibleWalletSignal;
     const oracleGatePassed =
-      oracleRiskLevel === 'LOW' ||
-      oracleRiskLevel === 'MEDIUM' ||
-      (oracleRiskLevel === 'HIGH' && manualReviewApproved);
+      oracleCheckPresent &&
+      (
+        oracleRiskLevel === 'LOW' ||
+        oracleRiskLevel === 'MEDIUM' ||
+        (oracleRiskLevel === 'HIGH' && manualReviewApproved)
+      );
     const aPlusGatePassed = aPlusGate.passed && walletTrustPassed && oracleGatePassed;
     const liveGovernanceReady =
       !governance.liveEnabled
@@ -1491,9 +1547,11 @@ export async function runPipelineForMarket(
         await createPaperBet({
           marketId,
           decisionId: decision.id,
+          orderId: order.id,
           predictionType: 'BID',
           setupType: aPlusGatePassed ? 'A_PLUS_BET' : 'STANDARD_BET',
           aPlusStatus: aPlusGatePassed ? 'PASSED' : 'FAILED',
+          executionStatus: 'SUBMITTED',
           predictedProb: judgeProbability,
           predictedSide: gatedRiskResult.side ?? 'YES',
           impliedProb,

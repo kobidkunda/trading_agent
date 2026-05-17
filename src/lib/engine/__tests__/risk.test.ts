@@ -53,4 +53,46 @@ describe('risk engine configuration', () => {
     expect(result.action).toBe('SKIP');
     expect(result.reasonCode).toBe('WIDE_SPREAD');
   });
+
+  it('blocks bids when cluster exposure breaches utilization threshold', () => {
+    const result = computeRisk(
+      {
+        impliedProbability: 0.5,
+        judgeProbability: 0.63,
+        confidence: 0.8,
+        uncertainty: 0.1,
+        fees: 0.01,
+        slippage: 0.01,
+        venue: 'POLYMARKET',
+        category: 'crypto',
+        dailyExposure: 0,
+        categoryExposure: 0,
+        openPositions: 0,
+        marketLiquidity: 10000,
+        marketSpread: 0.01,
+      },
+      {
+        clusterExposures: [
+          {
+            clusterId: 'cluster-1',
+            clusterType: 'CATEGORY',
+            clusterKey: 'crypto',
+            label: 'Crypto',
+            totalExposure: 9000,
+            exposureLimit: 10000,
+            maxLoss: null,
+            lossToWinRatio: null,
+            tailRiskLevel: 'HIGH',
+            utilization: 0.9,
+            marketCount: 3,
+          },
+        ],
+        clusterOverlapCount: 1,
+        tailRiskWarnings: [],
+      },
+    );
+
+    expect(result.action).toBe('SKIP');
+    expect(result.reasonCode).toBe('CLUSTER_EXPOSURE_EXCEEDED');
+  });
 });

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-const MIROFISH_BASE = 'http://192.168.88.96:5401';
+const MIROFISH_BASE = process.env.MIROFISH_URL || '';
 
 const PREFIX_MAP: [string, string, string, boolean][] = [
   ['free_', 'free', 'mirofish', true],

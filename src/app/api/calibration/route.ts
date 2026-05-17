@@ -3,15 +3,23 @@ import { db } from '@/lib/db';
 import { BrierCalibrationEngine } from '@/lib/engine/brier-calibration';
 
 export async function GET() {
-  const bets = await db.decision.findMany({
-    where: { outcome: { not: null } },
-    select: { predictedProb: true, outcome: true, category: true }
+  const bets = await db.paperBet.findMany({
+    where: { actualOutcome: { not: null } },
+    select: {
+      predictedProb: true,
+      actualOutcome: true,
+      market: {
+        select: {
+          category: true,
+        },
+      },
+    }
   });
 
   const formattedBets = bets.map(b => ({
     predictedProb: b.predictedProb || 0,
-    actualOutcome: b.outcome || 'NO',
-    category: b.category || 'general'
+    actualOutcome: b.actualOutcome || 'NO',
+    category: b.market.category || 'general'
   }));
 
   const rollingBrier50 = BrierCalibrationEngine.computeRollingBrier(formattedBets, 50);

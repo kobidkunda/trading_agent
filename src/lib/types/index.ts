@@ -43,30 +43,35 @@ export type AgentRole = 'TRIAGE' | 'BULL' | 'BEAR' | 'CONTRADICTION' | 'JUDGE' |
 export type ResearchStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
 
 // Job type
-export type JobType =
-  | 'SCAN'
-  | 'SCAN_VENUE'
-  | 'SCORE_CANDIDATES'
-  | 'TRIAGE'
-  | 'TRIAGE_MARKET'
-  | 'RESEARCH'
-  | 'RESEARCH_MARKET'
-  | 'QUICK_RESEARCH'
-  | 'STANDARD_RESEARCH'
-  | 'DEEP_RESEARCH'
-  | 'JUDGE'
-  | 'JUDGE_MARKET'
-  | 'RISK'
-  | 'RISK_CHECK'
-  | 'EXECUTE'
-  | 'PAPER_EXECUTE'
-  | 'LIVE_EXECUTE'
-  | 'ORDER_TRACK'
-  | 'SETTLE'
-  | 'RESOLUTION_CHECK';
+export const JOB_TYPES = [
+  'SCAN',
+  'SCAN_VENUE',
+  'SCORE_CANDIDATES',
+  'TRIAGE',
+  'TRIAGE_MARKET',
+  'RESEARCH',
+  'RESEARCH_MARKET',
+  'QUICK_RESEARCH',
+  'STANDARD_RESEARCH',
+  'DEEP_RESEARCH',
+  'JUDGE',
+  'JUDGE_MARKET',
+  'RISK',
+  'RISK_CHECK',
+  'EXECUTE',
+  'PAPER_EXECUTE',
+  'LIVE_EXECUTE',
+  'ORDER_TRACK',
+  'SETTLE',
+  'RESOLUTION_CHECK',
+] as const;
+
+export type JobType = (typeof JOB_TYPES)[number];
 
 // Job status
-export type JobStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'RETRYING';
+export const JOB_STATUSES = ['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'RETRYING'] as const;
+export const ACTIVE_JOB_STATUSES = ['PENDING', 'RUNNING', 'RETRYING'] as const;
+export type JobStatus = (typeof JOB_STATUSES)[number];
 
 // Prompt template state
 export type PromptState = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
@@ -413,6 +418,15 @@ export interface RiskDashboard {
 }
 
 export type FillModel = 'DEMO_INSTANT' | 'STRICT_LIMIT' | 'BOOK_DEPTH_AWARE' | 'CONSERVATIVE_PAPER';
+export type LegacyFillModel = 'INSTANT' | 'BOOK_AWARE';
+export type FillModelInput = FillModel | LegacyFillModel;
+export type PaperBetExecutionStatus =
+  | 'PLANNED'
+  | 'SUBMITTED'
+  | 'PARTIAL'
+  | 'FILLED'
+  | 'FAILED'
+  | 'EXPIRED';
 
 export type ScanMode = 'FULL_SCAN' | 'INCREMENTAL_SCAN' | 'RESUME_FROM_CURSOR';
 
@@ -475,7 +489,10 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
       '/api/bias',
       '/api/calibration',
       '/api/decisions',
+      '/api/deerflow/models',
       '/api/ensemble',
+      '/api/jobs',
+      '/api/jobs/worker',
       '/api/llm/models',
       '/api/market/[id]/detail',
       '/api/market/[id]/live',
@@ -487,18 +504,29 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
       '/api/oracle',
       '/api/outcomes',
       '/api/paper-bets',
+      '/api/prompts',
+      '/api/qdrant/collections',
+      '/api/qdrant/collections/[name]',
       '/api/related-markets',
       '/api/research',
       '/api/research-gating',
       '/api/risk',
+      '/api/settings',
+      '/api/simulation',
+      '/api/strategy',
+      '/api/strategy-config',
+      '/api/test/quick-sources',
+      '/api/test/sources',
       '/api/trading/mode',
       '/api/trading/candidates',
+      '/api/trading/market-loop',
       '/api/trading/market-loop/status',
       '/api/trading/operator',
       '/api/trading/orders/open',
       '/api/trading/scan-runs',
       '/api/trading/watchlist',
       '/api/tradingagents/models',
+      '/api/verify',
       '/api/wallets',
     ],
     ['GET'],
@@ -507,14 +535,20 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
   ),
   ...expandPermissions(
     [
+      '/api/backtests',
+      '/api/backtests/walk-forward',
+      '/api/decisions',
+      '/api/ensemble',
       '/api/jobs',
       '/api/jobs/worker',
       '/api/markets/sync',
+      '/api/models',
+      '/api/orderbook',
+      '/api/outcomes',
+      '/api/paper-bets',
       '/api/pipeline',
       '/api/research',
       '/api/simulation',
-      '/api/test/quick-sources',
-      '/api/test/sources',
       '/api/trading/candidates/[id]/force-research',
       '/api/trading/market-loop',
       '/api/trading/market-loop/start',
@@ -541,8 +575,10 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
       '/api/related-markets',
       '/api/simulation',
       '/api/strategy',
+      '/api/strategy-config',
       '/api/strategy-config/sweep',
       '/api/trading/market-loop',
+      '/api/verify',
     ],
     ['POST'],
     OPERATOR_ROLES,
@@ -550,10 +586,12 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
   ),
   ...expandPermissions(
     [
+      '/api/jobs',
+      '/api/outcomes',
+      '/api/research',
       '/api/strategy',
       '/api/settings',
       '/api/trading/mode',
-      '/api/jobs',
       '/api/prompts',
     ],
     ['PUT'],
@@ -566,7 +604,6 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
       '/api/credentials/test',
       '/api/prompts',
       '/api/qdrant/collections',
-      '/api/qdrant/collections/[name]',
       '/api/settings',
       '/api/strategy-config',
       '/api/trading/mode',
@@ -576,10 +613,22 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
     'dangerous',
   ),
   ...expandPermissions(
+    ['/api/qdrant/collections/[name]'],
+    ['POST', 'DELETE'],
+    ADMIN_ONLY_ROLES,
+    'dangerous',
+  ),
+  ...expandPermissions(
     ['/api/credentials'],
     ['GET', 'PUT', 'DELETE'],
     ADMIN_ONLY_ROLES,
     'dangerous',
+  ),
+  ...expandPermissions(
+    ['/api/strategy-config'],
+    ['GET', 'PATCH'],
+    ADMIN_ONLY_ROLES,
+    'admin',
   ),
   ...expandPermissions(
     ['/api/trading/orders/[id]/cancel'],

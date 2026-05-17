@@ -16,6 +16,7 @@ export interface APlusGateInput {
   orderbookQuality: number;
   dataSource: 'REAL' | 'MOCK';
   spreadSource: 'REAL_ORDERBOOK' | 'ESTIMATED';
+  oracleCheckPresent?: boolean;
 }
 
 export interface APlusGateResult {
@@ -54,6 +55,9 @@ export function evaluateAPlusSignalGate(
   }
   if (input.modelDisagreement > config.maxModelDisagreement) {
     reasons.push(`modelDisagreement ${(input.modelDisagreement * 100).toFixed(1)}% > ${(config.maxModelDisagreement * 100).toFixed(1)}%`);
+  }
+  if (input.oracleCheckPresent === false) {
+    reasons.push('oracleCheck missing');
   }
   if (input.oracleRiskScore > config.maxOracleRisk) {
     reasons.push(`oracleRiskScore ${(input.oracleRiskScore * 100).toFixed(1)}% > ${(config.maxOracleRisk * 100).toFixed(1)}%`);

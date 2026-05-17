@@ -27,16 +27,44 @@ export interface ScannerMarketInput {
   spreadSource?: string;
   tokenId?: string | null;
   rawOrderbookJson?: string | null;
+  resolutionTime?: Date | string | null;
+}
+
+function normalizeResolutionTime(value: ScannerMarketInput['resolutionTime']): Date | null {
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  return null;
+}
+
+function getSnapshotPricing(market: ScannerMarketInput) {
+  return {
+    bestBid: market.bestBid ?? null,
+    bestAsk: market.bestAsk ?? null,
+    yesPrice: market.bestAsk ?? market.impliedProb,
+    noPrice: 1 - (market.bestAsk ?? market.impliedProb),
+  };
 }
 
 export async function upsertScannedMarket(params: {
   market: ScannerMarketInput;
   scanRunId: string;
+  enqueueCandidateJobs?: boolean;
 }) {
   const { market, scanRunId } = params;
+  const shouldEnqueueJobs = params.enqueueCandidateJobs ?? true;
   const normalizedTitle = normalizeMarketTitle(market.title);
   const titleHash = createTitleHash(market.title);
   const dataSource = market.dataSource || 'REAL';
+  const resolutionTime = normalizeResolutionTime(market.resolutionTime);
+  const snapshotCapturedAt = new Date();
+  const snapshotPricing = getSnapshotPricing(market);
   const scoreBreakdown = computeCandidateScore({
     liquidity: market.liquidity,
     spread: market.spread,
@@ -66,8 +94,13 @@ export async function upsertScannedMarket(params: {
         category: market.category,
         status: market.status,
         dataSource: dataSource as any,
+        resolutionTime,
         firstSeenAt: new Date(),
         lastSeenAt: new Date(),
+        lastSnapshotAt: snapshotCapturedAt,
+        latestPrice: market.impliedProb,
+        latestSpread: market.spread,
+        latestLiquidity: market.liquidity,
         isActive: market.status === 'ACTIVE',
         isClosed: market.status !== 'ACTIVE',
         isResolved: market.status === 'RESOLVED',
@@ -86,16 +119,16 @@ export async function upsertScannedMarket(params: {
         spread: market.spread,
         spreadSource: market.spreadSource ?? null,
         volume24h: market.volume24h || 0,
-        bestBid: market.bestBid ?? market.impliedProb - market.spread / 2,
-        bestAsk: market.bestAsk ?? market.impliedProb + market.spread / 2,
+        bestBid: snapshotPricing.bestBid,
+        bestAsk: snapshotPricing.bestAsk,
         bidDepth: market.bidDepth ?? null,
         askDepth: market.askDepth ?? null,
         priceImpact: market.priceImpact ?? null,
         fillProbability: market.fillProbability ?? null,
-        yesPrice: market.bestAsk ?? market.impliedProb,
-        noPrice: 1 - (market.bestAsk ?? market.impliedProb),
+        yesPrice: snapshotPricing.yesPrice,
+        noPrice: snapshotPricing.noPrice,
         rawJson: market.rawOrderbookJson ?? null,
-        capturedAt: new Date(),
+        capturedAt: snapshotCapturedAt,
       },
     });
 
@@ -128,16 +161,16 @@ export async function upsertScannedMarket(params: {
         liquidity: market.liquidity,
         spread: market.spread,
         volume24h: market.volume24h || 0,
-        bestBid: market.bestBid ?? market.impliedProb - market.spread / 2,
-        bestAsk: market.bestAsk ?? market.impliedProb + market.spread / 2,
-        snapshotTime: new Date(),
+        bestBid: snapshotPricing.bestBid,
+        bestAsk: snapshotPricing.bestAsk,
+        snapshotTime: snapshotCapturedAt,
       },
     });
 
     const acceptedStr = serializeCriteria(scoreBreakdown.acceptedCriteria);
     const rejectedStr = serializeCriteria(scoreBreakdown.rejectedCriteria);
 
-    await db.tradeCandidate.create({
+    const createdCandidate = await db.tradeCandidate.create({
       data: {
         marketId: created.id,
         stage: 'SCANNED',
@@ -149,10 +182,10 @@ export async function upsertScannedMarket(params: {
       },
     });
 
-    if (scoreAction !== 'SKIP' && scoreAction !== 'SNAPSHOT_ONLY') {
+    if (shouldEnqueueJobs && scoreAction !== 'SKIP' && scoreAction !== 'SNAPSHOT_ONLY') {
       await enqueueCandidateJobs(scoreAction, {
         marketId: created.id,
-        candidateId: created.id,
+        candidateId: createdCandidate.id,
       });
     }
 
@@ -183,6 +216,11 @@ export async function upsertScannedMarket(params: {
       status: market.status,
       dataSource: dataSource as any,
       lastSeenAt: new Date(),
+      lastSnapshotAt: snapshotCapturedAt,
+      latestPrice: market.impliedProb,
+      latestSpread: market.spread,
+      latestLiquidity: market.liquidity,
+      resolutionTime: resolutionTime ?? existing.resolutionTime,
       isActive: market.status === 'ACTIVE',
       isClosed: market.status !== 'ACTIVE',
       isResolved: market.status === 'RESOLVED',
@@ -201,16 +239,16 @@ export async function upsertScannedMarket(params: {
       spread: market.spread,
       spreadSource: market.spreadSource ?? null,
       volume24h: market.volume24h || 0,
-      bestBid: market.bestBid ?? market.impliedProb - market.spread / 2,
-      bestAsk: market.bestAsk ?? market.impliedProb + market.spread / 2,
+      bestBid: snapshotPricing.bestBid,
+      bestAsk: snapshotPricing.bestAsk,
       bidDepth: market.bidDepth ?? null,
       askDepth: market.askDepth ?? null,
       priceImpact: market.priceImpact ?? null,
       fillProbability: market.fillProbability ?? null,
-      yesPrice: market.bestAsk ?? market.impliedProb,
-      noPrice: 1 - (market.bestAsk ?? market.impliedProb),
+      yesPrice: snapshotPricing.yesPrice,
+      noPrice: snapshotPricing.noPrice,
       rawJson: market.rawOrderbookJson ?? null,
-      capturedAt: new Date(),
+      capturedAt: snapshotCapturedAt,
     },
   });
 
@@ -243,9 +281,9 @@ export async function upsertScannedMarket(params: {
       liquidity: market.liquidity,
       spread: market.spread,
       volume24h: market.volume24h || 0,
-      bestBid: market.bestBid ?? market.impliedProb - market.spread / 2,
-      bestAsk: market.bestAsk ?? market.impliedProb + market.spread / 2,
-      snapshotTime: new Date(),
+      bestBid: snapshotPricing.bestBid,
+      bestAsk: snapshotPricing.bestAsk,
+      snapshotTime: snapshotCapturedAt,
     },
   });
 
@@ -270,7 +308,7 @@ export async function upsertScannedMarket(params: {
       },
     });
 
-    if (scoreAction !== 'SKIP' && scoreAction !== 'SNAPSHOT_ONLY') {
+    if (shouldEnqueueJobs && scoreAction !== 'SKIP' && scoreAction !== 'SNAPSHOT_ONLY') {
       await enqueueCandidateJobs(scoreAction, {
         marketId: existing.id,
         candidateId: existingCandidate.id,
@@ -283,10 +321,10 @@ export async function upsertScannedMarket(params: {
   );
   correlationClusterManager.clusterAndLink({
     id: existing.id,
-    title: existing.title,
-    category: existing.category,
-    resolutionTime: existing.resolutionTime,
-    venue: existing.venue,
+    title: market.title,
+    category: market.category,
+    resolutionTime: resolutionTime ?? existing.resolutionTime,
+    venue: market.venue,
   }).catch((err) =>
     console.error('Correlation cluster linking failed for', existing.id, err),
   );

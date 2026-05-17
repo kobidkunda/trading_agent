@@ -19,22 +19,25 @@ describe('paper execution helpers', () => {
       dataSource: 'REAL',
     });
 
-    expect(order).toEqual({
-      marketId: 'market-1',
-      venueOrderId: 'PAPER_123',
-      executionMode: 'SIMULATED',
-      dataSource: 'REAL',
-      lifecycleStatus: 'SUBMITTED',
-      side: 'YES',
-      price: 0.42,
-      size: 125,
-      filledSize: 0,
-      remainingSize: 125,
-      avgFillPrice: null,
-      status: 'PLANNED',
-      submittedAt: now,
-      filledAt: null,
-    });
+    expect(order.marketId).toBe('market-1');
+    expect(order.venueOrderId).toBe('PAPER_123');
+    expect(order.executionMode).toBe('SIMULATED');
+    expect(order.dataSource).toBe('REAL');
+    expect(order.lifecycleStatus).toBe('SUBMITTED');
+    expect(order.side).toBe('YES');
+    expect(order.price).toBe(0.42);
+    expect(order.size).toBe(125);
+    expect(order.filledSize).toBe(0);
+    expect(order.remainingSize).toBe(125);
+    expect(order.avgFillPrice).toBeNull();
+    expect(order.status).toBe('SUBMITTED');
+    expect(order.fillAttemptCount).toBe(0);
+    expect(order.lastFillAttemptAt).toBeNull();
+    expect(order.fillModel).toBe('CONSERVATIVE_PAPER');
+    expect(order.executionNotesJson).toBeNull();
+    expect(order.orderExpiryAt instanceof Date).toBe(true);
+    expect(order.submittedAt).toEqual(now);
+    expect(order.filledAt).toBeNull();
   });
 
   it('builds a watch-level position (not open) until order tracker fills it', () => {

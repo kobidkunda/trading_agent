@@ -30,7 +30,7 @@ export async function runFullResearch(input: FullResearchInput): Promise<FullRes
   const deerflowHealth = await canRunStage('DEERFLOW');
   if (!deerflowHealth.canRun) {
     // Fallback: try direct connectivity check
-    const fallbackUrl = process.env.DEERFLOW_URL || 'http://192.168.88.97:2026';
+    const fallbackUrl = process.env.DEERFLOW_URL || 'http://localhost:2026';
     const reachable = await isServiceReachable('deerflow', fallbackUrl);
     if (reachable) {
       console.warn(`[FullResearch] DeerFlow canRunStage failed but service is reachable, proceeding...`);
@@ -63,7 +63,7 @@ export async function runFullResearch(input: FullResearchInput): Promise<FullRes
   if (input.routing.agentReachEnabled) {
     const arHealth = await canRunStage('AGENT_REACH');
     if (!arHealth.canRun) {
-      const fallbackUrl = process.env.AGENT_REACH_URL || 'http://192.168.88.96:7234';
+      const fallbackUrl = process.env.AGENT_REACH_URL || '';
       const reachable = await isServiceReachable('agent-reach', fallbackUrl);
       if (reachable) {
         console.warn(`[FullResearch] Agent-Reach canRunStage failed but service is reachable, proceeding...`);

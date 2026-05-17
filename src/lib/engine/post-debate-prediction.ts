@@ -26,7 +26,7 @@ export interface PostDebatePredictionResult {
 // Constants
 // ============================================================================
 
-const MIROFISH_BASE_URL = 'http://192.168.88.96:5401';
+const MIROFISH_BASE_URL = process.env.MIROFISH_URL || '';
 const MIROFISH_TIMEOUT_MS = 30_000;
 const DEFAULT_MODEL = 'free_ling';
 

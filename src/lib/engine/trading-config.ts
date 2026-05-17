@@ -1,6 +1,6 @@
+import type { FillModel, ScanMode, StrategySettings } from '@/lib/types';
 import { DEFAULT_STRATEGY } from '@/lib/engine/risk';
 import { getModeState, normalizeTradingMode, type DataSource, type ExecutionMode, type TradingMode } from '@/lib/engine/mode';
-import type { StrategySettings } from '@/lib/types';
 
 export interface TradingConfig extends StrategySettings {
   mode: TradingMode;
@@ -11,9 +11,16 @@ export interface TradingConfig extends StrategySettings {
   candidateThreshold: number;
   researchCooldownMinutes: number;
   maxResearchJobsPerCycle: number;
-  paperFillModel: 'INSTANT' | 'BOOK_AWARE';
+  paperFillModel: FillModel;
   maxPaperPositionSize: number;
   liveExecutionEnabled: boolean;
+  scanMode: ScanMode;
+  maxPagesPerVenue: number;
+  scanUntilNoCursor: boolean;
+  maxMarketsPerScan: number;
+  scanRateLimitMs: number;
+  scanTimeoutMs: number;
+  orderExpiryMinutes: number;
 }
 
 export const DEFAULT_TRADING_CONFIG: TradingConfig = {
@@ -26,9 +33,16 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   candidateThreshold: 75,
   researchCooldownMinutes: 360,
   maxResearchJobsPerCycle: 5,
-  paperFillModel: 'BOOK_AWARE',
+  paperFillModel: 'CONSERVATIVE_PAPER',
   maxPaperPositionSize: DEFAULT_STRATEGY.maxExposurePerMarket,
   liveExecutionEnabled: false,
+  scanMode: DEFAULT_STRATEGY.scanMode ?? 'INCREMENTAL_SCAN',
+  maxPagesPerVenue: DEFAULT_STRATEGY.maxPagesPerVenue ?? 10,
+  scanUntilNoCursor: DEFAULT_STRATEGY.scanUntilNoCursor ?? false,
+  maxMarketsPerScan: DEFAULT_STRATEGY.maxMarketsPerScan ?? 500,
+  scanRateLimitMs: DEFAULT_STRATEGY.scanRateLimitMs ?? 500,
+  scanTimeoutMs: DEFAULT_STRATEGY.scanTimeoutMs ?? 15000,
+  orderExpiryMinutes: DEFAULT_STRATEGY.orderExpiryMinutes ?? 1440,
 };
 
 export function normalizeTradingConfig(input: Partial<TradingConfig | StrategySettings>): TradingConfig {

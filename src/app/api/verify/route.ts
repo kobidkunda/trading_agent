@@ -24,6 +24,7 @@ export async function GET() {
       where: {
         decisions: { some: { dryRun: true } },
         status: { in: ['ACTIVE', 'CLOSED'] },
+        dataSource: 'REAL',
       },
       include: { outcomes: true, decisions: true },
       take: 10,
@@ -46,6 +47,10 @@ export async function GET() {
     console.log('[Verify] Testing paper bets...');
     
     const paperBets = await db.paperBet.findMany({
+      where: {
+        market: { dataSource: 'REAL' },
+        decision: { mode: 'PAPER' },
+      },
       take: 100,
       orderBy: { createdAt: 'desc' },
     });

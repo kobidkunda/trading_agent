@@ -19,6 +19,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { REASON_CODE_DESCRIPTIONS } from '@/lib/constants';
+import { parseCriteriaValue } from '@/lib/engine/candidate-criteria';
 
 interface APlusRecord {
   id: string;
@@ -52,11 +53,6 @@ function venueBadgeLabel(venue: string): string {
 function formatPct(val: number | null): string {
   if (val === null) return '—';
   return `${(val * 100).toFixed(1)}%`;
-}
-
-function parseCriteria(csv: string): string[] {
-  if (!csv) return [];
-  return csv.split(',').map((s) => s.trim()).filter(Boolean);
 }
 
 export function APlusSignalsDashboard() {
@@ -196,8 +192,8 @@ export function APlusSignalsDashboard() {
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
           {signals.map((s) => {
-            const accepted = parseCriteria(s.acceptedCriteria);
-            const rejected = parseCriteria(s.rejectedCriteria);
+            const accepted = parseCriteriaValue(s.acceptedCriteria);
+            const rejected = parseCriteriaValue(s.rejectedCriteria);
             const isExpanded = expandedId === s.id;
 
             return (

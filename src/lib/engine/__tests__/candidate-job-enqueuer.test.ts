@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const createMock: any = mock(async ({ data }: { data: Record<string, unknown> }) => ({ id: `${String(data.type)}-job`, ...data }));
+const findManyMock: any = mock(async () => []);
 
 mock.module('@/lib/db', () => ({
   db: {
     job: {
       create: createMock,
+      findMany: findManyMock,
     },
   },
 }));
@@ -13,6 +15,8 @@ mock.module('@/lib/db', () => ({
 describe('candidate job enqueuer', () => {
   beforeEach(() => {
     createMock.mockClear();
+    findManyMock.mockClear();
+    findManyMock.mockResolvedValue([]);
   });
 
   it('creates queued jobs for full research candidates', async () => {
@@ -24,12 +28,9 @@ describe('candidate job enqueuer', () => {
     });
 
     expect(jobs.map((job) => job.type)).toEqual([
-      'TRIAGE_MARKET',
-      'RESEARCH_MARKET',
-      'JUDGE_MARKET',
-      'RISK_CHECK',
+      'DEEP_RESEARCH',
     ]);
-    expect(createMock).toHaveBeenCalledTimes(4);
+    expect(createMock).toHaveBeenCalledTimes(1);
   });
 
   it('creates no jobs for skipped candidates', async () => {

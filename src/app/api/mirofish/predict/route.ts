@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const MIROFISH_BASE = 'http://192.168.88.96:5401';
+const MIROFISH_BASE = process.env.MIROFISH_URL || '';
 
 export async function POST(req: NextRequest) {
   try {

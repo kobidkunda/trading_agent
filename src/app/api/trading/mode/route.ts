@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const denied = enforceRoutePermission(request, '/api/trading/mode', 'PUT');
+  const denied = enforceRoutePermission(request, '/api/trading/mode', 'POST');
   if (denied) return denied;
   try {
     const body = await request.json();

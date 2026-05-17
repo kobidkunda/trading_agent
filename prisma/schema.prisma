@@ -391,6 +391,7 @@ model Order {
   updatedAt     DateTime @updatedAt
 
   fills Fill[]
+  paperBet PaperBet?
 
   @@index([lifecycleStatus, submittedAt])
 }
@@ -402,6 +403,8 @@ model Fill {
   price         Float
   size          Float
   fee           Float
+  fillModel     String?
+  metadataJson  String?
   fillTime      DateTime @default(now())
 }
 
@@ -430,10 +433,14 @@ model PaperBet {
   market Market @relation(fields: [marketId], references: [id])
   decisionId String @unique
   decision Decision @relation(fields: [decisionId], references: [id])
+  orderId String? @unique
+  order Order? @relation(fields: [orderId], references: [id])
   
   predictionType String // BID, WATCH
   setupType String? // A_PLUS_BET, STANDARD_BET
   aPlusStatus String? // PASSED, FAILED, HEURISTIC
+  executionStatus String @default("SUBMITTED") // PLANNED, SUBMITTED, PARTIAL, FILLED, FAILED, EXPIRED
+  executedAt DateTime?
   predictedProb Float // Model's probability estimate
   predictedSide String // YES, NO
   impliedProb Float // Market price at prediction time
@@ -461,6 +468,7 @@ model PaperBet {
   @@index([marketId])
   @@index([predictionType])
   @@index([resolvedAt])
+  @@index([executionStatus, resolvedAt])
 }
 
 // ============ OUTCOMES ============

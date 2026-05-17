@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { encrypt, isEncrypted } from '@/lib/engine/crypto';
+import { enforceRoutePermission } from '@/lib/engine/auth';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = enforceRoutePermission(request, '/api/credentials', 'GET');
+  if (denied) return denied;
   try {
     const credentials = await db.credential.findMany({
       orderBy: { createdAt: 'desc' },
@@ -28,6 +31,8 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const denied = enforceRoutePermission(request, '/api/credentials', 'POST');
+  if (denied) return denied;
   try {
     const body = await request.json();
 
@@ -68,6 +73,8 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
+  const denied = enforceRoutePermission(request, '/api/credentials', 'PUT');
+  if (denied) return denied;
   try {
     const body = await request.json();
 
@@ -110,6 +117,8 @@ export async function PUT(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  const denied = enforceRoutePermission(request, '/api/credentials', 'DELETE');
+  if (denied) return denied;
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
