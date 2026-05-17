@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
+import { enforceRoutePermission } from '@/lib/engine/auth';
 
 export async function GET() {
   try {
@@ -33,6 +34,8 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const denied = enforceRoutePermission(request, '/api/trading/market-loop', 'POST');
+  if (denied) return denied;
   try {
     const body = await request.json();
     const action = body.action as string;

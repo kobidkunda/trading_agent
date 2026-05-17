@@ -1,76 +1,163 @@
-export type ModelStatus = 'TESTING' | 'ACTIVE' | 'DISABLED'
+import { db } from '@/lib/db';
+
+export type ModelStatus = 'TESTING' | 'ACTIVE' | 'DISABLED';
 
 export interface ModelRegistryEntry {
-  modelName: string
-  version: string
-  provider: string
-  category: string
-  enabled: boolean
-  fallbackPriority: number
-  rollingBrier: number | null
-  sampleSize: number
-  lastEvaluatedAt: Date | null
-  weight: number
-  status: ModelStatus
+  modelName: string;
+  version: string;
+  provider: string;
+  category: string;
+  enabled: boolean;
+  fallbackPriority: number;
+  rollingBrier: number | null;
+  sampleSize: number;
+  lastEvaluatedAt: Date | null;
+  weight: number;
+  status: ModelStatus;
+}
+
+function toEntry(record: {
+  modelName: string;
+  version: string;
+  provider: string;
+  category: string;
+  enabled: boolean;
+  fallbackPriority: number;
+  rollingBrier: number | null;
+  sampleSize: number;
+  lastEvaluatedAt: Date | null;
+  weight: number;
+  status: string;
+}): ModelRegistryEntry {
+  return {
+    modelName: record.modelName,
+    version: record.version,
+    provider: record.provider,
+    category: record.category,
+    enabled: record.enabled,
+    fallbackPriority: record.fallbackPriority,
+    rollingBrier: record.rollingBrier,
+    sampleSize: record.sampleSize,
+    lastEvaluatedAt: record.lastEvaluatedAt,
+    weight: record.weight,
+    status: record.status as ModelStatus,
+  };
 }
 
 export class ModelRegistry {
-  private static models: ModelRegistryEntry[] = []
-
-  static registerModel(entry: ModelRegistryEntry): void {
-    const existing = ModelRegistry.models.findIndex(
-      m => m.modelName === entry.modelName && m.version === entry.version
-    )
-    if (existing >= 0) {
-      ModelRegistry.models[existing] = entry
-    } else {
-      ModelRegistry.models.push(entry)
-    }
+  static async load(): Promise<ModelRegistryEntry[]> {
+    const records = await db.modelRegistryRecord.findMany({
+      orderBy: [
+        { category: 'asc' },
+        { status: 'asc' },
+        { fallbackPriority: 'asc' },
+      ],
+    });
+    return records.map(toEntry);
   }
 
-  static getActiveModels(): ModelRegistryEntry[] {
-    return ModelRegistry.models.filter(m => m.enabled && m.status === 'ACTIVE')
+  static async registerModel(entry: ModelRegistryEntry): Promise<void> {
+    await db.modelRegistryRecord.upsert({
+      where: {
+        modelName_version_category: {
+          modelName: entry.modelName,
+          version: entry.version,
+          category: entry.category,
+        },
+      },
+      create: {
+        modelName: entry.modelName,
+        version: entry.version,
+        provider: entry.provider,
+        category: entry.category,
+        enabled: entry.enabled,
+        fallbackPriority: entry.fallbackPriority,
+        rollingBrier: entry.rollingBrier,
+        sampleSize: entry.sampleSize,
+        lastEvaluatedAt: entry.lastEvaluatedAt,
+        weight: entry.weight,
+        status: entry.status,
+      },
+      update: {
+        provider: entry.provider,
+        enabled: entry.enabled,
+        fallbackPriority: entry.fallbackPriority,
+        rollingBrier: entry.rollingBrier,
+        sampleSize: entry.sampleSize,
+        lastEvaluatedAt: entry.lastEvaluatedAt,
+        weight: entry.weight,
+        status: entry.status,
+      },
+    });
   }
 
-  static getModelsByCategory(category: string): ModelRegistryEntry[] {
-    return ModelRegistry.models.filter(m => m.category === category)
+  static async getActiveModels(): Promise<ModelRegistryEntry[]> {
+    const records = await db.modelRegistryRecord.findMany({
+      where: { enabled: true, status: 'ACTIVE' },
+      orderBy: [{ category: 'asc' }, { fallbackPriority: 'asc' }],
+    });
+    return records.map(toEntry);
   }
 
-  static evaluateModel(modelName: string, brier: number): void {
-    const model = ModelRegistry.models.find(m => m.modelName === modelName)
-    if (!model) return
-
-    const prevBrier = model.rollingBrier
-    const prevN = model.sampleSize
-    if (prevBrier === null) {
-      model.rollingBrier = brier
-      model.sampleSize = 1
-    } else {
-      model.rollingBrier = (prevBrier * prevN + brier) / (prevN + 1)
-      model.sampleSize = prevN + 1
-    }
-    model.lastEvaluatedAt = new Date()
-
-    if (model.rollingBrier !== null && model.rollingBrier > 0.3) {
-      model.status = 'DISABLED'
-      model.enabled = false
-    }
+  static async getModelsByCategory(category: string): Promise<ModelRegistryEntry[]> {
+    const records = await db.modelRegistryRecord.findMany({
+      where: { category },
+      orderBy: [{ status: 'asc' }, { fallbackPriority: 'asc' }],
+    });
+    return records.map(toEntry);
   }
 
-  static getWeights(): Record<string, number> {
-    const active = ModelRegistry.getActiveModels()
-    if (active.length === 0) return {}
+  static async evaluateModel(modelName: string, category: string, brier: number): Promise<void> {
+    const model = await db.modelRegistryRecord.findFirst({
+      where: { modelName, category },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (!model) return;
 
-    const briers = active.map(m => {
-      if (m.rollingBrier === null) return 0.25
-      return Math.max(1 - m.rollingBrier, 0.01)
-    })
-    const total = briers.reduce((sum, b) => sum + b, 0)
+    const prevBrier = model.rollingBrier;
+    const prevN = model.sampleSize;
+    const rollingBrier =
+      prevBrier === null
+        ? brier
+        : (prevBrier * prevN + brier) / (prevN + 1);
+    const sampleSize = prevN + 1;
+    const status =
+      rollingBrier > 0.3 && sampleSize >= 25
+        ? 'DISABLED'
+        : sampleSize >= 10
+          ? 'ACTIVE'
+          : model.status;
 
-    const weights: Record<string, number> = {}
-    for (let i = 0; i < active.length; i++) {
-      weights[active[i].modelName] = total > 0 ? briers[i] / total : 1 / active.length
+    await db.modelRegistryRecord.update({
+      where: { id: model.id },
+      data: {
+        rollingBrier,
+        sampleSize,
+        lastEvaluatedAt: new Date(),
+        enabled: status !== 'DISABLED',
+        status,
+      },
+    });
+  }
+
+  static async getWeights(category?: string): Promise<Record<string, number>> {
+    const active = category
+      ? await ModelRegistry.getModelsByCategory(category)
+      : await ModelRegistry.getActiveModels();
+    const eligible = active.filter((model) => model.enabled && model.status === 'ACTIVE');
+    if (eligible.length === 0) return {};
+
+    const briers = eligible.map((model) => {
+      if (model.rollingBrier === null) return 0.25;
+      return Math.max(1 - model.rollingBrier, 0.01);
+    });
+    const total = briers.reduce((sum, value) => sum + value, 0);
+
+    const weights: Record<string, number> = {};
+    for (let i = 0; i < eligible.length; i++) {
+      const key = `${eligible[i].modelName}:${eligible[i].category}`;
+      weights[key] = total > 0 ? briers[i] / total : 1 / eligible.length;
     }
-    return weights
+    return weights;
   }
 }

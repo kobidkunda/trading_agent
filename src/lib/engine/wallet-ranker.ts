@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import type { Wallet } from '@prisma/client';
+import { checkWalletEligibility } from '@/lib/engine/wallet-ingestion';
 
 const DEFAULT_TOP_N = 20;
 
@@ -16,19 +17,20 @@ interface WalletRanking {
  */
 export class WalletPerformanceRanker {
   private readonly WEIGHTS = {
-    pnl: 0.30,
-    winRate: 0.25,
-    profitFactor: 0.20,
-    brier: 0.15,
-    edge: 0.10,
+    pnl: 0.24,
+    winRate: 0.20,
+    profitFactor: 0.16,
+    brier: 0.12,
+    edge: 0.08,
+    reliability: 0.20,
   };
 
-  private readonly MIN_RESOLVED_TRADES = 5;
+  private readonly MIN_RESOLVED_TRADES = 50;
 
   async rankWallets(): Promise<Wallet[]> {
-    const wallets = await db.wallet.findMany({
+    const wallets = (await db.wallet.findMany({
       where: { isActive: true, resolvedTrades: { gte: this.MIN_RESOLVED_TRADES } },
-    });
+    })).filter((wallet) => checkWalletEligibility(wallet).eligible);
 
     if (wallets.length === 0) return [];
 
@@ -42,9 +44,9 @@ export class WalletPerformanceRanker {
   }
 
   async updateRankings(): Promise<void> {
-    const wallets = await db.wallet.findMany({
+    const wallets = (await db.wallet.findMany({
       where: { isActive: true, resolvedTrades: { gte: this.MIN_RESOLVED_TRADES } },
-    });
+    })).filter((wallet) => checkWalletEligibility(wallet).eligible);
 
     if (wallets.length === 0) return;
 
@@ -78,11 +80,13 @@ export class WalletPerformanceRanker {
     const profitFactors = wallets.map((w) => w.profitFactor ?? 1);
     const briers = wallets.map((w) => w.brierScore ?? 0.25);
     const edges = wallets.map((w) => Math.max(0, w.avgEdge ?? 0));
+    const reliabilityScores = wallets.map((w) => Math.max(0, w.reliabilityScore ?? 0));
 
     const maxWinRate = Math.max(...winRates, 0.01);
     const maxProfitFactor = Math.max(...profitFactors, 1);
     const maxBrier = Math.max(...briers, 0.01);
     const maxEdge = Math.max(...edges, 0.01);
+    const maxReliability = Math.max(...reliabilityScores, 0.01);
 
     return wallets.map((wallet) => {
       const pnlZScore = (wallet.realizedPnl - meanPnl) / stdPnl;
@@ -94,13 +98,15 @@ export class WalletPerformanceRanker {
       const brier = wallet.brierScore ?? 0.25;
       const brierNorm = 1 - (brier / maxBrier);
       const edgeNorm = clamp((wallet.avgEdge ?? 0) / maxEdge, 0, 1);
+      const reliabilityNorm = clamp((wallet.reliabilityScore ?? 0) / maxReliability, 0, 1);
 
       const compositeScore =
         this.WEIGHTS.pnl * pnlNorm +
         this.WEIGHTS.winRate * winRateNorm +
         this.WEIGHTS.profitFactor * pfNorm +
         this.WEIGHTS.brier * brierNorm +
-        this.WEIGHTS.edge * edgeNorm;
+        this.WEIGHTS.edge * edgeNorm +
+        this.WEIGHTS.reliability * reliabilityNorm;
 
       return { wallet, compositeScore, rank: 0 };
     });

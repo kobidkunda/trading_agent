@@ -13,6 +13,8 @@ export async function createPaperBet(params: {
   marketId: string;
   decisionId: string;
   predictionType: 'BID' | 'WATCH';
+  setupType?: 'A_PLUS_BET' | 'STANDARD_BET';
+  aPlusStatus?: 'PASSED' | 'FAILED' | 'HEURISTIC';
   predictedProb: number;
   predictedSide: 'YES' | 'NO';
   impliedProb: number;
@@ -26,6 +28,8 @@ export async function createPaperBet(params: {
       marketId: params.marketId,
       decisionId: params.decisionId,
       predictionType: params.predictionType,
+      setupType: params.setupType ?? null,
+      aPlusStatus: params.aPlusStatus ?? null,
       predictedProb: params.predictedProb,
       predictedSide: params.predictedSide,
       impliedProb: params.impliedProb,
@@ -146,6 +150,11 @@ export interface AccuracyMetrics {
   totalBets: number;
   resolvedBets: number;
   pendingBets: number;
+  aPlusResolvedBets: number;
+  aPlusPendingBets: number;
+  aPlusDirectionAccuracy: number;
+  aPlusAvgBrierScore: number;
+  aPlusTotalPnl: number;
   directionAccuracy: number;
   avgBrierScore: number;
   avgProbError: number;
@@ -174,7 +183,10 @@ export interface AccuracyMetrics {
 
 export async function getAccuracyMetrics(limit: number = 100): Promise<AccuracyMetrics> {
   const bets = await db.paperBet.findMany({
-    where: {},
+    where: {
+      market: { dataSource: 'REAL' },
+      decision: { mode: 'PAPER' },
+    },
     include: { market: { select: { title: true } } },
     orderBy: { createdAt: 'desc' },
     take: limit,
@@ -182,11 +194,16 @@ export async function getAccuracyMetrics(limit: number = 100): Promise<AccuracyM
 
   const resolved = bets.filter((b) => b.actualOutcome !== null && b.actualOutcome !== undefined);
   const pending = bets.filter((b) => b.actualOutcome === null || b.actualOutcome === undefined);
+  const aPlusResolved = resolved.filter((b) => b.setupType === 'A_PLUS_BET' || b.aPlusStatus === 'PASSED');
+  const aPlusPending = pending.filter((b) => b.setupType === 'A_PLUS_BET' || b.aPlusStatus === 'PASSED');
 
   let directionCorrect = 0;
   let totalBrier = 0;
   let totalProbError = 0;
   let totalPnl = 0;
+  let aPlusDirectionCorrect = 0;
+  let aPlusTotalBrier = 0;
+  let aPlusTotalPnl = 0;
   let bidCount = 0;
   let bidCorrect = 0;
   let bidPnl = 0;
@@ -209,12 +226,23 @@ export async function getAccuracyMetrics(limit: number = 100): Promise<AccuracyM
       if (b.directionCorrect) watchCorrect++;
       watchPnl += b.pnl ?? 0;
     }
+
+    if (b.setupType === 'A_PLUS_BET' || b.aPlusStatus === 'PASSED') {
+      if (b.directionCorrect) aPlusDirectionCorrect++;
+      aPlusTotalBrier += b.brierScore ?? 0;
+      aPlusTotalPnl += b.pnl ?? 0;
+    }
   }
 
   return {
     totalBets: bets.length,
     resolvedBets: resolved.length,
     pendingBets: pending.length,
+    aPlusResolvedBets: aPlusResolved.length,
+    aPlusPendingBets: aPlusPending.length,
+    aPlusDirectionAccuracy: aPlusResolved.length > 0 ? Math.round((aPlusDirectionCorrect / aPlusResolved.length) * 10000) / 100 : 0,
+    aPlusAvgBrierScore: aPlusResolved.length > 0 ? Math.round((aPlusTotalBrier / aPlusResolved.length) * 10000) / 10000 : 0,
+    aPlusTotalPnl: Math.round(aPlusTotalPnl * 100) / 100,
     directionAccuracy: resolved.length > 0 ? Math.round((directionCorrect / resolved.length) * 10000) / 100 : 0,
     avgBrierScore: resolved.length > 0 ? Math.round((totalBrier / resolved.length) * 10000) / 10000 : 0,
     avgProbError: resolved.length > 0 ? Math.round((totalProbError / resolved.length) * 10000) / 10000 : 0,

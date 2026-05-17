@@ -40,7 +40,9 @@ describe('trading mode api', () => {
   it('returns normalized paper mode defaults on GET', async () => {
     const { GET } = await import('../../../app/api/trading/mode/route');
 
-    const response = await GET();
+    const response = await GET(new Request('http://localhost/api/trading/mode', {
+      headers: { 'x-role': 'Admin' },
+    }) as never);
     const payload = await response.json();
 
     expect(payload.mode).toBe('PAPER');
@@ -55,7 +57,7 @@ describe('trading mode api', () => {
     const response = await POST(
       new Request('http://localhost/api/trading/mode', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-role': 'Admin' },
         body: JSON.stringify({ mode: 'DEMO' }),
       }) as never,
     );

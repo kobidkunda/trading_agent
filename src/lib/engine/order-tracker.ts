@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { updateOrderCompat } from '@/lib/engine/prisma-runtime-compat';
+import type { FillModel } from '@/lib/types';
 
 export type OrderTrackerLifecycle = 'PLANNED' | 'SUBMITTED' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'FAILED' | 'EXPIRED';
 
@@ -24,8 +25,13 @@ export function derivePositionStatusAfterFill(lifecycleStatus: OrderTrackerLifec
 export async function processPaperOrderFill(params: {
   orderId: string;
   marketId: string;
-  fillModel: 'INSTANT' | 'BOOK_AWARE';
+  fillModel: FillModel;
   liquidity: number;
+  fillProbability?: number | null;
+  priceImpact?: number | null;
+  bidDepth?: number | null;
+  askDepth?: number | null;
+  spread?: number | null;
 }): Promise<{
   filledSize: number;
   avgFillPrice: number;
@@ -40,25 +46,56 @@ export async function processPaperOrderFill(params: {
   const { resolvePaperFill } = await import('./paper-execution');
 
   const fillResult = resolvePaperFill({
-    size: order.size,
+    size: Math.max(0, order.remainingSize || order.size),
     price: order.price,
     fillModel: params.fillModel,
     liquidity: params.liquidity,
+    fillProbability: params.fillProbability,
+    priceImpact: params.priceImpact,
+    bidDepth: params.bidDepth,
+    askDepth: params.askDepth,
+    spread: params.spread,
   });
 
-  const newLifecycleStatus = fillResult.isFullyFilled ? 'FILLED' : 'PARTIALLY_FILLED';
+  const prevFilledSize = order.filledSize ?? 0;
+  const incrementalFill = Math.max(0, fillResult.filledSize);
+  const nextFilledSize = Math.min(order.size, prevFilledSize + incrementalFill);
+  const nextRemainingSize = Math.max(0, order.size - nextFilledSize);
+  const nextAvgFillPrice =
+    nextFilledSize > 0
+      ? (
+          ((order.avgFillPrice ?? 0) * prevFilledSize) +
+          (fillResult.avgFillPrice * incrementalFill)
+        ) / Math.max(nextFilledSize, 1)
+      : order.avgFillPrice;
+  const newLifecycleStatus =
+    fillResult.lifecycleStatus === 'FAILED' && nextFilledSize > 0
+      ? 'PARTIALLY_FILLED'
+      : nextFilledSize >= order.size * 0.999
+        ? 'FILLED'
+        : fillResult.lifecycleStatus;
 
   await updateOrderCompat(params.orderId, {
     lifecycleStatus: newLifecycleStatus,
-    filledSize: fillResult.filledSize,
-    remainingSize: fillResult.remainingSize,
-    avgFillPrice: fillResult.avgFillPrice,
-    filledAt: fillResult.isFullyFilled ? new Date() : null,
-    status: fillResult.isFullyFilled ? 'FILLED' : 'PARTIALLY_FILLED',
+    filledSize: nextFilledSize,
+    remainingSize: nextRemainingSize,
+    avgFillPrice: nextAvgFillPrice,
+    filledAt: newLifecycleStatus === 'FILLED' ? new Date() : null,
+    lastFillAttemptAt: new Date(),
+    fillAttemptCount: { increment: 1 },
+    failureReason: newLifecycleStatus === 'FAILED' ? 'Paper fill conditions not met' : null,
+    status:
+      newLifecycleStatus === 'FAILED'
+        ? 'FAILED'
+        : newLifecycleStatus === 'FILLED'
+          ? 'FILLED'
+          : newLifecycleStatus === 'PARTIALLY_FILLED'
+            ? 'PARTIALLY_FILLED'
+            : 'SUBMITTED',
   });
 
   // Create position only when partially or fully filled
-  if (fillResult.filledSize > 0) {
+  if (incrementalFill > 0) {
     const existingPosition = await db.position.findFirst({
       where: { marketId: params.marketId, status: { in: ['OPEN', 'WATCH'] } },
     });
@@ -69,7 +106,7 @@ export async function processPaperOrderFill(params: {
           marketId: params.marketId,
           side: order.side,
           entryPrice: fillResult.avgFillPrice,
-          currentSize: fillResult.filledSize,
+          currentSize: incrementalFill,
           avgEntryPrice: fillResult.avgFillPrice,
           unrealizedPnl: 0,
           realizedPnl: 0,
@@ -79,8 +116,8 @@ export async function processPaperOrderFill(params: {
       });
     } else {
       // Update existing position
-      const newSize = existingPosition.currentSize + fillResult.filledSize;
-      const newAvgPrice = ((existingPosition.avgEntryPrice * existingPosition.currentSize) + (fillResult.avgFillPrice * fillResult.filledSize)) / newSize;
+      const newSize = existingPosition.currentSize + incrementalFill;
+      const newAvgPrice = ((existingPosition.avgEntryPrice * existingPosition.currentSize) + (fillResult.avgFillPrice * incrementalFill)) / newSize;
       await db.position.update({
         where: { id: existingPosition.id },
         data: {
@@ -95,7 +132,7 @@ export async function processPaperOrderFill(params: {
   return {
     filledSize: fillResult.filledSize,
     avgFillPrice: fillResult.avgFillPrice,
-    isFullyFilled: fillResult.isFullyFilled,
+    isFullyFilled: newLifecycleStatus === 'FILLED',
     orderStatus: newLifecycleStatus,
   };
 }

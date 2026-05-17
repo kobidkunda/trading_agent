@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { Prisma } from '@prisma/client';
+import { enforceRoutePermission } from '@/lib/engine/auth';
 
 export async function GET(request: NextRequest) {
+  const denied = enforceRoutePermission(request, '/api/jobs', 'GET');
+  if (denied) return denied;
   try {
     const { searchParams } = new URL(request.url);
     const type = searchParams.get('type');
@@ -30,6 +33,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const denied = enforceRoutePermission(request, '/api/jobs', 'POST');
+  if (denied) return denied;
   try {
     const body = await request.json();
 
@@ -37,7 +42,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'type is required' }, { status: 400 });
     }
 
-    const validTypes = ['SCAN', 'SCAN_VENUE', 'SCORE_CANDIDATES', 'TRIAGE', 'TRIAGE_MARKET', 'RESEARCH', 'RESEARCH_MARKET', 'JUDGE', 'JUDGE_MARKET', 'RISK', 'RISK_CHECK', 'EXECUTE', 'PAPER_EXECUTE', 'LIVE_EXECUTE', 'ORDER_TRACK', 'SETTLE', 'RESOLUTION_CHECK'];
+    const validTypes = [
+      'SCAN',
+      'SCAN_VENUE',
+      'SCORE_CANDIDATES',
+      'TRIAGE',
+      'TRIAGE_MARKET',
+      'RESEARCH',
+      'RESEARCH_MARKET',
+      'QUICK_RESEARCH',
+      'STANDARD_RESEARCH',
+      'DEEP_RESEARCH',
+      'JUDGE',
+      'JUDGE_MARKET',
+      'RISK',
+      'RISK_CHECK',
+      'EXECUTE',
+      'PAPER_EXECUTE',
+      'LIVE_EXECUTE',
+      'ORDER_TRACK',
+      'SETTLE',
+      'RESOLUTION_CHECK',
+    ];
     if (!validTypes.includes(body.type)) {
       return NextResponse.json(
         { error: `type must be one of: ${validTypes.join(', ')}` },
@@ -71,6 +97,8 @@ export async function POST(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
+  const denied = enforceRoutePermission(request, '/api/jobs', 'PUT');
+  if (denied) return denied;
   try {
     const body = await request.json();
 

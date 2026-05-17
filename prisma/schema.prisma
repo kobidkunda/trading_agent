@@ -91,14 +91,20 @@ model MarketSnapshot {
   marketId       String
   market         Market   @relation(fields: [marketId], references: [id])
   venue          String?
+  tokenId        String?
   price          Float?
   impliedProb    Float
   impliedProbability Float?
   liquidity      Float
   spread         Float
+  spreadSource   String?
   volume24h      Float    @default(0)
   bestBid        Float?
   bestAsk        Float?
+  bidDepth       Float?
+  askDepth       Float?
+  priceImpact    Float?
+  fillProbability Float?
   yesPrice       Float?
   noPrice        Float?
   orderBookDepth Float?
@@ -372,6 +378,11 @@ model Order {
   estimatedFillCost Float?
   status        String   @default("PENDING") // PENDING, SUBMITTED, PARTIAL, FILLED, CANCELLED, FAILED
   retryCount    Int      @default(0)
+  fillAttemptCount Int   @default(0)
+  lastFillAttemptAt DateTime?
+  orderExpiryAt DateTime?
+  fillModel     String?
+  executionNotesJson String?
   submittedAt   DateTime?
   filledAt      DateTime?
   cancelledAt   DateTime?
@@ -421,6 +432,8 @@ model PaperBet {
   decision Decision @relation(fields: [decisionId], references: [id])
   
   predictionType String // BID, WATCH
+  setupType String? // A_PLUS_BET, STANDARD_BET
+  aPlusStatus String? // PASSED, FAILED, HEURISTIC
   predictedProb Float // Model's probability estimate
   predictedSide String // YES, NO
   impliedProb Float // Market price at prediction time
@@ -483,6 +496,7 @@ model Wallet {
   venue         String   @default("POLYMARKET")
   totalTrades   Int      @default(0)
   resolvedTrades Int     @default(0)
+  activeDays    Int      @default(0)
   winRate       Float?
   profitFactor  Float?
   realizedPnl   Float    @default(0)
@@ -491,6 +505,8 @@ model Wallet {
   avgPositionSize Float?
   avgHoldTimeMs Int?
   drawdown      Float?
+  jackpotDependency Float?
+  reliabilityScore Float?
   recentPerformance Float?
   avgEdge       Float?
   rank          Int?
@@ -518,10 +534,34 @@ model WalletTrade {
   currentPosition Float?
   realizedPnl   Float?
   unrealizedPnl Float?
+  sourceMode    String   @default("DISABLED")
+  sourceName    String?
+  trustedSource Boolean  @default(false)
   createdAt     DateTime @default(now())
 
   @@index([walletId, tradeTimestamp])
   @@index([marketId])
+  @@unique([walletId, externalMarketId, tradeTimestamp, side])
+}
+
+model ModelRegistryRecord {
+  id              String   @id @default(cuid())
+  modelName       String
+  version         String
+  provider        String
+  category        String
+  enabled         Boolean  @default(true)
+  fallbackPriority Int     @default(0)
+  rollingBrier    Float?
+  sampleSize      Int      @default(0)
+  lastEvaluatedAt DateTime?
+  weight          Float    @default(1.0)
+  status          String   @default("TESTING")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([modelName, version, category])
+  @@index([category, status])
 }
 
 model EnsemblePrediction {
@@ -585,6 +625,16 @@ model OracleCheck {
   appealProcess   Boolean  @default(false)
   crossVenueMismatch Boolean @default(false)
   riskLevel       String
+  oracleRiskReasons String?
+  manualReviewRequired Boolean @default(false)
+  manualReviewStatus String   @default("NOT_REQUIRED")
+  manualReviewRequestedAt DateTime?
+  manualReviewRequestedBy String?
+  manualReviewCompletedAt DateTime?
+  manualReviewCompletedBy String?
+  manualReviewNotes String?
+  manualReviewExpiresAt DateTime?
+  reviewDecision String?
   notes           String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -623,6 +673,14 @@ model RelatedMarket {
   marketIdB       String
   marketB         Market   @relation("RelatedB", fields: [marketIdB], references: [id])
   relationshipType String
+  relationshipConfidence Float?
+  expectedRule   String?
+  formulaVersion String?
+  violationScore Float?
+  violationSeverity String?
+  action         String?
+  explanation    String?
+  oracleMismatchRisk Float?
   priceInconsistency Float?
   contradictionScore Float?
   possibleEdge    Float?

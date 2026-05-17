@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import type { Venue } from '@/lib/types';
+import type { WalletSourceMode } from '@/lib/engine/wallet-source';
 
 interface IngestedWalletTrade {
   externalMarketId: string;
@@ -12,6 +13,9 @@ interface IngestedWalletTrade {
   currentPosition?: number;
   realizedPnl?: number;
   unrealizedPnl?: number;
+  sourceMode?: WalletSourceMode;
+  sourceName?: string;
+  trustedSource?: boolean;
 }
 
 interface IngestedWalletStats {
@@ -19,6 +23,7 @@ interface IngestedWalletStats {
   venue: string;
   totalTrades: number;
   resolvedTrades: number;
+  activeDays?: number;
   winRate: number;
   profitFactor: number;
   realizedPnl: number;
@@ -27,6 +32,8 @@ interface IngestedWalletStats {
   avgPositionSize?: number;
   avgHoldTimeMs?: number;
   drawdown?: number;
+  jackpotDependency?: number;
+  reliabilityScore?: number;
   trades: IngestedWalletTrade[];
 }
 
@@ -47,7 +54,12 @@ export class WalletIngestionEngine {
    */
   async ingestWallets(
     wallets: IngestedWalletStats[],
-    venue: Venue = 'POLYMARKET'
+    venue: Venue = 'POLYMARKET',
+    sourceContext?: {
+      sourceMode?: WalletSourceMode;
+      sourceName?: string;
+      trustedSource?: boolean;
+    },
   ): Promise<IngestionResult> {
     const result: IngestionResult = {
       walletsUpserted: 0,
@@ -69,6 +81,7 @@ export class WalletIngestionEngine {
                   venue,
                   totalTrades: wallet.totalTrades,
                   resolvedTrades: wallet.resolvedTrades,
+                  activeDays: wallet.activeDays ?? computeActiveDays(wallet.trades),
                   winRate: wallet.winRate,
                   profitFactor: wallet.profitFactor,
                   realizedPnl: wallet.realizedPnl,
@@ -77,11 +90,14 @@ export class WalletIngestionEngine {
                   avgPositionSize: wallet.avgPositionSize ?? null,
                   avgHoldTimeMs: wallet.avgHoldTimeMs ?? null,
                   drawdown: wallet.drawdown ?? null,
+                  jackpotDependency: wallet.jackpotDependency ?? computeJackpotDependency(wallet.trades),
+                  reliabilityScore: wallet.reliabilityScore ?? null,
                   lastActivityAt: new Date(),
                 },
                 update: {
                   totalTrades: wallet.totalTrades,
                   resolvedTrades: wallet.resolvedTrades,
+                  activeDays: wallet.activeDays ?? computeActiveDays(wallet.trades),
                   winRate: wallet.winRate,
                   profitFactor: wallet.profitFactor,
                   realizedPnl: wallet.realizedPnl,
@@ -90,6 +106,8 @@ export class WalletIngestionEngine {
                   avgPositionSize: wallet.avgPositionSize ?? null,
                   avgHoldTimeMs: wallet.avgHoldTimeMs ?? null,
                   drawdown: wallet.drawdown ?? null,
+                  jackpotDependency: wallet.jackpotDependency ?? computeJackpotDependency(wallet.trades),
+                  reliabilityScore: wallet.reliabilityScore ?? null,
                   lastActivityAt: new Date(),
                 },
               });
@@ -99,20 +117,19 @@ export class WalletIngestionEngine {
               if (wallet.trades.length === 0) continue;
 
               const tradeIds = wallet.trades.map(
-                (t) => `${upserted.id}:${t.externalMarketId}:${t.tradeTimestamp.toISOString()}`
+                (t) => `${upserted.id}:${venue}:${t.externalMarketId}:${t.tradeTimestamp.toISOString()}:${t.side}`
               );
 
               const existing = await tx.walletTrade.findMany({
                 where: {
                   walletId: upserted.id,
-                  marketId: null,
                   externalMarketId: { in: wallet.trades.map((t) => t.externalMarketId) },
                 },
-                select: { externalMarketId: true, tradeTimestamp: true },
+                select: { externalMarketId: true, tradeTimestamp: true, side: true },
               });
 
               const existingKeys = new Set(
-                existing.map((e) => `${e.externalMarketId}:${e.tradeTimestamp.toISOString()}`)
+                existing.map((e) => `${upserted.id}:${venue}:${e.externalMarketId}:${e.tradeTimestamp.toISOString()}:${e.side}`)
               );
 
               const newTrades = wallet.trades.filter(
@@ -120,10 +137,22 @@ export class WalletIngestionEngine {
               );
 
               if (newTrades.length > 0) {
+                const linkedMarkets = await tx.market.findMany({
+                  where: {
+                    venue,
+                    externalId: { in: newTrades.map((trade) => trade.externalMarketId) },
+                  },
+                  select: { id: true, externalId: true },
+                });
+                const marketIdByExternalId = new Map(
+                  linkedMarkets.map((market) => [market.externalId, market.id]),
+                );
+
                 await tx.walletTrade.createMany({
                   data: newTrades.map((t) => ({
                     walletId: upserted.id,
                     externalMarketId: t.externalMarketId,
+                    marketId: marketIdByExternalId.get(t.externalMarketId) ?? null,
                     side: t.side,
                     quantity: t.quantity,
                     price: t.price,
@@ -133,6 +162,9 @@ export class WalletIngestionEngine {
                     currentPosition: t.currentPosition ?? null,
                     realizedPnl: t.realizedPnl ?? null,
                     unrealizedPnl: t.unrealizedPnl ?? null,
+                    sourceMode: t.sourceMode ?? sourceContext?.sourceMode ?? 'DISABLED',
+                    sourceName: t.sourceName ?? sourceContext?.sourceName ?? 'unknown',
+                    trustedSource: t.trustedSource ?? sourceContext?.trustedSource ?? false,
                   })),
                 });
                 result.tradesInserted += newTrades.length;
@@ -196,6 +228,16 @@ export class WalletIngestionEngine {
       avgEdge: resolvedTrades.length > 0
         ? resolvedTrades.reduce((s, t) => s + Math.abs(t.probability - 0.5), 0) / resolvedTrades.length
         : 0,
+      activeDays: 0,
+      jackpotDependency: computeJackpotDependencyFromResolved(resolvedTrades),
+      reliabilityScore: computeReliabilityScore({
+        resolvedTrades: resolvedTrades.length,
+        activeDays: 0,
+        profitFactor,
+        winRate,
+        brierScore: brierScore ?? 0.25,
+        jackpotDependency: computeJackpotDependencyFromResolved(resolvedTrades),
+      }),
     };
   }
 }
@@ -231,10 +273,13 @@ export interface WalletEligibilityResult {
 export function checkWalletEligibility(
   wallet: {
     resolvedTrades: number;
+    activeDays?: number | null;
     winRate: number | null;
     profitFactor: number | null;
     brierScore: number | null;
     drawdown: number | null;
+    jackpotDependency?: number | null;
+    reliabilityScore?: number | null;
     recentPerformance: number | null;
   },
   config?: Partial<WalletEligibilityConfig>
@@ -245,6 +290,13 @@ export function checkWalletEligibility(
   if (wallet.resolvedTrades < cfg.minResolvedTrades) {
     failures.push(
       `resolvedTrades (${wallet.resolvedTrades}) < minResolvedTrades (${cfg.minResolvedTrades})`
+    );
+  }
+
+  const activeDays = wallet.activeDays ?? 0;
+  if (activeDays < cfg.minActiveDays) {
+    failures.push(
+      `activeDays (${activeDays}) < minActiveDays (${cfg.minActiveDays})`
     );
   }
 
@@ -276,6 +328,13 @@ export function checkWalletEligibility(
     );
   }
 
+  const jackpotDependency = wallet.jackpotDependency ?? 1;
+  if (jackpotDependency > cfg.maxJackpotDependency) {
+    failures.push(
+      `jackpotDependency (${jackpotDependency.toFixed(3)}) > maxJackpotDependency (${cfg.maxJackpotDependency})`
+    );
+  }
+
   const winRateNorm = clamp01((wr - 0.4) / 0.4);
   const pfLog = pf > 0 ? Math.log(Math.max(0.5, pf)) : 0;
   const pfNorm = clamp01(pfLog / Math.log(3));
@@ -283,17 +342,24 @@ export function checkWalletEligibility(
   const resolvedNorm = clamp01(
     wallet.resolvedTrades / Math.max(cfg.minResolvedTrades * 2, 200)
   );
+  const activeDaysNorm = clamp01(
+    activeDays / Math.max(cfg.minActiveDays * 2, 120)
+  );
   const recencyNorm =
     wallet.recentPerformance != null
       ? clamp01((wallet.recentPerformance + 1) / 2)
       : 0.5;
 
+  const jackpotNorm = clamp01(1 - jackpotDependency);
+
   const score = Math.round(
     (winRateNorm * 25 +
       pfNorm * 20 +
       brierNorm * 15 +
-      resolvedNorm * 20 +
-      recencyNorm * 20) *
+      resolvedNorm * 10 +
+      activeDaysNorm * 10 +
+      recencyNorm * 10 +
+      jackpotNorm * 10) *
       100
   );
 
@@ -306,4 +372,58 @@ export function checkWalletEligibility(
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+function computeActiveDays(trades: IngestedWalletTrade[]): number {
+  const days = new Set(
+    trades.map((trade) => trade.tradeTimestamp.toISOString().slice(0, 10))
+  );
+  return days.size;
+}
+
+function computeJackpotDependency(trades: IngestedWalletTrade[]): number {
+  const pnls = trades
+    .map((trade) => trade.realizedPnl)
+    .filter((value): value is number => typeof value === 'number' && value > 0);
+  if (pnls.length === 0) return 1;
+  const total = pnls.reduce((sum, value) => sum + value, 0);
+  const top = Math.max(...pnls);
+  return total > 0 ? top / total : 1;
+}
+
+function computeJackpotDependencyFromResolved(
+  trades: { pnl: number }[],
+): number {
+  const positivePnls = trades
+    .map((trade) => trade.pnl)
+    .filter((value) => value > 0);
+  if (positivePnls.length === 0) return 1;
+  const total = positivePnls.reduce((sum, value) => sum + value, 0);
+  return total > 0 ? Math.max(...positivePnls) / total : 1;
+}
+
+function computeReliabilityScore(input: {
+  resolvedTrades: number;
+  activeDays: number;
+  profitFactor: number;
+  winRate: number;
+  brierScore: number;
+  jackpotDependency: number;
+}): number {
+  const resolvedNorm = clamp01(input.resolvedTrades / 200);
+  const activeNorm = clamp01(input.activeDays / 120);
+  const pfNorm = clamp01(Math.log(Math.max(input.profitFactor, 0.5)) / Math.log(3));
+  const winNorm = clamp01((input.winRate - 0.4) / 0.4);
+  const brierNorm = clamp01(1 - input.brierScore);
+  const jackpotNorm = clamp01(1 - input.jackpotDependency);
+
+  return Math.round(
+    (resolvedNorm * 0.2 +
+      activeNorm * 0.15 +
+      pfNorm * 0.2 +
+      winNorm * 0.15 +
+      brierNorm * 0.15 +
+      jackpotNorm * 0.15) *
+      10000
+  ) / 100;
 }

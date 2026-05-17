@@ -27,6 +27,10 @@ import { causalTreeEngine } from '@/lib/engine/causal-tree';
 import { getPolymarketMarkets } from '@/lib/venues/polymarket';
 import { getKalshiMarkets } from '@/lib/venues/kalshi';
 import type { LivePipelineStage, ResearchDepth, TransparencySourceRef } from '@/lib/types';
+import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
+import { evaluateAPlusSignalGate } from '@/lib/engine/a-plus/signal-gate';
+import { getWalletSignalTrustContext } from '@/lib/engine/wallet-signal';
+import { getLiveGovernanceSettings } from '@/lib/engine/live-governance';
 
 export interface PipelineStageEvent {
   stage: LivePipelineStage;
@@ -237,9 +241,23 @@ export async function runPipelineForMarket(
   };
 
   try {
+    const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
+      db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_MODE_KEY } }),
+    ]);
+    const tradingConfig = getEffectiveTradingConfig({
+      strategySettings: strategySetting ? JSON.parse(strategySetting.value) : null,
+      tradingConfig: tradingConfigSetting ? JSON.parse(tradingConfigSetting.value) : null,
+      tradingMode: tradingModeSetting?.value ?? null,
+    });
+
     const market = await db.market.findUnique({
       where: { id: marketId },
-      include: { snapshots: { orderBy: { timestamp: 'desc' }, take: 1 } },
+      include: {
+        snapshots: { orderBy: { timestamp: 'desc' }, take: 1 },
+        oracleCheck: true,
+      },
     });
     if (!market) {
       result.error = `Market ${marketId} not found`;
@@ -247,12 +265,13 @@ export async function runPipelineForMarket(
     }
 
     const snapshot = market.snapshots[0];
+    const latestSnapshot = snapshot;
     let impliedProb = snapshot?.impliedProb ?? 0.5;
     let liquidity = snapshot?.liquidity ?? 0;
 
     if (market.venue === 'POLYMARKET') {
       try {
-        const polymarketResult = await getPolymarketMarkets(100);
+        const polymarketResult = await getPolymarketMarkets({ limit: 100 });
         const fresh = polymarketResult.markets.find((m: { externalId: string }) => m.externalId === market.externalId);
         if (fresh) {
           impliedProb = fresh.impliedProb;
@@ -345,7 +364,7 @@ export async function runPipelineForMarket(
       const deerflowHealth = await canRunStage('DEERFLOW');
 
       if (!deerflowHealth.canRun) {
-        const fallbackUrl = process.env.DEERFLOW_URL || 'http://192.168.88.97:2026';
+        const fallbackUrl = process.env.DEERFLOW_URL || 'http://localhost:2026';
         const reachable = await isServiceReachable('deerflow', fallbackUrl);
 
         if (!reachable) {
@@ -1148,10 +1167,14 @@ export async function runPipelineForMarket(
 
     // ── Phase 6 ENSEMBLE: Collect predictions, compute weighted ensemble, detect disagreement ──
     let ensembleUncertaintyBoost = 0;
+    let modelDisagreement = 0;
+    let disagreementLevel: 'LOW' | 'MODERATE' | 'HIGH' = 'LOW';
     try {
       const ensembleOutcome = await runEnsemblePipeline(marketId, candidate?.id ?? null, researchRun.id);
       result['ensembleResult'] = ensembleOutcome.result;
       result['ensembleDisagreement'] = ensembleOutcome.disagreement;
+      modelDisagreement = ensembleOutcome.disagreement.score;
+      disagreementLevel = ensembleOutcome.disagreement.level;
 
       if (ensembleOutcome.disagreement.level === 'HIGH') {
         ensembleUncertaintyBoost = 0.15;
@@ -1185,7 +1208,6 @@ export async function runPipelineForMarket(
       serviceName: 'risk-engine',
       model: null,
     });
-    const strategySetting = await db.settings.findUnique({ where: { key: 'strategy_settings' } });
     let strategy: Record<string, unknown> = {};
     if (strategySetting?.value) {
       try {
@@ -1240,25 +1262,119 @@ export async function runPipelineForMarket(
     };
 
     const riskResult = computeRisk(riskInput);
-    result.riskAction = riskResult.action;
+    const latestOrderbook = await db.orderbookSnapshot.findFirst({
+      where: { marketId },
+      orderBy: { capturedAt: 'desc' },
+    });
+    const oracleRiskScore = candidate?.oracleRiskPenalty != null ? Math.min(1, candidate.oracleRiskPenalty / 20) : 0;
+    const correlationExposure = Math.min(1, actualCategoryExposure / Math.max(strategyCategoryLimit, 1));
+    const tailRiskScore = Math.min(1, ensembleUncertaintyBoost + (judgeUncertainty * 0.25));
+    const orderbookQuality =
+      latestOrderbook == null
+        ? 0
+        : Math.max(
+            0,
+            Math.min(
+              20,
+              (latestOrderbook.fillProbability ?? 0) * 10 +
+                ((latestOrderbook.bidDepth ?? 0) + (latestOrderbook.askDepth ?? 0)) / 1000 -
+                (latestOrderbook.thinBookDanger ? 5 : 0),
+            ),
+          );
+    const [walletTrustContext, governance] = await Promise.all([
+      getWalletSignalTrustContext(marketId),
+      getLiveGovernanceSettings(),
+    ]);
+    const manualReviewApproved =
+      market.oracleCheck?.manualReviewStatus === 'APPROVED' &&
+      (!market.oracleCheck.manualReviewExpiresAt || market.oracleCheck.manualReviewExpiresAt > new Date());
+    const oracleRiskLevel = market.oracleCheck?.riskLevel ?? 'LOW';
+    const aPlusGate = evaluateAPlusSignalGate({
+      candidateScore: candidate?.candidateScore ?? 0,
+      adjustedEdge: riskResult.edge,
+      confidence: judgeConfidence,
+      resolutionClarity: Math.max(0, 1 - judgeUncertainty),
+      spread: snapshot?.spread ?? 0.05,
+      liquidity,
+      category: market.category,
+      modelDisagreement,
+      oracleRiskScore,
+      tailRiskScore,
+      correlationExposure,
+      orderbookQuality,
+      dataSource: market.dataSource,
+      spreadSource: latestOrderbook ? 'REAL_ORDERBOOK' : 'ESTIMATED',
+    });
+    const aPlusGateReasons = [...aPlusGate.reasons];
+    if (candidate?.walletSignalScore != null && candidate.walletSignalScore > 0 && !walletTrustContext.hasTrustedEligibleWalletSignal) {
+      aPlusGateReasons.push('walletSignal is untrusted or ineligible for A+ execution');
+    }
+    if (candidate?.oracleRiskPenalty != null && candidate.oracleRiskPenalty >= 8) {
+      aPlusGateReasons.push('oracleRiskLevel >= HIGH blocks A+ execution');
+    }
+    if (oracleRiskLevel === 'HIGH' && !manualReviewApproved) {
+      aPlusGateReasons.push('oracle manual review is required and not approved');
+    }
+    if (oracleRiskLevel === 'BLOCK') {
+      aPlusGateReasons.push('oracle risk level BLOCK forces skip');
+    }
+    const walletTrustPassed =
+      (candidate?.walletSignalScore ?? 0) <= 0 || walletTrustContext.hasTrustedEligibleWalletSignal;
+    const oracleGatePassed =
+      oracleRiskLevel === 'LOW' ||
+      oracleRiskLevel === 'MEDIUM' ||
+      (oracleRiskLevel === 'HIGH' && manualReviewApproved);
+    const aPlusGatePassed = aPlusGate.passed && walletTrustPassed && oracleGatePassed;
+    const liveGovernanceReady =
+      !governance.liveEnabled
+        ? true
+        : governance.killSwitchEnabled &&
+          governance.killSwitchLastTestResult === 'PASS' &&
+          governance.manualApprovalRequired &&
+          governance.maxStakePerMarket > 0 &&
+          governance.maxDailyLoss > 0;
+
+    const gatedRiskResult =
+      oracleRiskLevel === 'BLOCK'
+        ? {
+            ...riskResult,
+            action: 'SKIP' as const,
+            reasonCode: 'MANUAL_REVIEW_REQUIRED',
+            reason: `Oracle risk level BLOCK forces skip. ${aPlusGateReasons.join('; ')}`,
+          }
+      :
+      riskResult.action === 'BID' && (!aPlusGatePassed || disagreementLevel === 'HIGH' || !liveGovernanceReady)
+        ? {
+            ...riskResult,
+            action: 'WATCH' as const,
+            reasonCode: 'MANUAL_REVIEW_REQUIRED',
+            reason:
+              disagreementLevel === 'HIGH'
+                ? `Forced WATCH due to high ensemble disagreement. ${aPlusGateReasons.join('; ')}`
+                : !liveGovernanceReady
+                  ? `Forced WATCH because live governance settings are not fully configured. ${aPlusGateReasons.join('; ')}`
+                  : `A+ signal gate failed: ${aPlusGateReasons.join('; ')}`,
+          }
+        : riskResult;
+    result.riskAction = gatedRiskResult.action;
 
     const decision = await db.decision.create({
       data: {
         marketId,
         candidateId: candidate?.id || null,
-        action: riskResult.action,
-        side: riskResult.side ?? null,
-        reasonCode: riskResult.reasonCode ?? null,
-        reason: riskResult.reason,
+        action: gatedRiskResult.action,
+        side: gatedRiskResult.side ?? null,
+        reasonCode: gatedRiskResult.reasonCode ?? null,
+        reason: gatedRiskResult.reason,
         judgeProbability,
         impliedProb,
-        edge: riskResult.edge,
+        edge: gatedRiskResult.edge,
         confidence: judgeConfidence,
         uncertainty: Math.min(1, judgeUncertainty + ensembleUncertaintyBoost),
-        maxSize: riskResult.maxSize,
-        urgency: riskResult.urgency,
-        fees: riskResult.fees,
-        slippage: riskResult.slippage,
+        maxSize: gatedRiskResult.maxSize,
+        urgency: gatedRiskResult.urgency,
+        fees: gatedRiskResult.fees,
+        slippage: gatedRiskResult.slippage,
         dryRun: isTestMode(),
       },
     });
@@ -1275,8 +1391,8 @@ export async function runPipelineForMarket(
         freshnessMinutes,
         priceMovePercent: 0,
         categoryPriority: catPriority,
-        rawEdge: riskResult.edge,
-        adjustedEdge: riskResult.edge,
+        rawEdge: gatedRiskResult.edge,
+        adjustedEdge: gatedRiskResult.edge,
         biasAdjustedProb,
         confidence: judgeConfidence,
       });
@@ -1286,7 +1402,7 @@ export async function runPipelineForMarket(
         data: {
           stage: 'DECIDED',
           candidateScore: enrichedScore.totalScore,
-          adjustedEdge: riskResult.edge,
+          adjustedEdge: gatedRiskResult.edge,
         },
       });
 
@@ -1308,13 +1424,13 @@ export async function runPipelineForMarket(
     }
 
 
-    if (shouldCreateWatchlistEntry(riskResult.action as 'BID' | 'WATCH' | 'SKIP')) {
+    if (shouldCreateWatchlistEntry(gatedRiskResult.action as 'BID' | 'WATCH' | 'SKIP')) {
       await db.watchlist.create({
         data: buildWatchlistPayload({
           marketId,
           decisionId: decision.id,
-          reason: riskResult.reason,
-          targetPrice: riskResult.side === 'YES' ? impliedProb : 1 - impliedProb,
+          reason: gatedRiskResult.reason,
+          targetPrice: gatedRiskResult.side === 'YES' ? impliedProb : 1 - impliedProb,
         }),
       });
 
@@ -1326,12 +1442,12 @@ export async function runPipelineForMarket(
       }
     }
 
-    if (shouldCreateExecutionJob(riskResult.action as 'BID' | 'WATCH' | 'SKIP')) {
+    if (shouldCreateExecutionJob(gatedRiskResult.action as 'BID' | 'WATCH' | 'SKIP')) {
       result.stages.push('EXECUTE');
       const orderSize = resolvePaperExecutionSize({
-        adjustedSize: riskResult.adjustedSize,
-        maxSize: riskResult.maxSize,
-        fallbackSize: computePositionSize(riskResult.edge, judgeConfidence, judgeUncertainty),
+        adjustedSize: gatedRiskResult.adjustedSize,
+        maxSize: gatedRiskResult.maxSize,
+        fallbackSize: computePositionSize(gatedRiskResult.edge, judgeConfidence, judgeUncertainty),
       });
 
       if (orderSize == null) {
@@ -1343,7 +1459,7 @@ export async function runPipelineForMarket(
           serviceName: 'paper-execution',
         });
       } else {
-        const orderPrice = riskResult.side === 'YES' ? impliedProb : 1 - impliedProb;
+        const orderPrice = gatedRiskResult.side === 'YES' ? impliedProb : 1 - impliedProb;
         const prefix = 'PAPER';
         const now = new Date();
         const venueOrderId = `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1354,11 +1470,18 @@ export async function runPipelineForMarket(
           buildPaperOrderRecord({
             marketId,
             venueOrderId,
-            side: riskResult.side ?? 'YES',
+            side: gatedRiskResult.side ?? 'YES',
             price: orderPrice,
             size: orderSize,
             now,
             dataSource,
+            fillModel: tradingConfig.paperFillModel,
+            orderExpiryMinutes: tradingConfig.orderExpiryMinutes,
+            executionNotesJson: JSON.stringify({
+              mode,
+              spread: latestSnapshot?.spread ?? null,
+              spreadSource: latestSnapshot?.spreadSource ?? null,
+            }),
           }) as unknown as Record<string, unknown>,
         );
 
@@ -1369,10 +1492,12 @@ export async function runPipelineForMarket(
           marketId,
           decisionId: decision.id,
           predictionType: 'BID',
+          setupType: aPlusGatePassed ? 'A_PLUS_BET' : 'STANDARD_BET',
+          aPlusStatus: aPlusGatePassed ? 'PASSED' : 'FAILED',
           predictedProb: judgeProbability,
-          predictedSide: riskResult.side ?? 'YES',
+          predictedSide: gatedRiskResult.side ?? 'YES',
           impliedProb,
-          edge: riskResult.edge,
+          edge: gatedRiskResult.edge,
           confidence: judgeConfidence,
           stake: orderSize,
           entryPrice: orderPrice,
@@ -1403,8 +1528,8 @@ try {
        await writeResearchToQdrant(marketId, market.title, researchContext, {
          judgeProbability,
          confidence: judgeConfidence,
-         action: riskResult.action,
-         side: riskResult.side,
+         action: gatedRiskResult.action,
+         side: gatedRiskResult.side,
          category: market.category,
        });
      } catch (e) {

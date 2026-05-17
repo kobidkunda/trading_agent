@@ -143,11 +143,12 @@ function bigramSimilarity(a: string, b: string): number {
 export type RelationshipType =
   | 'SAME_OUTCOME'
   | 'OPPOSITE_OUTCOME'
-  | 'NESTED'
+  | 'A_IMPLIES_B'
+  | 'B_IMPLIES_A'
   | 'MUTUALLY_EXCLUSIVE'
   | 'COLLECTIVELY_EXHAUSTIVE'
-  | 'RANGE'
-  | 'CALENDAR'
+  | 'NESTED_THRESHOLD'
+  | 'RANGE_BUCKET'
   | 'DUPLICATE'
   | 'UNRELATED';
 
@@ -155,7 +156,25 @@ export interface RelationshipResult {
   type: RelationshipType;
   entityOverlap: number;
   textSimilarity: number;
+  confidence: number;
   reason: string;
+}
+
+export type RelationshipSeverity = 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'BLOCK';
+export type RelationshipAction = 'NONE' | 'FLAG' | 'DEEP_RESEARCH' | 'MANUAL_REVIEW' | 'BLOCK_A_PLUS';
+
+export interface RelationshipEvaluation {
+  relationshipType: RelationshipType;
+  expectedRule: string;
+  violationScore: number;
+  confidence: number;
+  severity: RelationshipSeverity;
+  action: RelationshipAction;
+  reason: string;
+  formulaVersion: string;
+  explanation: string;
+  priceInconsistency: number | null;
+  possibleEdge: number | null;
 }
 
 /** Check if outcome set contains positive-leaning terms */
@@ -212,6 +231,7 @@ export function classifyRelationship(
       type: 'DUPLICATE',
       entityOverlap,
       textSimilarity: textSim,
+      confidence: Math.min(1, 0.8 + textSim * 0.2),
       reason: 'Titles are highly similar (>90% bigram overlap)',
     };
   }
@@ -222,9 +242,10 @@ export function classifyRelationship(
   const rangeRe = /between\s+\$?\d[\d,\.]*\s+(and|&)\s+\$?\d[\d,\.]*/i;
   if ((rangeRe.test(titleA) || rangeRe.test(titleB)) && sameEntity) {
     return {
-      type: 'RANGE',
+      type: 'RANGE_BUCKET',
       entityOverlap,
       textSimilarity: textSim,
+      confidence: clampConfidence((entityOverlap * 0.5) + (textSim * 0.5)),
       reason: 'Range market (between X and Y)',
     };
   }
@@ -244,6 +265,7 @@ export function classifyRelationship(
         type: 'OPPOSITE_OUTCOME',
         entityOverlap,
         textSimilarity: textSim,
+        confidence: clampConfidence((entityOverlap * 0.6) + (textSim * 0.4)),
         reason: 'Same entity with opposite outcomes (YES vs NO)',
       };
     }
@@ -257,11 +279,12 @@ export function classifyRelationship(
 
       if (isUpwardThreshold(dirA) && isUpwardThreshold(dirB) && valA !== valB) {
         return {
-          type: 'NESTED',
-          entityOverlap,
-          textSimilarity: textSim,
-          reason: `Same entity with nested thresholds (${valA} vs ${valB})`,
-        };
+        type: valA > valB ? 'A_IMPLIES_B' : 'B_IMPLIES_A',
+        entityOverlap,
+        textSimilarity: textSim,
+        confidence: clampConfidence((entityOverlap * 0.45) + (textSim * 0.25) + 0.3),
+        reason: `Same entity with nested thresholds (${valA} vs ${valB})`,
+      };
       }
     }
 
@@ -271,6 +294,7 @@ export function classifyRelationship(
         type: 'SAME_OUTCOME',
         entityOverlap,
         textSimilarity: textSim,
+        confidence: clampConfidence((entityOverlap * 0.55) + (textSim * 0.45)),
         reason: 'Same entity with matching outcome direction',
       };
     }
@@ -281,6 +305,7 @@ export function classifyRelationship(
         type: 'SAME_OUTCOME',
         entityOverlap,
         textSimilarity: textSim,
+        confidence: clampConfidence((entityOverlap * 0.45) + (textSim * 0.35) + 0.15),
         reason: 'Same entity with no explicit outcome indicators',
       };
     }
@@ -298,6 +323,7 @@ export function classifyRelationship(
         type: 'MUTUALLY_EXCLUSIVE',
         entityOverlap,
         textSimilarity: textSim,
+        confidence: clampConfidence((entityOverlap * 0.4) + (textSim * 0.3) + 0.2),
         reason: 'Different entities in similar market context',
       };
     }
@@ -308,9 +334,10 @@ export function classifyRelationship(
     const sharedDates = entitiesA.dates.filter(d => entitiesB.dates.includes(d));
     if (sharedDates.length < Math.min(entitiesA.dates.length, entitiesB.dates.length)) {
       return {
-        type: 'CALENDAR',
+        type: 'RANGE_BUCKET',
         entityOverlap,
         textSimilarity: textSim,
+        confidence: clampConfidence((entityOverlap * 0.35) + (textSim * 0.4) + 0.2),
         reason: 'Similar question with different target dates',
       };
     }
@@ -322,6 +349,7 @@ export function classifyRelationship(
       type: 'COLLECTIVELY_EXHAUSTIVE',
       entityOverlap,
       textSimilarity: textSim,
+      confidence: clampConfidence((entityOverlap * 0.5) + (textSim * 0.3) + 0.2),
       reason: 'Markets appear to cover all possible outcomes',
     };
   }
@@ -330,8 +358,13 @@ export function classifyRelationship(
     type: 'UNRELATED',
     entityOverlap,
     textSimilarity: textSim,
+    confidence: 0,
     reason: 'No strong relationship detected',
   };
+}
+
+function clampConfidence(value: number): number {
+  return Math.max(0, Math.min(1, Math.round(value * 1000) / 1000));
 }
 
 function coversAllOutcomes(outcomesA: string[], outcomesB: string[]): boolean {
@@ -349,87 +382,129 @@ function coversAllOutcomes(outcomesA: string[], outcomesB: string[]): boolean {
 // Contradiction Detection
 // ────────────────────────────────────────────
 
-export interface ContradictionResult {
-  hasContradiction: boolean;
-  contradictionScore: number; // 0-1
-  priceInconsistency: number | null;
-  possibleEdge: number | null;
-  alertText: string | null;
-}
-
-export function detectContradiction(
+export function evaluateRelationship(
   relationship: RelationshipResult,
   marketA: { impliedProb: number },
   marketB: { impliedProb: number },
-): ContradictionResult {
-  const { type } = relationship;
-  let score = 0;
-  let inconsistency: number | null = null;
-  let edge: number | null = null;
-  let alert: string | null = null;
+): RelationshipEvaluation {
+  const { type, confidence } = relationship;
+  const formulaVersion = 'trusted-paper-v1';
+  const probA = marketA.impliedProb;
+  const probB = marketB.impliedProb;
+
+  let expectedRule = '';
+  let violationScore = 0;
+  let priceInconsistency: number | null = null;
+  let possibleEdge: number | null = null;
+  let explanation = relationship.reason;
 
   switch (type) {
-    case 'NESTED': {
-      // Higher threshold probability should NOT exceed lower threshold probability
-      // e.g., BTC>120K should be ≤ BTC>100K probability
-      inconsistency = Math.abs(marketA.impliedProb - marketB.impliedProb);
-      if (inconsistency > 0.10) {
-        score = Math.min(1, inconsistency * 5);
-        edge = inconsistency;
-        alert = `Nested market pricing anomaly: ${(inconsistency * 100).toFixed(1)}% divergence between thresholds`;
-      }
+    case 'DUPLICATE':
+    case 'SAME_OUTCOME':
+      expectedRule = 'P(A) should approximately equal P(B)';
+      violationScore = Math.abs(probA - probB);
+      priceInconsistency = violationScore;
+      possibleEdge = violationScore > 0.03 ? violationScore / 2 : null;
       break;
-    }
+    case 'OPPOSITE_OUTCOME':
+      expectedRule = 'P(A) + P(B) should approximately equal 1';
+      violationScore = Math.abs((probA + probB) - 1);
+      priceInconsistency = violationScore;
+      possibleEdge = violationScore > 0.03 ? violationScore / 2 : null;
+      break;
+    case 'A_IMPLIES_B':
+    case 'NESTED_THRESHOLD':
+      expectedRule = 'P(A) must be less than or equal to P(B)';
+      violationScore = Math.max(0, probA - probB);
+      priceInconsistency = violationScore;
+      possibleEdge = violationScore > 0.03 ? violationScore : null;
+      break;
+    case 'B_IMPLIES_A':
+      expectedRule = 'P(B) must be less than or equal to P(A)';
+      violationScore = Math.max(0, probB - probA);
+      priceInconsistency = violationScore;
+      possibleEdge = violationScore > 0.03 ? violationScore : null;
+      break;
     case 'MUTUALLY_EXCLUSIVE': {
-      const sum = marketA.impliedProb + marketB.impliedProb;
-      if (sum > 1.0) {
-        inconsistency = sum - 1.0;
-        score = Math.min(1, inconsistency * 10);
-        edge = inconsistency;
-        alert = `Mutually exclusive markets sum to ${(sum * 100).toFixed(1)}% (exceeds 100%)`;
-      }
+      const total = probA + probB;
+      expectedRule = 'Sum of mutually exclusive probabilities must be <= 1';
+      violationScore = Math.max(0, total - 1);
+      priceInconsistency = violationScore;
+      possibleEdge = violationScore > 0.03 ? violationScore : null;
+      explanation = `Mutually exclusive outcomes total ${(total * 100).toFixed(1)}%`;
       break;
     }
-    case 'SAME_OUTCOME': {
-      inconsistency = Math.abs(marketA.impliedProb - marketB.impliedProb);
-      if (inconsistency > 0.05) {
-        score = Math.min(1, inconsistency * 8);
-        edge = inconsistency / 2;
-        alert = `Same-outcome prices diverge by ${(inconsistency * 100).toFixed(1)}%`;
-      }
+    case 'COLLECTIVELY_EXHAUSTIVE':
+    case 'RANGE_BUCKET': {
+      const total = probA + probB;
+      expectedRule = 'Exhaustive outcome probabilities should sum to approximately 1';
+      violationScore = Math.abs(total - 1);
+      priceInconsistency = violationScore;
+      possibleEdge = violationScore > 0.05 ? violationScore / 2 : null;
+      explanation = `Combined exhaustive probability ${(total * 100).toFixed(1)}%`;
       break;
     }
-    case 'OPPOSITE_OUTCOME': {
-      // YES price + NO price should approximate 1.0
-      const sum = marketA.impliedProb + marketB.impliedProb;
-      const deviation = Math.abs(sum - 1.0);
-      if (deviation > 0.10) {
-        inconsistency = deviation;
-        score = Math.min(1, deviation * 5);
-        edge = deviation / 2;
-        alert = `YES/NO pair diverges from 100%: ${(sum * 100).toFixed(1)}% total`;
-      }
-      break;
-    }
-    case 'CALENDAR': {
-      inconsistency = Math.abs(marketA.impliedProb - marketB.impliedProb);
-      if (inconsistency > 0.20) {
-        score = Math.min(0.7, inconsistency * 3);
-        alert = `Calendar-dated markets diverge by ${(inconsistency * 100).toFixed(1)}%`;
-      }
-      break;
-    }
+    case 'UNRELATED':
     default:
+      expectedRule = 'No deterministic pricing rule';
+      violationScore = 0;
+      priceInconsistency = null;
+      possibleEdge = null;
       break;
   }
 
+  const severity = deriveSeverity(type, violationScore);
+  const action = deriveAction(confidence, severity);
+  const reason = buildReason(type, violationScore, severity, confidence);
+
   return {
-    hasContradiction: score > 0,
-    contradictionScore: score,
-    priceInconsistency: inconsistency,
-    possibleEdge: edge,
-    alertText: alert,
+    relationshipType: type,
+    expectedRule,
+    violationScore,
+    confidence,
+    severity,
+    action,
+    reason,
+    formulaVersion,
+    explanation,
+    priceInconsistency,
+    possibleEdge,
   };
+}
+
+function deriveSeverity(type: RelationshipType, violationScore: number): RelationshipSeverity {
+  if (violationScore <= 0) return 'NONE';
+
+  const blockThreshold = type === 'COLLECTIVELY_EXHAUSTIVE' || type === 'RANGE_BUCKET' ? 0.10 : 0.10;
+  const highThreshold = type === 'COLLECTIVELY_EXHAUSTIVE' || type === 'RANGE_BUCKET' ? 0.06 : 0.06;
+  const mediumThreshold = type === 'COLLECTIVELY_EXHAUSTIVE' || type === 'RANGE_BUCKET' ? 0.03 : 0.03;
+
+  if (violationScore > blockThreshold) return 'BLOCK';
+  if (violationScore > highThreshold) return 'HIGH';
+  if (violationScore > mediumThreshold) return 'MEDIUM';
+  return 'LOW';
+}
+
+function deriveAction(confidence: number, severity: RelationshipSeverity): RelationshipAction {
+  if (confidence < 0.7) return 'NONE';
+  if (severity === 'BLOCK') return 'BLOCK_A_PLUS';
+  if (severity === 'HIGH') return 'DEEP_RESEARCH';
+  if (severity === 'MEDIUM' || severity === 'LOW') return 'FLAG';
+  return 'NONE';
+}
+
+function buildReason(
+  type: RelationshipType,
+  violationScore: number,
+  severity: RelationshipSeverity,
+  confidence: number,
+): string {
+  if (severity === 'NONE') {
+    return `${type} relationship is within tolerance`;
+  }
+
+  const percent = (violationScore * 100).toFixed(1);
+  return `${type} violation ${percent}% at ${severity} severity with ${(confidence * 100).toFixed(0)}% confidence`;
 }
 
 // ────────────────────────────────────────────
@@ -472,12 +547,13 @@ export async function computeRelatedMarketSignal(
   for (const rel of related) {
     breakdown[rel.relationshipType] = (breakdown[rel.relationshipType] || 0) + 1;
 
-    if (rel.contradictionScore && rel.contradictionScore > 0) {
+    if ((rel.violationScore ?? rel.contradictionScore ?? 0) > 0) {
       contradictory++;
-      cumulativeScore += rel.contradictionScore * 10; // 0-1 → 0-10 per pair
-      if (rel.alertText && rel.contradictionScore > maxAlertScore) {
+      const score = rel.violationScore ?? rel.contradictionScore ?? 0;
+      cumulativeScore += score * 10;
+      if (rel.alertText && score > maxAlertScore) {
         maxAlert = rel.alertText;
-        maxAlertScore = rel.contradictionScore;
+        maxAlertScore = score;
       }
     }
   }
@@ -538,7 +614,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
 
     if (relationship.type === 'UNRELATED') continue;
 
-    const contradiction = detectContradiction(
+    const evaluation = evaluateRelationship(
       relationship,
       { impliedProb: market.latestPrice ?? 0.5 },
       { impliedProb: other.latestPrice ?? 0.5 },
@@ -554,23 +630,37 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
           marketIdB: pair[1],
         },
       },
-      create: {
-        marketIdA: pair[0],
-        marketIdB: pair[1],
-        relationshipType: relationship.type,
-        priceInconsistency: contradiction.priceInconsistency,
-        contradictionScore: contradiction.contradictionScore,
-        possibleEdge: contradiction.possibleEdge,
-        alertText: contradiction.alertText,
-      },
-      update: {
-        relationshipType: relationship.type,
-        priceInconsistency: contradiction.priceInconsistency,
-        contradictionScore: contradiction.contradictionScore,
-        possibleEdge: contradiction.possibleEdge,
-        alertText: contradiction.alertText,
-      },
-    });
+        create: {
+          marketIdA: pair[0],
+          marketIdB: pair[1],
+          relationshipType: relationship.type,
+          relationshipConfidence: relationship.confidence,
+          expectedRule: evaluation.expectedRule,
+          formulaVersion: evaluation.formulaVersion,
+          violationScore: evaluation.violationScore,
+          violationSeverity: evaluation.severity,
+          action: evaluation.action,
+          explanation: evaluation.explanation,
+          priceInconsistency: evaluation.priceInconsistency,
+          contradictionScore: evaluation.violationScore,
+          possibleEdge: evaluation.possibleEdge,
+          alertText: evaluation.reason,
+        },
+        update: {
+          relationshipType: relationship.type,
+          relationshipConfidence: relationship.confidence,
+          expectedRule: evaluation.expectedRule,
+          formulaVersion: evaluation.formulaVersion,
+          violationScore: evaluation.violationScore,
+          violationSeverity: evaluation.severity,
+          action: evaluation.action,
+          explanation: evaluation.explanation,
+          priceInconsistency: evaluation.priceInconsistency,
+          contradictionScore: evaluation.violationScore,
+          possibleEdge: evaluation.possibleEdge,
+          alertText: evaluation.reason,
+        },
+      });
 
     pairCount++;
   }

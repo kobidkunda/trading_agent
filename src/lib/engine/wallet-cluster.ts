@@ -1,5 +1,7 @@
 import { db } from '@/lib/db';
 import type { WalletTrade, Wallet } from '@prisma/client';
+import { analyzeOracleRisk } from '@/lib/engine/oracle-mismatch';
+import { correlationClusterManager } from '@/lib/engine/correlation-risk';
 
 export interface ClusterAlert {
   marketId: string;
@@ -7,6 +9,8 @@ export interface ClusterAlert {
   side: string;
   combinedSize: number;
   signalStrength: number;
+  lifecycle: 'DETECTED' | 'REJECTED' | 'APPROVED';
+  rejectionReason?: string | null;
 }
 
 interface ClusterGroup {
@@ -36,12 +40,17 @@ export class WalletClusterSignalDetector {
 
     const groups = this.groupTrades(recentTrades);
 
-    return groups
-      .filter((g) => {
-        const uniqueWallets = new Set(g.trades.map((t) => t.walletId));
-        return uniqueWallets.size >= MIN_CLUSTER_WALLETS;
-      })
-      .map((g) => this.buildClusterAlert(g))
+    const eligibleGroups = groups.filter((g) => {
+      const uniqueWallets = new Set(g.trades.map((t) => t.walletId));
+      return uniqueWallets.size >= MIN_CLUSTER_WALLETS;
+    });
+
+    const alerts = await Promise.all(
+      eligibleGroups.map((g) => this.buildClusterAlert(g))
+    );
+
+    return alerts
+      .filter((alert): alert is ClusterAlert => alert !== null)
       .sort((a, b) => b.signalStrength - a.signalStrength);
   }
 
@@ -70,9 +79,53 @@ export class WalletClusterSignalDetector {
     return Array.from(map.values());
   }
 
-  private buildClusterAlert(group: ClusterGroup): ClusterAlert {
+  private async buildClusterAlert(group: ClusterGroup): Promise<ClusterAlert | null> {
     const walletIds = [...new Set(group.trades.map((t) => t.walletId))];
     const combinedSize = group.trades.reduce((sum, t) => sum + t.quantity, 0);
+    const market = await db.market.findUnique({
+      where: { id: group.marketId },
+      include: {
+        snapshots: { orderBy: { capturedAt: 'desc' }, take: 1 },
+        orderbookSnapshots: { orderBy: { capturedAt: 'desc' }, take: 1 },
+      },
+    });
+
+    if (!market) return null;
+
+    const snapshot = market.snapshots[0];
+    const orderbook = market.orderbookSnapshots[0];
+    if ((snapshot?.liquidity ?? 0) < 10000) return null;
+    if ((snapshot?.spread ?? 1) > 0.05) return null;
+    if ((orderbook?.bidDepth ?? 0) + (orderbook?.askDepth ?? 0) < combinedSize) return null;
+    if (orderbook?.thinBookDanger) return null;
+    if ((orderbook?.recentMovement ?? 0) > 0.08) return null;
+
+    const conflictingSideTrades = await db.walletTrade.count({
+      where: {
+        marketId: group.marketId,
+        side: { not: group.side },
+        tradeTimestamp: { gte: new Date(Date.now() - CLUSTER_WINDOW_MINUTES * 60_000) },
+      },
+    });
+    if (conflictingSideTrades > 0) return null;
+
+    const oracleRisk = analyzeOracleRisk({
+      title: market.title,
+      description: market.description ?? '',
+      crossVenueMismatch: 0,
+    });
+    if (oracleRisk.riskLevel === 'HIGH' || oracleRisk.riskLevel === 'BLOCK') return null;
+
+    const clusterLinks = await db.clusterMarketLink.findMany({
+      where: { marketId: group.marketId },
+      select: { clusterId: true },
+    });
+    for (const link of clusterLinks) {
+      const canAdd = await correlationClusterManager.canAddToCluster(link.clusterId, combinedSize);
+      if (!canAdd.allowed || canAdd.utilizationAfter > 0.8) {
+        return null;
+      }
+    }
 
     const walletCount = walletIds.length;
     const countScore = walletCount >= 6 ? 12
@@ -93,6 +146,8 @@ export class WalletClusterSignalDetector {
       side: group.side,
       combinedSize: Math.round(combinedSize * 100) / 100,
       signalStrength,
+      lifecycle: 'DETECTED',
+      rejectionReason: null,
     };
   }
 }

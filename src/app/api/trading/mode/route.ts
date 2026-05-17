@@ -7,8 +7,11 @@ import {
   TRADING_CONFIG_KEY,
   TRADING_MODE_KEY,
 } from '@/lib/engine/trading-settings';
+import { enforceRoutePermission } from '@/lib/engine/auth';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = enforceRoutePermission(request, '/api/trading/mode', 'GET');
+  if (denied) return denied;
   try {
     const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
       db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
@@ -37,6 +40,8 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const denied = enforceRoutePermission(request, '/api/trading/mode', 'PUT');
+  if (denied) return denied;
   try {
     const body = await request.json();
     const update = buildTradingConfigUpdate(body);

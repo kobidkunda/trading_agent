@@ -43,7 +43,27 @@ export type AgentRole = 'TRIAGE' | 'BULL' | 'BEAR' | 'CONTRADICTION' | 'JUDGE' |
 export type ResearchStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
 
 // Job type
-export type JobType = 'SCAN' | 'TRIAGE' | 'RESEARCH' | 'JUDGE' | 'RISK' | 'EXECUTE' | 'SETTLE';
+export type JobType =
+  | 'SCAN'
+  | 'SCAN_VENUE'
+  | 'SCORE_CANDIDATES'
+  | 'TRIAGE'
+  | 'TRIAGE_MARKET'
+  | 'RESEARCH'
+  | 'RESEARCH_MARKET'
+  | 'QUICK_RESEARCH'
+  | 'STANDARD_RESEARCH'
+  | 'DEEP_RESEARCH'
+  | 'JUDGE'
+  | 'JUDGE_MARKET'
+  | 'RISK'
+  | 'RISK_CHECK'
+  | 'EXECUTE'
+  | 'PAPER_EXECUTE'
+  | 'LIVE_EXECUTE'
+  | 'ORDER_TRACK'
+  | 'SETTLE'
+  | 'RESOLUTION_CHECK';
 
 // Job status
 export type JobStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'RETRYING';
@@ -196,6 +216,13 @@ export interface StrategySettings {
   researchModel?: string;
   judgeModel?: string;
   stageRouting?: StageServiceMapping;
+  maxMarketsPerScan?: number;
+  maxPagesPerVenue?: number;
+  scanUntilNoCursor?: boolean;
+  scanMode?: ScanMode;
+  scanRateLimitMs?: number;
+  scanTimeoutMs?: number;
+  orderExpiryMinutes?: number;
 }
 
 // Risk engine input
@@ -422,44 +449,167 @@ export interface ApiPermission {
   level: 'read-only' | 'operator' | 'admin' | 'dangerous' | 'live-execution';
 }
 
+function expandPermissions(
+  routes: string[],
+  methods: string[],
+  roles: UserRole[],
+  level: ApiPermission['level'],
+): ApiPermission[] {
+  return routes.flatMap((route) =>
+    methods.map((method) => ({ route, method, roles, level })),
+  );
+}
+
+const READ_ONLY_ROLES: UserRole[] = ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'];
+const OPERATOR_ROLES: UserRole[] = ['Admin', 'ResearchOperator'];
+const RISK_OPERATOR_ROLES: UserRole[] = ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer'];
+const ADMIN_ONLY_ROLES: UserRole[] = ['Admin'];
+
 export const API_PERMISSION_MATRIX: ApiPermission[] = [
-  { route: '/api/health', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
-  { route: '/api/markets', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
-  { route: '/api/decisions', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
-  { route: '/api/orders', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
-  { route: '/api/research', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
-  { route: '/api/paper-bets', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
-  { route: '/api/risk', method: 'GET', roles: ['Admin', 'RiskReviewer', 'ExecutionReviewer'], level: 'operator' },
-  { route: '/api/operator', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer'], level: 'operator' },
-  { route: '/api/jobs', method: 'GET', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
-  { route: '/api/jobs', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
-  { route: '/api/jobs', method: 'PUT', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
-  { route: '/api/simulation', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer'], level: 'operator' },
-  { route: '/api/simulation', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
-  { route: '/api/market-loop', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
-  { route: '/api/strategy', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer'], level: 'operator' },
-  { route: '/api/strategy', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
-  { route: '/api/strategy-config', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer'], level: 'operator' },
-  { route: '/api/strategy-config', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
-  { route: '/api/backtest', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
-  { route: '/api/prompts', method: 'GET', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
-  { route: '/api/prompts', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'admin' },
-  { route: '/api/prompts', method: 'PUT', roles: ['Admin', 'ResearchOperator'], level: 'admin' },
-  { route: '/api/credentials', method: 'GET', roles: ['Admin'], level: 'admin' },
-  { route: '/api/credentials', method: 'POST', roles: ['Admin'], level: 'dangerous' },
-  { route: '/api/credentials', method: 'PUT', roles: ['Admin'], level: 'dangerous' },
-  { route: '/api/credentials', method: 'DELETE', roles: ['Admin'], level: 'dangerous' },
-  { route: '/api/settings', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer'], level: 'operator' },
-  { route: '/api/settings', method: 'PUT', roles: ['Admin'], level: 'admin' },
-  { route: '/api/mode', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer'], level: 'operator' },
-  { route: '/api/mode', method: 'PUT', roles: ['Admin'], level: 'dangerous' },
+  ...expandPermissions(['/api/health'], ['GET'], READ_ONLY_ROLES, 'read-only'),
+  ...expandPermissions(
+    [
+      '/api',
+      '/api/backtests',
+      '/api/backtests/walk-forward',
+      '/api/bias',
+      '/api/calibration',
+      '/api/decisions',
+      '/api/ensemble',
+      '/api/llm/models',
+      '/api/market/[id]/detail',
+      '/api/market/[id]/live',
+      '/api/markets',
+      '/api/mirofish/models',
+      '/api/models',
+      '/api/orderbook',
+      '/api/orders',
+      '/api/oracle',
+      '/api/outcomes',
+      '/api/paper-bets',
+      '/api/related-markets',
+      '/api/research',
+      '/api/research-gating',
+      '/api/risk',
+      '/api/trading/mode',
+      '/api/trading/candidates',
+      '/api/trading/market-loop/status',
+      '/api/trading/operator',
+      '/api/trading/orders/open',
+      '/api/trading/scan-runs',
+      '/api/trading/watchlist',
+      '/api/tradingagents/models',
+      '/api/wallets',
+    ],
+    ['GET'],
+    READ_ONLY_ROLES,
+    'read-only',
+  ),
+  ...expandPermissions(
+    [
+      '/api/jobs',
+      '/api/jobs/worker',
+      '/api/markets/sync',
+      '/api/pipeline',
+      '/api/research',
+      '/api/simulation',
+      '/api/test/quick-sources',
+      '/api/test/sources',
+      '/api/trading/candidates/[id]/force-research',
+      '/api/trading/market-loop',
+      '/api/trading/market-loop/start',
+      '/api/trading/market-loop/stop',
+      '/api/trading/watchlist',
+      '/api/verify',
+      '/api/wallets',
+    ],
+    ['POST'],
+    OPERATOR_ROLES,
+    'operator',
+  ),
+  ...expandPermissions(
+    [
+      '/api/deerflow/models',
+      '/api/jobs',
+      '/api/markets',
+      '/api/mirofish/predict',
+      '/api/oracle',
+      '/api/qdrant/auto-setup',
+      '/api/qdrant/collections',
+      '/api/qdrant/collections/[name]',
+      '/api/qdrant/discover',
+      '/api/related-markets',
+      '/api/simulation',
+      '/api/strategy',
+      '/api/strategy-config/sweep',
+      '/api/trading/market-loop',
+    ],
+    ['POST'],
+    OPERATOR_ROLES,
+    'operator',
+  ),
+  ...expandPermissions(
+    [
+      '/api/strategy',
+      '/api/settings',
+      '/api/trading/mode',
+      '/api/jobs',
+      '/api/prompts',
+    ],
+    ['PUT'],
+    ADMIN_ONLY_ROLES,
+    'admin',
+  ),
+  ...expandPermissions(
+    [
+      '/api/credentials',
+      '/api/credentials/test',
+      '/api/prompts',
+      '/api/qdrant/collections',
+      '/api/qdrant/collections/[name]',
+      '/api/settings',
+      '/api/strategy-config',
+      '/api/trading/mode',
+    ],
+    ['POST'],
+    ADMIN_ONLY_ROLES,
+    'dangerous',
+  ),
+  ...expandPermissions(
+    ['/api/credentials'],
+    ['GET', 'PUT', 'DELETE'],
+    ADMIN_ONLY_ROLES,
+    'dangerous',
+  ),
+  ...expandPermissions(
+    ['/api/trading/orders/[id]/cancel'],
+    ['POST'],
+    ADMIN_ONLY_ROLES,
+    'live-execution',
+  ),
 ];
 
 export function canAccessRoute(role: UserRole, route: string, method: string): boolean {
-  const normalizedRoute = route.endsWith('/') ? route.slice(0, -1) : route;
-  const entry = API_PERMISSION_MATRIX.find(
-    (p) => p.route === normalizedRoute && p.method.toUpperCase() === method.toUpperCase()
-  );
+  const entry = findApiPermission(route, method);
   if (!entry) return false;
   return entry.roles.includes(role);
+}
+
+export function findApiPermission(route: string, method: string): ApiPermission | null {
+  const normalizedRoute = route.endsWith('/') ? route.slice(0, -1) : route;
+  return (
+    API_PERMISSION_MATRIX.find(
+      (permission) =>
+        permission.method.toUpperCase() === method.toUpperCase() &&
+        routePatternToRegex(permission.route).test(normalizedRoute),
+    ) ?? null
+  );
+}
+
+function routePatternToRegex(pattern: string): RegExp {
+  const escaped = pattern
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\\\[id\\\]/g, '[^/]+')
+    .replace(/\\\[name\\\]/g, '[^/]+');
+  return new RegExp(`^${escaped}$`);
 }

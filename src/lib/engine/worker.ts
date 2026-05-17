@@ -4,7 +4,7 @@ import { runMarketLoopOnce } from '@/lib/engine/market-loop';
 import { runPipelineForMarket } from '@/lib/engine/pipeline';
 import { normalizeTradingMode } from '@/lib/engine/mode';
 import { getEffectiveTradingConfig } from '@/lib/engine/trading-settings';
-import { classifyOrderTerminalState } from '@/lib/engine/order-tracker';
+import { classifyOrderTerminalState, processPaperOrderFill } from '@/lib/engine/order-tracker';
 import { saveCheckpoint } from '@/lib/engine/worker-checkpoint';
 
 type WorkerStatus = 'STOPPED' | 'RUNNING';
@@ -259,7 +259,18 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
       },
     });
 
-    if (isRetryable && ['TRIAGE_MARKET', 'RESEARCH_MARKET', 'JUDGE_MARKET', 'RISK_CHECK'].includes(job.type)) {
+    if (
+      isRetryable &&
+      [
+        'TRIAGE_MARKET',
+        'RESEARCH_MARKET',
+        'QUICK_RESEARCH',
+        'STANDARD_RESEARCH',
+        'DEEP_RESEARCH',
+        'JUDGE_MARKET',
+        'RISK_CHECK',
+      ].includes(job.type)
+    ) {
       try {
         const marketId = extractMarketId(job.payload);
         if (marketId) {
@@ -330,6 +341,7 @@ async function tick() {
 
 const RESEARCH_JOB_TYPES = new Set([
   'RESEARCH_MARKET', 'RESEARCH',
+  'QUICK_RESEARCH', 'STANDARD_RESEARCH', 'DEEP_RESEARCH',
   'TRIAGE_MARKET', 'TRIAGE',
   'JUDGE_MARKET', 'JUDGE',
   'RISK_CHECK', 'RISK',
@@ -348,6 +360,9 @@ async function processJob(jobType: string, payload: string | null): Promise<Reco
     case 'TRIAGE':
     case 'RESEARCH_MARKET':
     case 'RESEARCH':
+    case 'QUICK_RESEARCH':
+    case 'STANDARD_RESEARCH':
+    case 'DEEP_RESEARCH':
     case 'JUDGE_MARKET':
     case 'JUDGE':
     case 'RISK_CHECK':
@@ -406,7 +421,7 @@ async function processJob(jobType: string, payload: string | null): Promise<Reco
 
 function determineStage(jobType: string): string {
   if (jobType.includes('TRIAGE')) return 'TRIAGED';
-  if (jobType.includes('RESEARCH')) return 'RESEARCHING';
+  if (jobType.includes('RESEARCH') || jobType === 'DEEP_RESEARCH') return 'RESEARCHING';
   if (jobType.includes('JUDGE')) return 'JUDGED';
   if (jobType.includes('RISK')) return 'DECIDED';
   return 'SCANNED';
@@ -415,15 +430,50 @@ function determineStage(jobType: string): string {
 async function processOrderTracking(marketId?: string): Promise<Record<string, unknown>> {
   if (!marketId) return { status: 'NO_MARKET_ID' };
 
+  const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
+    db.settings.findUnique({ where: { key: 'strategy_settings' } }),
+    db.settings.findUnique({ where: { key: 'trading_config' } }),
+    db.settings.findUnique({ where: { key: 'trading_mode' } }),
+  ]);
+
+  const config = getEffectiveTradingConfig({
+    strategySettings: strategySetting ? JSON.parse(strategySetting.value) : null,
+    tradingConfig: tradingConfigSetting ? JSON.parse(tradingConfigSetting.value) : null,
+    tradingMode: tradingModeSetting?.value ?? null,
+  });
+
   const orders = await db.order.findMany({
     where: {
       marketId,
       lifecycleStatus: { in: ['PLANNED', 'SUBMITTED', 'PARTIALLY_FILLED'] },
     },
   });
+  const latestOrderbook = await db.orderbookSnapshot.findFirst({
+    where: { marketId },
+    orderBy: { capturedAt: 'desc' },
+  });
+  const marketSnapshot = await db.marketSnapshot.findFirst({
+    where: { marketId },
+    orderBy: { capturedAt: 'desc' },
+  });
 
   let tracked = 0;
   for (const order of orders) {
+    if (order.orderExpiryAt && order.orderExpiryAt < new Date()) {
+      await db.order.update({
+        where: { id: order.id },
+        data: {
+          lifecycleStatus: 'EXPIRED',
+          status: 'EXPIRED',
+          expiredAt: new Date(),
+          lastFillAttemptAt: new Date(),
+          fillAttemptCount: { increment: 1 },
+        },
+      });
+      tracked++;
+      continue;
+    }
+
     const terminalState = classifyOrderTerminalState({
       lifecycleStatus: order.lifecycleStatus as any,
       remainingSize: order.remainingSize,
@@ -440,7 +490,21 @@ async function processOrderTracking(marketId?: string): Promise<Record<string, u
         },
       });
       tracked++;
+      continue;
     }
+
+    await processPaperOrderFill({
+      orderId: order.id,
+      marketId,
+      fillModel: (order.fillModel as any) ?? config.paperFillModel,
+      liquidity: marketSnapshot?.liquidity ?? 0,
+      fillProbability: latestOrderbook?.fillProbability ?? marketSnapshot?.fillProbability ?? null,
+      priceImpact: latestOrderbook?.priceImpact ?? marketSnapshot?.priceImpact ?? null,
+      bidDepth: latestOrderbook?.bidDepth ?? marketSnapshot?.bidDepth ?? null,
+      askDepth: latestOrderbook?.askDepth ?? marketSnapshot?.askDepth ?? null,
+      spread: latestOrderbook?.spread ?? marketSnapshot?.spread ?? null,
+    });
+    tracked++;
   }
 
   return { status: 'ORDER_TRACK_COMPLETED', marketId, ordersTracked: tracked };
