@@ -384,3 +384,82 @@ export interface RiskDashboard {
   totalUnrealizedPnl: number;
   riskLimitUtilization: number;
 }
+
+export type FillModel = 'DEMO_INSTANT' | 'STRICT_LIMIT' | 'BOOK_DEPTH_AWARE' | 'CONSERVATIVE_PAPER';
+
+export type ScanMode = 'FULL_SCAN' | 'INCREMENTAL_SCAN' | 'RESUME_FROM_CURSOR';
+
+export type RelationshipType =
+  | 'SAME_OUTCOME'
+  | 'OPPOSITE_OUTCOME'
+  | 'A_IMPLIES_B'
+  | 'B_IMPLIES_A'
+  | 'MUTUALLY_EXCLUSIVE'
+  | 'COLLECTIVELY_EXHAUSTIVE'
+  | 'NESTED_THRESHOLD'
+  | 'RANGE_BUCKET'
+  | 'VENUE_DUPLICATE';
+
+export interface APlusSignalConfig {
+  minCandidateScore: number;
+  minAdjustedEdge: number;
+  minConfidence: number;
+  minResolutionClarity: number;
+  maxSpread: number;
+  minLiquidityByCategory: Record<string, number>;
+  maxModelDisagreement: number;
+  maxTailRisk: number;
+  maxOracleRisk: number;
+  maxCorrelationExposure: number;
+}
+
+export type UserRole = 'Admin' | 'ResearchOperator' | 'RiskReviewer' | 'ExecutionReviewer' | 'ReadOnlyViewer';
+
+export interface ApiPermission {
+  route: string;
+  method: string;
+  roles: UserRole[];
+  level: 'read-only' | 'operator' | 'admin' | 'dangerous' | 'live-execution';
+}
+
+export const API_PERMISSION_MATRIX: ApiPermission[] = [
+  { route: '/api/health', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
+  { route: '/api/markets', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
+  { route: '/api/decisions', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
+  { route: '/api/orders', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
+  { route: '/api/research', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
+  { route: '/api/paper-bets', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer', 'ReadOnlyViewer'], level: 'read-only' },
+  { route: '/api/risk', method: 'GET', roles: ['Admin', 'RiskReviewer', 'ExecutionReviewer'], level: 'operator' },
+  { route: '/api/operator', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer'], level: 'operator' },
+  { route: '/api/jobs', method: 'GET', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
+  { route: '/api/jobs', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
+  { route: '/api/jobs', method: 'PUT', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
+  { route: '/api/simulation', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer'], level: 'operator' },
+  { route: '/api/simulation', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
+  { route: '/api/market-loop', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
+  { route: '/api/strategy', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer'], level: 'operator' },
+  { route: '/api/strategy', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
+  { route: '/api/strategy-config', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer'], level: 'operator' },
+  { route: '/api/strategy-config', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
+  { route: '/api/backtest', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
+  { route: '/api/prompts', method: 'GET', roles: ['Admin', 'ResearchOperator'], level: 'operator' },
+  { route: '/api/prompts', method: 'POST', roles: ['Admin', 'ResearchOperator'], level: 'admin' },
+  { route: '/api/prompts', method: 'PUT', roles: ['Admin', 'ResearchOperator'], level: 'admin' },
+  { route: '/api/credentials', method: 'GET', roles: ['Admin'], level: 'admin' },
+  { route: '/api/credentials', method: 'POST', roles: ['Admin'], level: 'dangerous' },
+  { route: '/api/credentials', method: 'PUT', roles: ['Admin'], level: 'dangerous' },
+  { route: '/api/credentials', method: 'DELETE', roles: ['Admin'], level: 'dangerous' },
+  { route: '/api/settings', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer'], level: 'operator' },
+  { route: '/api/settings', method: 'PUT', roles: ['Admin'], level: 'admin' },
+  { route: '/api/mode', method: 'GET', roles: ['Admin', 'ResearchOperator', 'RiskReviewer', 'ExecutionReviewer'], level: 'operator' },
+  { route: '/api/mode', method: 'PUT', roles: ['Admin'], level: 'dangerous' },
+];
+
+export function canAccessRoute(role: UserRole, route: string, method: string): boolean {
+  const normalizedRoute = route.endsWith('/') ? route.slice(0, -1) : route;
+  const entry = API_PERMISSION_MATRIX.find(
+    (p) => p.route === normalizedRoute && p.method.toUpperCase() === method.toUpperCase()
+  );
+  if (!entry) return false;
+  return entry.roles.includes(role);
+}

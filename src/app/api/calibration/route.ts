@@ -16,13 +16,19 @@ export async function GET() {
 
   const rollingBrier50 = BrierCalibrationEngine.computeRollingBrier(formattedBets, 50);
   const rollingBrier100 = BrierCalibrationEngine.computeRollingBrier(formattedBets, 100);
-  const buckets = BrierCalibrationEngine.computeCalibrationBuckets(formattedBets);
-  const byCategory = BrierCalibrationEngine.computeByCategory(formattedBets);
+  const bucketResult = BrierCalibrationEngine.computeCalibrationBuckets(formattedBets);
+  const categoryResult = BrierCalibrationEngine.computeByCategory(formattedBets);
+  const sampleSufficiency = BrierCalibrationEngine.computeSampleSufficiency(formattedBets);
 
   return NextResponse.json({
     rollingBrier50,
     rollingBrier100,
-    buckets,
-    byCategory
+    buckets: bucketResult.buckets,
+    bucketsSufficient: bucketResult.sufficient,
+    bucketsReason: bucketResult.reason,
+    byCategory: categoryResult.categories,
+    byCategorySufficient: categoryResult.sufficient,
+    byCategoryReason: categoryResult.reason,
+    sampleSufficiency,
   });
 }

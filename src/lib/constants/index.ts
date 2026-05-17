@@ -1,4 +1,4 @@
-import type { QdrantDefaultCollectionDef } from '@/lib/types';
+import type { QdrantDefaultCollectionDef, APlusSignalConfig } from '@/lib/types';
 
 export const VENUE_OPTIONS = [
   { value: 'POLYMARKET', label: 'Polymarket', color: '#1a73e8' },
@@ -203,3 +203,30 @@ export const EMBEDDING_PROVIDER_OPTIONS = [
   { value: 'ollama', label: 'Ollama', defaultDims: 768, description: 'nomic-embed-text (768 dims)' },
   { value: 'custom', label: 'Custom', defaultDims: 0, description: 'Enter vector dimensions manually' },
 ] as const;
+
+export const DEFAULT_APLUS_CONFIG: APlusSignalConfig = {
+  minCandidateScore: 90,
+  minAdjustedEdge: 0.07,
+  minConfidence: 0.75,
+  minResolutionClarity: 0.85,
+  maxSpread: 0.03,
+  minLiquidityByCategory: {
+    crypto: 50000,
+    politics: 20000,
+    sports: 10000,
+  },
+  maxModelDisagreement: 0.15,
+  maxTailRisk: 0.1,
+  maxOracleRisk: 0.2,
+  maxCorrelationExposure: 0.3,
+};
+
+export const DEFAULT_SCAN_CONFIG = {
+  maxPagesPerVenue: {
+    POLYMARKET: 10,
+    KALSHI: 5,
+  },
+  scanTimeout: 300000,
+  rateLimitDelay: 500,
+  defaultScanMode: 'FULL_SCAN',
+} as const;

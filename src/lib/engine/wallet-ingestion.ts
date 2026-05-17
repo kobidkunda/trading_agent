@@ -201,3 +201,109 @@ export class WalletIngestionEngine {
 }
 
 export const walletIngestion = new WalletIngestionEngine();
+
+export interface WalletEligibilityConfig {
+  minResolvedTrades: number;
+  minActiveDays: number;
+  minProfitFactor: number;
+  maxJackpotDependency: number;
+  minWinRate: number;
+  minBrierScore: number;
+  maxDrawdown: number;
+}
+
+export const DEFAULT_WALLET_ELIGIBILITY: WalletEligibilityConfig = {
+  minResolvedTrades: 50,
+  minActiveDays: 30,
+  minProfitFactor: 1.2,
+  maxJackpotDependency: 0.4,
+  minWinRate: 0.55,
+  minBrierScore: 0.35,
+  maxDrawdown: 0.5,
+};
+
+export interface WalletEligibilityResult {
+  eligible: boolean;
+  failures: string[];
+  score: number;
+}
+
+export function checkWalletEligibility(
+  wallet: {
+    resolvedTrades: number;
+    winRate: number | null;
+    profitFactor: number | null;
+    brierScore: number | null;
+    drawdown: number | null;
+    recentPerformance: number | null;
+  },
+  config?: Partial<WalletEligibilityConfig>
+): WalletEligibilityResult {
+  const cfg = { ...DEFAULT_WALLET_ELIGIBILITY, ...config };
+  const failures: string[] = [];
+
+  if (wallet.resolvedTrades < cfg.minResolvedTrades) {
+    failures.push(
+      `resolvedTrades (${wallet.resolvedTrades}) < minResolvedTrades (${cfg.minResolvedTrades})`
+    );
+  }
+
+  const wr = wallet.winRate ?? 0;
+  if (wr < cfg.minWinRate) {
+    failures.push(
+      `winRate (${wr.toFixed(3)}) < minWinRate (${cfg.minWinRate})`
+    );
+  }
+
+  const pf = wallet.profitFactor ?? 0;
+  if (pf < cfg.minProfitFactor) {
+    failures.push(
+      `profitFactor (${pf.toFixed(2)}) < minProfitFactor (${cfg.minProfitFactor})`
+    );
+  }
+
+  const bs = wallet.brierScore ?? 1;
+  if (bs > cfg.minBrierScore) {
+    failures.push(
+      `brierScore (${bs.toFixed(3)}) > max (${cfg.minBrierScore})`
+    );
+  }
+
+  const dd = wallet.drawdown ?? 0;
+  if (dd < -cfg.maxDrawdown) {
+    failures.push(
+      `drawdown (${(dd * 100).toFixed(1)}%) exceeds maxDrawdown (${(cfg.maxDrawdown * 100).toFixed(1)}%)`
+    );
+  }
+
+  const winRateNorm = clamp01((wr - 0.4) / 0.4);
+  const pfLog = pf > 0 ? Math.log(Math.max(0.5, pf)) : 0;
+  const pfNorm = clamp01(pfLog / Math.log(3));
+  const brierNorm = clamp01(1 - bs);
+  const resolvedNorm = clamp01(
+    wallet.resolvedTrades / Math.max(cfg.minResolvedTrades * 2, 200)
+  );
+  const recencyNorm =
+    wallet.recentPerformance != null
+      ? clamp01((wallet.recentPerformance + 1) / 2)
+      : 0.5;
+
+  const score = Math.round(
+    (winRateNorm * 25 +
+      pfNorm * 20 +
+      brierNorm * 15 +
+      resolvedNorm * 20 +
+      recencyNorm * 20) *
+      100
+  );
+
+  return {
+    eligible: failures.length === 0,
+    failures,
+    score,
+  };
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}

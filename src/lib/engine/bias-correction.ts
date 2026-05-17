@@ -2,20 +2,40 @@
 // Converts naive market prices to bias-adjusted fair probabilities
 // based on favorite-longshot bias observed in prediction markets.
 
+export interface BiasModelVersion {
+  version: number;
+  createdAt: Date;
+  resolvedMarketCount: number;
+  categoryParams: Record<string, { wangLambda: number; offset: number }>;
+  fallbackLambda: number;
+  fallbackOffset: number;
+  isActive: boolean;
+}
+
 export interface BiasCorrectionInput {
-  marketPrice: number;         // 0-1 raw market implied probability
-  category: string;            // politics, sports, crypto, etc.
-  timeToResolution: number;    // days until resolution
-  liquidity: number;           // market liquidity (USD)
-  contractType?: string;       // YES/NO
+  marketPrice: number;
+  category: string;
+  timeToResolution: number;
+  liquidity: number;
+  contractType?: string;
+  modelVersion?: BiasModelVersion;
 }
 
 export interface BiasCorrectionOutput {
-  biasAdjustedProb: number;       // 0-1, Wang-transform adjusted
-  favoriteLongshotBias: number;   // -1 to 1, positive = favorite bias, negative = longshot bias
-  correctionConfidence: number;   // 0-1
-  correctionDirection: string;    // 'FAVORITE' | 'LONGSHOT' | 'NONE'
-  correctionMagnitude: number;    // absolute difference |adjusted - marketPrice|
+  biasAdjustedProb: number;
+  favoriteLongshotBias: number;
+  correctionConfidence: number;
+  correctionDirection: string;
+  correctionMagnitude: number;
+  usedModelVersion: boolean;
+  sampleSufficient: boolean;
+}
+
+const MIN_SAMPLES_FOR_CATEGORY_CORRECTION = 50;
+
+export function shouldTrustCategoryCorrection(category: string, sampleCount: number): boolean {
+  const key = category.toLowerCase();
+  return sampleCount >= MIN_SAMPLES_FOR_CATEGORY_CORRECTION && key in CATEGORY_BIAS_ADJ;
 }
 
 // ── Numerical helpers: erf / erfinv ──
@@ -25,7 +45,6 @@ function erf(x: number): number {
   const sign = x < 0 ? -1 : 1;
   const a = 0.147;
   const ax = Math.abs(x);
-  // Formula 7.1.26
   const t = 1 / (1 + a * ax);
   const poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
   return sign * (1 - poly * Math.exp(-ax * ax));
@@ -54,7 +73,6 @@ function phiNorm(x: number): number {
 
 /** Φ⁻¹(p) = inverse standard normal CDF */
 function phiNormInv(p: number): number {
-  // Clamp to avoid infinities
   const safe = Math.max(1e-15, Math.min(1 - 1e-15, p));
   return Math.SQRT2 * erfinv(2 * safe - 1);
 }
@@ -96,62 +114,69 @@ function getSmoothLambda(p: number): number {
 
 // ── Wang Transform ──
 
-/**
- * Wang Transform: adjusted = Φ(Φ⁻¹(p) - λ)
- *
- * p = market implied probability (0-1)
- * λ = bias parameter:
- *   λ > 0 → adjusted < marketPrice (market OVERprices → real prob lower)
- *   λ < 0 → adjusted > marketPrice (market UNDERprices → real prob higher)
- */
 function wangTransform(p: number, lambda: number): number {
   const safe = Math.max(1e-15, Math.min(1 - 1e-15, p));
   const z = phiNormInv(safe) - lambda;
   return phiNorm(z);
 }
 
-// ── Main export ──
+// ── Main exports ──
+
+export function getBiasModelVersion(resolvedMarketCount: number): BiasModelVersion {
+  return {
+    version: 1,
+    createdAt: new Date(Date.UTC(2026, 4, 17)),
+    resolvedMarketCount,
+    categoryParams: {
+      politics: { wangLambda: 0.05, offset: 0.01 },
+      sports: { wangLambda: -0.05, offset: -0.01 },
+      crypto: { wangLambda: 0.08, offset: 0.02 },
+      science: { wangLambda: 0.0, offset: 0.0 },
+      entertainment: { wangLambda: 0.02, offset: 0.005 },
+      economics: { wangLambda: 0.03, offset: 0.01 },
+      technology: { wangLambda: 0.02, offset: 0.005 },
+      health: { wangLambda: 0.01, offset: 0.0 },
+      weather: { wangLambda: -0.02, offset: -0.005 },
+    },
+    fallbackLambda: 0.02,
+    fallbackOffset: 0.0,
+    isActive: resolvedMarketCount >= MIN_SAMPLES_FOR_CATEGORY_CORRECTION,
+  };
+}
 
 export function computeBiasAdjustedProb(input: BiasCorrectionInput): BiasCorrectionOutput {
-  const { marketPrice, category, timeToResolution, liquidity } = input;
+  const { marketPrice, category, timeToResolution, liquidity, modelVersion } = input;
 
-  // Clamp input
+  const sampleSufficient = modelVersion
+    ? modelVersion.isActive && modelVersion.resolvedMarketCount >= MIN_SAMPLES_FOR_CATEGORY_CORRECTION
+    : false;
+  const usedModelVersion = modelVersion !== undefined && sampleSufficient;
+
   const p = Math.max(0.0001, Math.min(0.9999, marketPrice));
-
-  // Base λ from probability bucket (smooth interpolation)
   const baseLambda = getSmoothLambda(p);
-
-  // Adjust λ for time-to-resolution: markets farther away have more bias
-  // max(0.1, ...) so bias never completely disappears for immediate resolution
   const timeFactor = Math.max(0.1, Math.min(1, timeToResolution / 30));
-
-  // Adjust λ for liquidity: more liquid markets have less bias
   const liquidityFactor = Math.max(0.2, Math.min(1, liquidity / 10000));
 
-  // Category adjustment: stacked onto λ direction
-  const categoryAdj = getCategoryAdjustment(category);
+  let categoryAdj: number;
+  if (usedModelVersion) {
+    const cp = modelVersion!.categoryParams[category.toLowerCase()];
+    categoryAdj = cp ? cp.wangLambda : modelVersion!.fallbackLambda;
+  } else {
+    categoryAdj = getCategoryAdjustment(category);
+  }
 
-  // Composite λ
   const lambda = baseLambda * timeFactor * liquidityFactor + categoryAdj * (1 - timeFactor * liquidityFactor);
-
-  // Apply Wang transform
   const adjusted = wangTransform(p, lambda);
-
-  // Clamp result
   const biasAdjustedProb = Math.max(0.0001, Math.min(0.9999, adjusted));
-
-  // Bias direction
   const correctionMagnitude = Math.abs(biasAdjustedProb - p);
+
   let favoriteLongshotBias: number;
   let correctionDirection: string;
 
   if (lambda > 0.01) {
-    // Longshot bias: market overprices longshots, so adjusted < marketPrice
     favoriteLongshotBias = -Math.min(1, lambda / 0.5);
     correctionDirection = 'LONGSHOT';
   } else if (lambda < -0.01) {
-    // Favorite bias: market overprices favorites, so adjusted < marketPrice... 
-    // Actually in Wang: negative λ means adjusted > p (favorite is underpriced)
     favoriteLongshotBias = Math.min(1, Math.abs(lambda) / 0.5);
     correctionDirection = 'FAVORITE';
   } else {
@@ -159,7 +184,6 @@ export function computeBiasAdjustedProb(input: BiasCorrectionInput): BiasCorrect
     correctionDirection = 'NONE';
   }
 
-  // Confidence based on liquidity and time
   const confidenceBase = liquidityFactor * 0.7 + timeFactor * 0.3;
   const correctionConfidence = Math.max(0.1, Math.min(1, confidenceBase * (1 - Math.exp(-liquidity / 5000))));
 
@@ -169,5 +193,7 @@ export function computeBiasAdjustedProb(input: BiasCorrectionInput): BiasCorrect
     correctionConfidence,
     correctionDirection,
     correctionMagnitude,
+    usedModelVersion,
+    sampleSufficient,
   };
 }

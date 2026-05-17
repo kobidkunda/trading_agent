@@ -82,6 +82,8 @@ model Market {
   clusterMarketLinks ClusterMarketLink[]
   oracleCheck OracleCheck?
   historicalSnapshots HistoricalSnapshot[]
+
+  @@unique([venue, externalId])
 }
 
 model MarketSnapshot {

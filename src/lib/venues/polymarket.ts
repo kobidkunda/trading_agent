@@ -62,7 +62,16 @@ export async function getPolymarketMarkets(limit: number = DEFAULT_PAGE_LIMIT, c
       const tokens = (m.tokens || []) as Array<Record<string, unknown>>;
       const yesToken = tokens.find((t) => t.outcome === 'Yes') || tokens[0];
       const price = typeof yesToken?.price === 'number' ? yesToken.price : 0.5;
-      const spread = Math.abs(price - (1 - price)) * 0.02;
+
+      // Use real orderbook data when available; fall back to estimatedSpread
+      const rawBestBid = typeof m.bestBid === 'number' ? m.bestBid : null;
+      const rawBestAsk = typeof m.bestAsk === 'number' ? m.bestAsk : null;
+      const hasRealSpread = rawBestBid != null && rawBestAsk != null && rawBestBid < rawBestAsk;
+
+      const bestBid = hasRealSpread ? rawBestBid! : price * 0.99;
+      const bestAsk = hasRealSpread ? rawBestAsk! : price * 1.01;
+      const spread = hasRealSpread ? rawBestAsk! - rawBestBid! : Math.abs(price - (1 - price)) * 0.02;
+      const estimatedSpread = Math.round(spread * 1000) / 1000;
 
       return {
         externalId: String(m.condition_id || m.id || ''),
@@ -73,10 +82,10 @@ export async function getPolymarketMarkets(limit: number = DEFAULT_PAGE_LIMIT, c
         status: m.active && !m.closed ? 'ACTIVE' : 'INACTIVE',
         impliedProb: price,
         liquidity: typeof m.volume === 'number' ? m.volume : 0,
-        spread: Math.round(spread * 1000) / 1000,
-        volume24h: typeof m.volume24hr === 'number' ? m.volume24hr : 0,
-        bestBid: price - spread / 2,
-        bestAsk: price + spread / 2,
+        spread: estimatedSpread,
+        estimatedSpread,
+        bestBid,
+        bestAsk,
       };
     }).filter((m: { title: string; externalId: string }) => m.title && m.externalId);
 

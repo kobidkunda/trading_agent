@@ -1,0 +1,48 @@
+name: CI - Trusted PAPER Mode v1
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      DATABASE_URL: file:./db/custom.db
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Prisma validate
+        run: npx prisma validate
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Prisma db push (dry-run schema validation)
+        run: npx prisma db push --skip-generate
+
+      - name: Run tests
+        run: bun test
+
+      - name: Build
+        run: npm run build
+        env:
+          DATABASE_URL: file:./db/custom.db

@@ -78,15 +78,16 @@ export function resolvePaperFill(params: {
   avgFillPrice: number;
   remainingSize: number;
   isFullyFilled: boolean;
-  lifecycleStatus: 'SUBMITTED' | 'PARTIALLY_FILLED' | 'FAILED';
+  lifecycleStatus: 'SUBMITTED' | 'PARTIALLY_FILLED' | 'FILLED' | 'FAILED';
 } {
   if (params.fillModel === 'INSTANT') {
+    // DEMO_INSTANT: full instant fill (only for demo mode)
     return {
       filledSize: params.size,
       avgFillPrice: params.price,
       remainingSize: 0,
       isFullyFilled: true,
-      lifecycleStatus: 'PARTIALLY_FILLED',
+      lifecycleStatus: 'FILLED',
     };
   }
 
@@ -98,14 +99,14 @@ export function resolvePaperFill(params: {
     const filledSize = Math.round(params.size * fillRatio * 100) / 100;
     const slippage = params.price * (1 - fillRatio) * 0.01;
     const avgFillPrice = params.price + slippage;
-    const isFullyFilled = filledSize >= params.size;
+    const isFullyFilled = filledSize >= params.size * 0.999;
 
     return {
       filledSize: Math.max(0, filledSize),
       avgFillPrice: Math.max(0, avgFillPrice),
       remainingSize: Math.max(0, params.size - filledSize),
       isFullyFilled,
-      lifecycleStatus: isFullyFilled ? 'PARTIALLY_FILLED' : 'FAILED',
+      lifecycleStatus: isFullyFilled ? 'FILLED' : 'PARTIALLY_FILLED',
     };
   }
 
@@ -142,6 +143,6 @@ export function resolvePaperFill(params: {
     avgFillPrice: Math.max(0, avgFillPrice),
     remainingSize: 0,
     isFullyFilled: true,
-    lifecycleStatus: 'PARTIALLY_FILLED',
+    lifecycleStatus: 'FILLED',
   };
 }
