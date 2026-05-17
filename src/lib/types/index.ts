@@ -31,6 +31,9 @@ export type RiskReasonCode =
   | 'CATEGORY_DISABLED'
   | 'DAILY_LIMIT_REACHED'
   | 'CORRELATED_RISK'
+  | 'CLUSTER_EXPOSURE_EXCEEDED'
+  | 'TAIL_RISK_HIGH'
+  | 'CORRELATION_CLUSTER_OVERLAP'
   | 'MANUAL_REVIEW_REQUIRED';
 
 // Agent roles
@@ -133,7 +136,7 @@ export interface TransparencyStageRecord {
   references: TransparencySourceRef[];
 }
 
-export type ResearchDepth = 'QUICK' | 'DEEP' | 'DEERFLOW' | 'FULL';
+export type ResearchDepth = 'QUICK' | 'DEEP' | 'DEERFLOW' | 'FULL' | 'STANDARD';
 
 export interface StageServiceMapping {
   triageModel?: string;
@@ -253,6 +256,9 @@ export interface JudgeOutput {
 export interface SystemHealth {
   queueDepth: number;
   failingJobs: number;
+  stuckJobsCount: number;
+  lockedJobsCount: number;
+  retryingJobsCount: number;
   apiHealth: Record<string, 'UP' | 'DOWN' | 'DEGRADED'>;
   venueRateLimits: Record<string, { remaining: number; resetAt: string }>;
   walletSync: 'OK' | 'ERROR' | 'SYNCING';
@@ -299,4 +305,82 @@ export interface QdrantDefaultCollectionDef {
   defaultName: string;
   description: string;
   payloadIndexes: string[];
+}
+
+// ── Correlation & Tail Risk (Phase 10) ──
+
+export type ClusterType = 'EVENT' | 'CATEGORY' | 'RESOLUTION_SOURCE' | 'DATE_WINDOW' | 'UNDERLYING';
+
+export type TailRiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export interface ClusterGroup {
+  clusterType: ClusterType;
+  clusterKey: string;
+  label?: string;
+  marketIds: string[];
+  exposureLimit?: number;
+}
+
+export interface ClusterExposure {
+  clusterId: string;
+  clusterType: ClusterType;
+  clusterKey: string;
+  label: string | null;
+  totalExposure: number;
+  exposureLimit: number | null;
+  maxLoss: number | null;
+  lossToWinRatio: number | null;
+  tailRiskLevel: string | null;
+  utilization: number;
+  marketCount: number;
+}
+
+export interface TailRiskMetrics {
+  marketId: string;
+  marketTitle?: string;
+  side: string;
+  size: number;
+  entryPrice: number;
+  maxGain: number;
+  maxLoss: number;
+  lossToWinRatio: number;
+  tailRiskLevel: TailRiskLevel;
+}
+
+export interface TailRiskWarning {
+  marketId: string;
+  marketTitle?: string;
+  lossAmount: number;
+  winsWiped: number;
+  totalWinningPositions: number;
+  warning: string;
+  severity: TailRiskLevel;
+}
+
+export interface ClusterAddResult {
+  allowed: boolean;
+  reason?: string;
+  currentExposure: number;
+  exposureLimit: number | null;
+  proposedExposure: number;
+  utilizationAfter: number;
+}
+
+export interface RiskEngineInputExtended extends RiskEngineInput {
+  marketId?: string;
+  marketTitle?: string;
+  resolutionTime?: string | null;
+  clusterExposures?: ClusterExposure[];
+  clusterOverlaps?: number;
+  tailRiskWarnings?: TailRiskWarning[];
+}
+
+export interface RiskDashboard {
+  totalDailyExposure: number;
+  maxDailyExposure: number;
+  clusterExposures: ClusterExposure[];
+  tailRiskWarnings: TailRiskWarning[];
+  openPositionCount: number;
+  totalUnrealizedPnl: number;
+  riskLimitUtilization: number;
 }

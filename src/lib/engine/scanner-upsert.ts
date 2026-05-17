@@ -2,6 +2,7 @@ import { db } from '@/lib/db';
 import { createTitleHash, normalizeMarketTitle } from '@/lib/engine/candidate-dedupe';
 import { classifyCandidateScore, computeCandidateScore } from '@/lib/engine/candidate-scoring';
 import { enqueueCandidateJobs } from '@/lib/engine/candidate-job-enqueuer';
+import { scanRelatedMarkets } from '@/lib/engine/related-market';
 
 export interface ScannerMarketInput {
   dataSource?: string;
@@ -82,12 +83,32 @@ export async function upsertScannedMarket(params: {
       },
     });
 
+    await db.historicalSnapshot.create({
+      data: {
+        marketId: created.id,
+        price: market.impliedProb,
+        impliedProb: market.impliedProb,
+        liquidity: market.liquidity,
+        spread: market.spread,
+        volume24h: market.volume24h || 0,
+        bestBid: market.bestBid ?? market.impliedProb - market.spread / 2,
+        bestAsk: market.bestAsk ?? market.impliedProb + market.spread / 2,
+        snapshotTime: new Date(),
+      },
+    });
+
+    const acceptedStr = scoreBreakdown.acceptedCriteria.length > 0 ? scoreBreakdown.acceptedCriteria.join(',') : null;
+    const rejectedStr = scoreBreakdown.rejectedCriteria.length > 0 ? scoreBreakdown.rejectedCriteria.join(',') : null;
+
     await db.tradeCandidate.create({
       data: {
         marketId: created.id,
         stage: 'SCANNED',
         sourceScanRunId: scanRunId,
         candidateScore: scoreBreakdown.totalScore,
+        acceptedCriteria: acceptedStr,
+        rejectedCriteria: rejectedStr,
+        skipReason: scoreBreakdown.skipReason || null,
       },
     });
 
@@ -97,6 +118,10 @@ export async function upsertScannedMarket(params: {
         candidateId: created.id,
       });
     }
+
+    scanRelatedMarkets(created.id).catch(err =>
+      console.error('Related market scan failed for', created.id, err),
+    );
 
     return { created: true, updated: false, scoreAction, score: scoreBreakdown.totalScore };
   }
@@ -136,16 +161,36 @@ export async function upsertScannedMarket(params: {
     },
   });
 
+  await db.historicalSnapshot.create({
+    data: {
+      marketId: existing.id,
+      price: market.impliedProb,
+      impliedProb: market.impliedProb,
+      liquidity: market.liquidity,
+      spread: market.spread,
+      volume24h: market.volume24h || 0,
+      bestBid: market.bestBid ?? market.impliedProb - market.spread / 2,
+      bestAsk: market.bestAsk ?? market.impliedProb + market.spread / 2,
+      snapshotTime: new Date(),
+    },
+  });
+
   const existingCandidate = await db.tradeCandidate.findFirst({
     where: { marketId: existing.id },
   });
 
   if (existingCandidate) {
+    const acceptedStr = scoreBreakdown.acceptedCriteria.length > 0 ? scoreBreakdown.acceptedCriteria.join(',') : null;
+    const rejectedStr = scoreBreakdown.rejectedCriteria.length > 0 ? scoreBreakdown.rejectedCriteria.join(',') : null;
+
     await db.tradeCandidate.update({
       where: { id: existingCandidate.id },
       data: {
         stage: scoreAction === 'SKIP' ? 'SCANNED' : 'TRIAGED',
         candidateScore: scoreBreakdown.totalScore,
+        acceptedCriteria: acceptedStr,
+        rejectedCriteria: rejectedStr,
+        skipReason: scoreBreakdown.skipReason || null,
         sourceScanRunId: scanRunId,
         lastProcessedAt: new Date(),
       },
@@ -158,6 +203,10 @@ export async function upsertScannedMarket(params: {
       });
     }
   }
+
+  scanRelatedMarkets(existing.id).catch(err =>
+    console.error('Related market scan failed for', existing.id, err),
+  );
 
   return { created: false, updated: true, scoreAction, score: scoreBreakdown.totalScore };
 }

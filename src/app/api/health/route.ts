@@ -15,9 +15,13 @@ export async function GET() {
     }
 
     // Get job queue metrics
-    const [queueDepth, failingJobs, recentErrors] = await Promise.all([
+    const now = new Date();
+    const [queueDepth, failingJobs, stuckJobsCount, lockedJobsCount, retryingJobsCount, recentErrors] = await Promise.all([
       db.job.count({ where: { status: { in: ['PENDING', 'RUNNING', 'RETRYING'] } } }),
       db.job.count({ where: { status: 'FAILED' } }),
+      db.job.count({ where: { status: 'RUNNING', heartbeatAt: { not: null, lt: now } } }),
+      db.job.count({ where: { status: 'RUNNING', lockExpiresAt: { not: null, lt: now } } }),
+      db.job.count({ where: { status: 'RETRYING' } }),
       db.job.findMany({
         where: { error: { not: null } },
         orderBy: { updatedAt: 'desc' },
@@ -152,6 +156,9 @@ export async function GET() {
     } = {
       queueDepth,
       failingJobs,
+      stuckJobsCount,
+      lockedJobsCount,
+      retryingJobsCount,
       apiHealth,
       venueRateLimits: {},
       walletSync: 'OK',
@@ -173,6 +180,9 @@ export async function GET() {
       {
         queueDepth: 0,
         failingJobs: 0,
+        stuckJobsCount: 0,
+        lockedJobsCount: 0,
+        retryingJobsCount: 0,
         apiHealth: {},
         venueRateLimits: {},
         walletSync: 'ERROR',

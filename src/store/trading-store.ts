@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { getModeState, type DataSource, type ExecutionMode, type TradingMode } from '@/lib/engine/mode';
 
-export type PageView = 'strategy' | 'credentials' | 'triage' | 'research' | 'prompts' | 'simulation' | 'live' | 'health' | 'vectorDb' | 'pipelineSettings' | 'map' | 'researchProvider';
+export type PageView = 'strategy' | 'credentials' | 'triage' | 'research' | 'prompts' | 'simulation' | 'live' | 'health' | 'vectorDb' | 'pipelineSettings' | 'map' | 'researchProvider' | 'candidates' | 'aPlusSignals' | 'calibration' | 'risk' | 'paperOrders' | 'outcomes' | 'researchQueue' | 'wallets' | 'relatedMarkets' | 'orderbook' | 'paperBets' | 'backtests' | 'optimizer' | 'settings';
 
 interface TradingStore {
   activePage: PageView;

@@ -5,6 +5,7 @@ import { runPipelineForMarket } from '@/lib/engine/pipeline';
 import { normalizeTradingMode } from '@/lib/engine/mode';
 import { getEffectiveTradingConfig } from '@/lib/engine/trading-settings';
 import { classifyOrderTerminalState } from '@/lib/engine/order-tracker';
+import { saveCheckpoint } from '@/lib/engine/worker-checkpoint';
 
 type WorkerStatus = 'STOPPED' | 'RUNNING';
 
@@ -40,11 +41,14 @@ export function getWorkerState(): WorkerState {
   return { ...state };
 }
 
-export function startWorker(intervalMs: number = 5000): WorkerState {
+export async function startWorker(intervalMs: number = 5000): Promise<WorkerState> {
   if (state.status === 'RUNNING') return state;
   state.status = 'RUNNING';
   state.error = null;
   loopIntervalMs = intervalMs;
+
+  await releaseAllStaleLocks();
+
   tick();
   intervalHandle = setInterval(tick, intervalMs);
   return state;
@@ -71,7 +75,6 @@ export interface ProcessedJobResult {
 
 function extractMarketId(payload: string | null): string | null {
   if (!payload) return null;
-
   try {
     const parsed = JSON.parse(payload) as { marketId?: unknown };
     return typeof parsed.marketId === 'string' ? parsed.marketId : null;
@@ -80,17 +83,143 @@ function extractMarketId(payload: string | null): string | null {
   }
 }
 
+function computeBackoffMs(retryCount: number): number {
+  return Math.min(300_000, 60_000 * Math.pow(2, retryCount));
+}
+
+async function releaseAllStaleLocks(): Promise<void> {
+  const now = new Date();
+
+  // Release stale Job locks
+  const staleJobs = await db.job.findMany({
+    where: {
+      status: 'RUNNING',
+      lockExpiresAt: { not: null, lt: now },
+    },
+    select: { id: true, payload: true, type: true },
+  });
+
+  for (const job of staleJobs) {
+    await db.job.update({
+      where: { id: job.id },
+      data: { status: 'FAILED', error: 'Stale lock released at startup' },
+    });
+    const marketId = extractMarketId(job.payload);
+    if (marketId) {
+      await db.tradeCandidate.updateMany({
+        where: { marketId, processingLock: { not: null } },
+        data: { processingLock: null, lockExpiresAt: null },
+      });
+    }
+  }
+
+  // Release stale TradeCandidate locks
+  await db.tradeCandidate.updateMany({
+    where: { lockExpiresAt: { not: null, lt: now }, processingLock: { not: null } },
+    data: { processingLock: null, lockExpiresAt: null },
+  });
+
+  // Detect stuck jobs (missed heartbeat)
+  const stuckJobs = await db.job.findMany({
+    where: { status: 'RUNNING', heartbeatAt: { not: null } },
+    select: { id: true, heartbeatAt: true, maxRuntimeSec: true, payload: true },
+  });
+
+  for (const job of stuckJobs) {
+    if (!job.heartbeatAt) continue;
+    const maxRuntimeMs = (job.maxRuntimeSec || 300) * 1000;
+    const deadline = new Date(new Date(job.heartbeatAt).getTime() + maxRuntimeMs);
+    if (now > deadline) {
+      await db.job.update({
+        where: { id: job.id },
+        data: { status: 'FAILED', error: 'Heartbeat lost — stale job recovered at startup' },
+      });
+      const marketId = extractMarketId(job.payload);
+      if (marketId) {
+        await db.tradeCandidate.updateMany({
+          where: { marketId, processingLock: { not: null } },
+          data: { processingLock: null, lockExpiresAt: null },
+        });
+      }
+    }
+  }
+}
+
+async function cleanupStaleLocks(): Promise<number> {
+  const now = new Date();
+  let cleaned = 0;
+
+  const staleLocked = await db.job.findMany({
+    where: { status: 'RUNNING', lockExpiresAt: { not: null, lt: now } },
+    select: { id: true, payload: true },
+  });
+
+  for (const job of staleLocked) {
+    await db.job.update({
+      where: { id: job.id },
+      data: { status: 'RETRYING', error: 'Lock timeout — retrying' },
+    });
+    const marketId = extractMarketId(job.payload);
+    if (marketId) {
+      await db.tradeCandidate.updateMany({
+        where: { marketId, processingLock: { not: null } },
+        data: { processingLock: null, lockExpiresAt: null },
+      });
+    }
+    cleaned++;
+  }
+
+  // Detect heartbeat misses
+  const heartbeatJobs = await db.job.findMany({
+    where: { status: 'RUNNING', heartbeatAt: { not: null } },
+    select: { id: true, heartbeatAt: true, maxRuntimeSec: true, payload: true },
+  });
+
+  for (const job of heartbeatJobs) {
+    if (!job.heartbeatAt) continue;
+    const maxRuntimeMs = (job.maxRuntimeSec || 300) * 1000;
+    const deadline = new Date(new Date(job.heartbeatAt).getTime() + maxRuntimeMs);
+    if (now > deadline) {
+      await db.job.update({
+        where: { id: job.id },
+        data: { status: 'RETRYING', error: 'Heartbeat lost — retrying' },
+      });
+      const marketId = extractMarketId(job.payload);
+      if (marketId) {
+        await db.tradeCandidate.updateMany({
+          where: { marketId, processingLock: { not: null } },
+          data: { processingLock: null, lockExpiresAt: null },
+        });
+      }
+      cleaned++;
+    }
+  }
+
+  return cleaned;
+}
+
 export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | null> {
+  const now = new Date();
+
   const job = await db.job.findFirst({
-    where: { status: { in: ['PENDING', 'RETRYING'] } },
+    where: {
+      status: { in: ['PENDING', 'RETRYING'] },
+      OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+    },
     orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
   });
 
   if (!job) return null;
 
+  const maxRuntimeSec = job.maxRuntimeSec || 300;
   await db.job.update({
     where: { id: job.id },
-    data: { status: 'RUNNING', startedAt: new Date() },
+    data: {
+      status: 'RUNNING',
+      startedAt: new Date(),
+      heartbeatAt: new Date(),
+      lockExpiresAt: new Date(Date.now() + maxRuntimeSec * 1000),
+    },
   });
 
   try {
@@ -101,6 +230,7 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
         status: 'COMPLETED',
         result: JSON.stringify(result),
         completedAt: new Date(),
+        lockExpiresAt: null,
       },
     });
 
@@ -114,7 +244,8 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : 'Unknown error';
     const currentRetryCount = job.retryCount || 0;
-    const isRetryable = currentRetryCount < (job.maxRetries || 3);
+    const maxRetries = job.maxRetries ?? 3;
+    const isRetryable = currentRetryCount < maxRetries;
 
     await db.job.update({
       where: { id: job.id },
@@ -122,7 +253,9 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
         status: isRetryable ? 'RETRYING' : 'FAILED',
         error: errorMessage,
         retryCount: currentRetryCount + 1,
+        nextRetryAt: isRetryable ? new Date(Date.now() + computeBackoffMs(currentRetryCount)) : undefined,
         completedAt: new Date(),
+        lockExpiresAt: null,
       },
     });
 
@@ -134,10 +267,7 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
           if (candidate && candidate.processingLock) {
             await db.tradeCandidate.update({
               where: { marketId },
-              data: {
-                processingLock: null,
-                lockExpiresAt: null,
-              },
+              data: { processingLock: null, lockExpiresAt: null },
             });
           }
         }
@@ -156,6 +286,10 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
 
 async function tick() {
   try {
+    // Phase 1: cleanup stale locks before processing
+    await cleanupStaleLocks();
+
+    // Phase 2: process one job
     const processedJob = await processNextQueuedJobOnce();
 
     if (processedJob) {
@@ -174,7 +308,7 @@ async function tick() {
       return;
     }
 
-    // No pending jobs — run the market loop to scan and create new jobs
+    // No pending jobs — run the market loop
     state.currentJobType = 'MARKET_LOOP';
     try {
       const marketLoopResult = await runMarketLoopOnce();
@@ -194,6 +328,13 @@ async function tick() {
   }
 }
 
+const RESEARCH_JOB_TYPES = new Set([
+  'RESEARCH_MARKET', 'RESEARCH',
+  'TRIAGE_MARKET', 'TRIAGE',
+  'JUDGE_MARKET', 'JUDGE',
+  'RISK_CHECK', 'RISK',
+]);
+
 async function processJob(jobType: string, payload: string | null): Promise<Record<string, unknown>> {
   const data: Record<string, unknown> = payload ? JSON.parse(payload) : {};
 
@@ -210,8 +351,7 @@ async function processJob(jobType: string, payload: string | null): Promise<Reco
     case 'JUDGE_MARKET':
     case 'JUDGE':
     case 'RISK_CHECK':
-    case 'RISK':
-      // Update candidate stage
+    case 'RISK': {
       const marketId = String(data.marketId);
       const marketExists = await db.market.findUnique({
         where: { id: marketId },
@@ -219,21 +359,36 @@ async function processJob(jobType: string, payload: string | null): Promise<Reco
       });
 
       if (!marketExists) {
-        return {
-          status: 'MARKET_NOT_FOUND',
-          marketId,
-          skipped: true,
-        };
+        return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
       }
 
       try {
         await db.tradeCandidate.upsert({
           where: { marketId },
-          update: { stage: determineStage(jobType), processingLock: `${jobType}_${Date.now()}`, lockExpiresAt: new Date(Date.now() + 300000) },
-          create: { marketId, stage: determineStage(jobType), processingLock: `${jobType}_${Date.now()}`, lockExpiresAt: new Date(Date.now() + 300000) },
+          update: { stage: determineStage(jobType), processingLock: `${jobType}_${Date.now()}`, lockExpiresAt: new Date(Date.now() + 300_000) },
+          create: { marketId, stage: determineStage(jobType), processingLock: `${jobType}_${Date.now()}`, lockExpiresAt: new Date(Date.now() + 300_000) },
         });
       } catch {}
-      return await runPipelineForMarket(marketId);
+
+      const result = await runPipelineForMarket(marketId);
+
+      // Save checkpoint for research jobs so they can be resumed
+      if (RESEARCH_JOB_TYPES.has(jobType)) {
+        try {
+          // Find the parent Job id that triggered this pipeline work
+          const parentJob = await db.job.findFirst({
+            where: { type: jobType, payload: { contains: `"marketId":"${marketId}"` }, status: 'RUNNING' },
+            select: { id: true },
+            orderBy: { startedAt: 'desc' },
+          });
+          if (parentJob) {
+            await saveCheckpoint(parentJob.id, { marketId, stage: determineStage(jobType), pipelineResult: result });
+          }
+        } catch {}
+      }
+
+      return result;
+    }
     case 'PAPER_EXECUTE':
     case 'EXECUTE':
       return { status: 'PAPER_EXECUTE', marketId: data.marketId };

@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { resolveAllPaperBetsForMarket } from '@/lib/engine/paper-bets';
+import { BrierCalibrationEngine } from '@/lib/engine/brier-calibration';
 
 const POLYMARKET_API = 'https://clob.polymarket.com';
 const KALSHI_API = 'https://api.elections.kalshi.com/trade-api/v2';
@@ -232,6 +233,20 @@ export async function runResolutionCycle(): Promise<{
       result.outcome,
       result.resolvedProb,
     );
+
+    const decisions = await db.decision.findMany({
+      where: { marketId: result.marketId, dryRun: true },
+    });
+
+    for (const decision of decisions) {
+      if (decision.judgeProbability !== null) {
+        const brier = BrierCalibrationEngine.computeBrier(decision.judgeProbability, result.outcome);
+        await (db.decision as any).update({
+          where: { id: decision.id },
+          data: { brierScore: brier },
+        });
+      }
+    }
 
     const candidates = await db.tradeCandidate.findMany({
       where: { marketId: result.marketId },

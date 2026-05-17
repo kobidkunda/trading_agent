@@ -51,4 +51,21 @@ prompt
 
 server.log
 # Skills directory
-/skills/
+/skills/db/*.db
+prisma/db/
+graphify-out/
+.graphify-app/
+ta-service/__pycache__/
+.playwright-mcp/
+.firecrawl/
+.codex/
+*.pyc
+db/*.db
+prisma/db/
+graphify-out/
+.graphify-app/
+ta-service/__pycache__/
+.playwright-mcp/
+.firecrawl/
+.codex/
+*.pyc

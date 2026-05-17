@@ -59,6 +59,9 @@ export const REASON_CODE_DESCRIPTIONS: Record<string, string> = {
   CATEGORY_DISABLED: 'This market category is disabled in strategy settings',
   DAILY_LIMIT_REACHED: 'Maximum daily exposure limit has been reached',
   CORRELATED_RISK: 'Too much correlation with existing open positions',
+  CLUSTER_EXPOSURE_EXCEEDED: 'Exposure in a correlation cluster exceeds the configured limit',
+  TAIL_RISK_HIGH: 'Single position loss could wipe out multiple winning positions',
+  CORRELATION_CLUSTER_OVERLAP: 'Market belongs to too many overlapping risk clusters',
   MANUAL_REVIEW_REQUIRED: 'Edge case detected, requires human review',
 };
 

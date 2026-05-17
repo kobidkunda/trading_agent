@@ -1,5 +1,6 @@
 import { db } from '@/lib/db';
 import { computeRisk, computePositionSize } from '@/lib/engine/risk';
+import { computeBiasAdjustedProb } from '@/lib/engine/bias-correction';
 import { runTriageAgent } from '@/lib/engine/agents/triage';
 import { runDebateArena } from '@/lib/engine/debate-arena';
 import { searchSearXNG } from '@/lib/engine/research/search';
@@ -18,8 +19,11 @@ import { canRunStage, isServiceReachable } from '@/lib/engine/health-check';
 import { resolveResearchProvider } from '@/lib/engine/service-routing';
 import { runFirecrawlResearch } from '@/lib/engine/research/firecrawl-research';
 import { runPostDebatePrediction } from '@/lib/engine/post-debate-prediction';
+import { runEnsemblePipeline } from '@/lib/engine/ensemble-probability';
+import { computeCandidateScore } from '@/lib/engine/candidate-scoring';
 import { computeExposureTotals } from '@/lib/engine/risk-exposure';
 import { buildWatchlistPayload, shouldCreateExecutionJob, shouldCreateWatchlistEntry } from '@/lib/engine/pipeline-decision-helpers';
+import { causalTreeEngine } from '@/lib/engine/causal-tree';
 import { getPolymarketMarkets } from '@/lib/venues/polymarket';
 import { getKalshiMarkets } from '@/lib/venues/kalshi';
 import type { LivePipelineStage, ResearchDepth, TransparencySourceRef } from '@/lib/types';
@@ -46,6 +50,8 @@ export interface PipelineResult {
   triageStatus: string;
   debateResult: import('@/lib/engine/debate-arena').DebateArenaResult | null;
   postDebatePrediction: import('@/lib/engine/post-debate-prediction').PostDebatePredictionResult | null;
+  ensembleResult?: import('@/lib/engine/ensemble-probability').EnsembleResult;
+  ensembleDisagreement?: import('@/lib/engine/ensemble-probability').DisagreementDetail;
   riskAction: 'BID' | 'SKIP' | 'WATCH' | null;
   orderId: string | null;
   error: string | null;
@@ -271,6 +277,18 @@ export async function runPipelineForMarket(
       } catch (e) { console.warn('[Pipeline] Fresh Kalshi fetch failed, using cached snapshot:', e); }
     }
 
+    // Phase 3: Bias correction via Wang transform
+    const daysToResolution = market.resolutionTime
+      ? Math.max(0, (market.resolutionTime.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+      : 30;
+    const biasResult = computeBiasAdjustedProb({
+      marketPrice: impliedProb,
+      category: market.category,
+      timeToResolution: daysToResolution,
+      liquidity,
+    });
+    const biasAdjustedProb = biasResult.biasAdjustedProb;
+
     // Load routing config early for all stages
     const routing = await getStageRouting();
 
@@ -297,6 +315,7 @@ export async function runPipelineForMarket(
           triageStatus: triageResult.status,
           triageReason: triageResult.reason,
           researchQueued: triageResult.worthResearch,
+          biasAdjustedProb,
         },
       });
     }
@@ -920,121 +939,235 @@ export async function runPipelineForMarket(
 
     await retrieveSimilarMarkets(market.title, market.description || '');
 
-    // ── DEBATE ARENA: Multi-model debate on evidence ──
-    result.stages.push('DEBATE');
+    let judgeProbability: number;
+    let judgeConfidence: number;
+    let judgeUncertainty: number;
     const judgeModel = getModelForStage('judge', routing);
-    await emitStage({
-      stage: 'JUDGE',
-      message: 'Running judge debate arena',
-      provider: 'system',
-      serviceName: 'debate-arena',
-      model: judgeModel,
-    });
-    const debateResult = await runDebateArena(market.title, impliedProb, researchContext, routing);
-    result.debateResult = debateResult;
 
-    for (const round of debateResult.rounds) {
-      await db.agentOutput.create({
-        data: {
-          researchRunId: researchRun.id,
-          role: `DEBATE_ROUND_${round.round}_BULL`,
-          stage: 'JUDGE',
-          serviceName: 'debate-arena',
-          provider: 'system',
-          modelUsed: round.bullModel,
-          output: JSON.stringify({ argument: round.bullArgument, probability: round.bullProbability, confidence: round.bullConfidence }),
-          rawOutput: round.bullArgument,
-          summary: round.bullArgument.slice(0, 4000),
-        },
-      });
-      await db.agentOutput.create({
-        data: {
-          researchRunId: researchRun.id,
-          role: `DEBATE_ROUND_${round.round}_BEAR`,
-          stage: 'JUDGE',
-          serviceName: 'debate-arena',
-          provider: 'system',
-          modelUsed: round.bearModel,
-          output: JSON.stringify({ argument: round.bearArgument, probability: round.bearProbability, confidence: round.bearConfidence }),
-          rawOutput: round.bearArgument,
-          summary: round.bearArgument.slice(0, 4000),
-        },
-      });
-    }
-
-    const debateArbiterModel = getModelForStage('judge', routing) || 'paper_proglm';
-    await db.agentOutput.create({
-      data: {
-        researchRunId: researchRun.id,
-        role: 'DEBATE_ARBITER',
+    if (depth === 'DEEP') {
+      // Phase 7: Causal Tree — decompose thesis, research leaves, aggregate
+      result.stages.push('CAUSAL_TREE');
+      await emitStage({
         stage: 'JUDGE',
-        serviceName: 'debate-arena',
+        message: 'Decomposing market thesis into causal tree',
         provider: 'system',
-        modelUsed: debateArbiterModel,
-        output: JSON.stringify({
-          debateOutcome: debateResult.debateOutcome,
-          finalProbability: debateResult.finalProbability,
-          finalConfidence: debateResult.finalConfidence,
-          finalUncertainty: debateResult.finalUncertainty,
-          pointsOfAgreement: debateResult.pointsOfAgreement,
-          pointsOfDisagreement: debateResult.pointsOfDisagreement,
-          proEvidence: debateResult.proEvidence,
-          antiEvidence: debateResult.antiEvidence,
-          recommendation: debateResult.recommendation,
-          recommendationReason: debateResult.recommendationReason,
-        }),
-        rawOutput: debateResult.recommendationReason,
-        summary: debateResult.recommendationReason?.slice(0, 4000) ?? null,
-        referencesJson: JSON.stringify(debateResult.proEvidence?.slice(0, 20) ?? []),
-      },
-    });
+        serviceName: 'causal-tree',
+        model: judgeModel,
+      });
 
-    // ── POST-DEBATE PREDICTION: Final synthesis via MiroFish ──
-    result.stages.push('MIROFISH_PREDICT');
-    const mirofishModel = routing.mirofishPredictionModel || 'free_ling';
-    await emitStage({
-      stage: 'MIROFISH_PREDICT',
-      message: `Running post-debate prediction via MiroFish (${mirofishModel})`,
-      provider: 'system',
-      serviceName: 'mirofish-predict',
-      model: mirofishModel,
-    });
+      const causalModel = routing.analystDeepThinkLlm || routing.judgeModel || 'paper_proglm';
+      let causalAggregation: import('@/lib/engine/causal-tree').CausalTreeAggregation | null = null;
 
-    let postDebatePrediction: import('@/lib/engine/post-debate-prediction').PostDebatePredictionResult | null = null;
-    try {
-      postDebatePrediction = await runPostDebatePrediction(debateResult, researchContext, mirofishModel);
-      result.postDebatePrediction = postDebatePrediction;
+      try {
+        const { rootId, tree } = await causalTreeEngine.decomposeThesis(
+          market.title,
+          researchRun.id,
+          causalModel,
+        );
 
+        const rootNode = await db.causalTreeNode.findUnique({
+          where: { id: rootId },
+          include: { children: true },
+        });
+
+        if (rootNode) {
+          const evidenceSections = researchContext.split('\n\n').slice(0, rootNode.children.length * 2 || 6);
+          for (let i = 0; i < rootNode.children.length && i < evidenceSections.length; i++) {
+            await causalTreeEngine.researchNode(
+              rootNode.children[i].id,
+              evidenceSections[i],
+              undefined,
+              0.6,
+              0.5,
+            );
+          }
+        }
+
+        await db.agentOutput.create({
+          data: {
+            researchRunId: researchRun.id,
+            role: 'CAUSAL_TREE',
+            stage: 'JUDGE',
+            serviceName: 'causal-tree',
+            provider: 'system',
+            modelUsed: causalModel,
+            output: JSON.stringify({ tree, rootId }),
+            summary: `Causal tree: ${tree.root.label} with ${rootNode?.children.length ?? 0} factors`,
+          },
+        });
+
+        causalAggregation = await causalTreeEngine.aggregateTree(rootId);
+
+        await db.agentOutput.create({
+          data: {
+            researchRunId: researchRun.id,
+            role: 'CAUSAL_AGGREGATOR',
+            stage: 'JUDGE',
+            serviceName: 'causal-tree',
+            provider: 'system',
+            modelUsed: causalModel,
+            output: JSON.stringify(causalAggregation),
+            summary: `Aggregated probability: ${(causalAggregation.finalProbability * 100).toFixed(1)}% from ${causalAggregation.leafCount} leaves`,
+          },
+        });
+      } catch (e) {
+        console.error('[Pipeline] Causal tree failed:', e);
+        await emitStage({
+          stage: 'JUDGE',
+          type: 'failed',
+          message: `Causal tree failed: ${String(e)}`,
+          provider: 'system',
+          serviceName: 'causal-tree',
+          failureReason: String(e),
+        });
+      }
+
+      judgeProbability = causalAggregation?.finalProbability ?? 0.5;
+      judgeConfidence = causalAggregation?.confidence ?? 0.3;
+      judgeUncertainty = 1 - judgeConfidence;
+    } else {
+      // ── DEBATE ARENA: Multi-model debate on evidence ──
+      result.stages.push('DEBATE');
+      await emitStage({
+        stage: 'JUDGE',
+        message: 'Running judge debate arena',
+        provider: 'system',
+        serviceName: 'debate-arena',
+        model: judgeModel,
+      });
+      const debateResult = await runDebateArena(market.title, impliedProb, researchContext, routing);
+      result.debateResult = debateResult;
+
+      for (const round of debateResult.rounds) {
+        await db.agentOutput.create({
+          data: {
+            researchRunId: researchRun.id,
+            role: `DEBATE_ROUND_${round.round}_BULL`,
+            stage: 'JUDGE',
+            serviceName: 'debate-arena',
+            provider: 'system',
+            modelUsed: round.bullModel,
+            output: JSON.stringify({ argument: round.bullArgument, probability: round.bullProbability, confidence: round.bullConfidence }),
+            rawOutput: round.bullArgument,
+            summary: round.bullArgument.slice(0, 4000),
+          },
+        });
+        await db.agentOutput.create({
+          data: {
+            researchRunId: researchRun.id,
+            role: `DEBATE_ROUND_${round.round}_BEAR`,
+            stage: 'JUDGE',
+            serviceName: 'debate-arena',
+            provider: 'system',
+            modelUsed: round.bearModel,
+            output: JSON.stringify({ argument: round.bearArgument, probability: round.bearProbability, confidence: round.bearConfidence }),
+            rawOutput: round.bearArgument,
+            summary: round.bearArgument.slice(0, 4000),
+          },
+        });
+      }
+
+      const debateArbiterModel = getModelForStage('judge', routing) || 'paper_proglm';
       await db.agentOutput.create({
         data: {
           researchRunId: researchRun.id,
-          role: 'MIROFISH_PREDICT',
-          stage: 'MIROFISH_PREDICT',
-          serviceName: 'mirofish-predict',
-          provider: 'mirofish',
-          modelUsed: postDebatePrediction.modelUsed,
-          output: JSON.stringify(postDebatePrediction),
-          rawOutput: postDebatePrediction.summary,
-          summary: postDebatePrediction.summary?.slice(0, 4000) ?? null,
-          referencesJson: JSON.stringify(postDebatePrediction.keyInsights?.slice(0, 20) ?? []),
+          role: 'DEBATE_ARBITER',
+          stage: 'JUDGE',
+          serviceName: 'debate-arena',
+          provider: 'system',
+          modelUsed: debateArbiterModel,
+          output: JSON.stringify({
+            debateOutcome: debateResult.debateOutcome,
+            finalProbability: debateResult.finalProbability,
+            finalConfidence: debateResult.finalConfidence,
+            finalUncertainty: debateResult.finalUncertainty,
+            pointsOfAgreement: debateResult.pointsOfAgreement,
+            pointsOfDisagreement: debateResult.pointsOfDisagreement,
+            proEvidence: debateResult.proEvidence,
+            antiEvidence: debateResult.antiEvidence,
+            recommendation: debateResult.recommendation,
+            recommendationReason: debateResult.recommendationReason,
+          }),
+          rawOutput: debateResult.recommendationReason,
+          summary: debateResult.recommendationReason?.slice(0, 4000) ?? null,
+          referencesJson: JSON.stringify(debateResult.proEvidence?.slice(0, 20) ?? []),
         },
       });
-    } catch (e) {
-      console.error('[Pipeline] Post-debate prediction failed:', e);
+
+      // ── POST-DEBATE PREDICTION: Final synthesis via MiroFish ──
+      result.stages.push('MIROFISH_PREDICT');
+      const mirofishModel = routing.mirofishPredictionModel || 'free_ling';
       await emitStage({
         stage: 'MIROFISH_PREDICT',
-        message: `Post-debate prediction failed: ${String(e)}`,
+        message: `Running post-debate prediction via MiroFish (${mirofishModel})`,
         provider: 'system',
         serviceName: 'mirofish-predict',
-        failureReason: String(e),
+        model: mirofishModel,
       });
+
+      let postDebatePrediction: import('@/lib/engine/post-debate-prediction').PostDebatePredictionResult | null = null;
+      try {
+        postDebatePrediction = await runPostDebatePrediction(debateResult, researchContext, mirofishModel);
+        result.postDebatePrediction = postDebatePrediction;
+
+        await db.agentOutput.create({
+          data: {
+            researchRunId: researchRun.id,
+            role: 'MIROFISH_PREDICT',
+            stage: 'MIROFISH_PREDICT',
+            serviceName: 'mirofish-predict',
+            provider: 'mirofish',
+            modelUsed: postDebatePrediction.modelUsed,
+            output: JSON.stringify(postDebatePrediction),
+            rawOutput: postDebatePrediction.summary,
+            summary: postDebatePrediction.summary?.slice(0, 4000) ?? null,
+            referencesJson: JSON.stringify(postDebatePrediction.keyInsights?.slice(0, 20) ?? []),
+          },
+        });
+      } catch (e) {
+        console.error('[Pipeline] Post-debate prediction failed:', e);
+        await emitStage({
+          stage: 'MIROFISH_PREDICT',
+          message: `Post-debate prediction failed: ${String(e)}`,
+          provider: 'system',
+          serviceName: 'mirofish-predict',
+          failureReason: String(e),
+        });
+      }
+
+      judgeProbability = debateResult.finalProbability;
+      judgeConfidence = debateResult.finalConfidence;
+      judgeUncertainty = debateResult.finalUncertainty;
     }
 
-    // Mark research run as completed only AFTER all debate outputs are created
+    // Mark research run as completed only AFTER all judgment outputs are created
     await db.researchRun.update({
       where: { id: researchRun.id },
       data: { status: 'COMPLETED', completedAt: new Date() },
     });
+
+    // ── Phase 6 ENSEMBLE: Collect predictions, compute weighted ensemble, detect disagreement ──
+    let ensembleUncertaintyBoost = 0;
+    try {
+      const ensembleOutcome = await runEnsemblePipeline(marketId, candidate?.id ?? null, researchRun.id);
+      result['ensembleResult'] = ensembleOutcome.result;
+      result['ensembleDisagreement'] = ensembleOutcome.disagreement;
+
+      if (ensembleOutcome.disagreement.level === 'HIGH') {
+        ensembleUncertaintyBoost = 0.15;
+        result.stages.push('ENSEMBLE_HIGH_DISAGREEMENT');
+        await emitStage({
+          stage: 'JUDGE',
+          type: 'progress',
+          message: `Ensemble model disagreement: ${ensembleOutcome.disagreement.summary}`,
+          provider: 'system',
+          serviceName: 'ensemble-engine',
+          model: null,
+        });
+      }
+    } catch (e) {
+      console.error('[Pipeline] Ensemble pipeline failed (non-fatal):', e);
+    }
 
     if (candidate) {
       await db.tradeCandidate.update({
@@ -1082,10 +1215,10 @@ export async function runPipelineForMarket(
     const categoryExposureBlocked = actualCategoryExposure >= strategyCategoryLimit;
 
     const riskInput = {
-      impliedProbability: impliedProb,
-      judgeProbability: debateResult.finalProbability,
-      confidence: debateResult.finalConfidence,
-      uncertainty: debateResult.finalUncertainty,
+      impliedProbability: biasAdjustedProb,
+      judgeProbability,
+      confidence: judgeConfidence,
+      uncertainty: judgeUncertainty,
       fees: 0.02,
       slippage: 0.01,
       venue: market.venue as 'POLYMARKET' | 'KALSHI' | 'SX_BET' | 'MANIFOLD',
@@ -1117,11 +1250,11 @@ export async function runPipelineForMarket(
         side: riskResult.side ?? null,
         reasonCode: riskResult.reasonCode ?? null,
         reason: riskResult.reason,
-        judgeProbability: debateResult.finalProbability,
+        judgeProbability,
         impliedProb,
         edge: riskResult.edge,
-        confidence: debateResult.finalConfidence,
-        uncertainty: debateResult.finalUncertainty,
+        confidence: judgeConfidence,
+        uncertainty: Math.min(1, judgeUncertainty + ensembleUncertaintyBoost),
         maxSize: riskResult.maxSize,
         urgency: riskResult.urgency,
         fees: riskResult.fees,
@@ -1131,11 +1264,49 @@ export async function runPipelineForMarket(
     });
 
     if (candidate) {
+      const freshnessMinutes = Math.max(0, (Date.now() - new Date(market.lastSeenAt).getTime()) / 60000);
+      const catPriority = ['crypto', 'economics'].includes(market.category) ? 3 : ['technology', 'politics'].includes(market.category) ? 2 : 0;
+      const vol24h = snapshot?.volume24h ?? 0;
+
+      const enrichedScore = computeCandidateScore({
+        liquidity,
+        spread: snapshot?.spread ?? 0.05,
+        volume24h: vol24h,
+        freshnessMinutes,
+        priceMovePercent: 0,
+        categoryPriority: catPriority,
+        rawEdge: riskResult.edge,
+        adjustedEdge: riskResult.edge,
+        biasAdjustedProb,
+        confidence: judgeConfidence,
+      });
+
       await db.tradeCandidate.update({
         where: { id: candidate.id },
-        data: { stage: 'DECIDED' },
+        data: {
+          stage: 'DECIDED',
+          candidateScore: enrichedScore.totalScore,
+          adjustedEdge: riskResult.edge,
+        },
       });
+
+      const latestHistorical = await db.historicalSnapshot.findFirst({
+        where: { marketId },
+        orderBy: { snapshotTime: 'desc' },
+      });
+
+      if (latestHistorical) {
+        await db.historicalSnapshot.update({
+          where: { id: latestHistorical.id },
+          data: {
+            predictedProb: judgeProbability,
+            candidateScore: enrichedScore.totalScore,
+            walletSignalStrength: candidate.walletSignalScore,
+          },
+        });
+      }
     }
+
 
     if (shouldCreateWatchlistEntry(riskResult.action as 'BID' | 'WATCH' | 'SKIP')) {
       await db.watchlist.create({
@@ -1160,7 +1331,7 @@ export async function runPipelineForMarket(
       const orderSize = resolvePaperExecutionSize({
         adjustedSize: riskResult.adjustedSize,
         maxSize: riskResult.maxSize,
-        fallbackSize: computePositionSize(riskResult.edge, debateResult.finalConfidence, debateResult.finalUncertainty),
+        fallbackSize: computePositionSize(riskResult.edge, judgeConfidence, judgeUncertainty),
       });
 
       if (orderSize == null) {
@@ -1198,11 +1369,11 @@ export async function runPipelineForMarket(
           marketId,
           decisionId: decision.id,
           predictionType: 'BID',
-          predictedProb: debateResult.finalProbability,
+          predictedProb: judgeProbability,
           predictedSide: riskResult.side ?? 'YES',
           impliedProb,
           edge: riskResult.edge,
-          confidence: debateResult.finalConfidence,
+          confidence: judgeConfidence,
           stake: orderSize,
           entryPrice: orderPrice,
         });
@@ -1230,8 +1401,8 @@ export async function runPipelineForMarket(
 
 try {
        await writeResearchToQdrant(marketId, market.title, researchContext, {
-         judgeProbability: debateResult.finalProbability,
-         confidence: debateResult.finalConfidence,
+         judgeProbability,
+         confidence: judgeConfidence,
          action: riskResult.action,
          side: riskResult.side,
          category: market.category,

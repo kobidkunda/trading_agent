@@ -139,9 +139,14 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
     }
 
     // Create or update candidate
+    const acceptedCriteriaStr = score.acceptedCriteria.length > 0 ? score.acceptedCriteria.join(',') : null;
+    const rejectedCriteriaStr = score.rejectedCriteria.length > 0 ? score.rejectedCriteria.join(',') : null;
     const candidateData: Record<string, unknown> = {
       stage: action === 'FULL_RESEARCH' ? 'SCANNED' : 'SCANNED',
       candidateScore: score.totalScore,
+      acceptedCriteria: acceptedCriteriaStr,
+      rejectedCriteria: rejectedCriteriaStr,
+      skipReason: score.skipReason || null,
       lastProcessedAt: new Date(),
     };
 
@@ -156,6 +161,9 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
           marketId: market.id,
           stage: 'SCANNED',
           candidateScore: score.totalScore,
+          acceptedCriteria: acceptedCriteriaStr,
+          rejectedCriteria: rejectedCriteriaStr,
+          skipReason: score.skipReason || null,
           sourceScanRunId: scanRun?.id ?? null,
         },
       });

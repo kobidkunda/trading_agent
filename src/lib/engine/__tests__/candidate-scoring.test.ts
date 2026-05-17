@@ -20,8 +20,11 @@ describe('candidate scoring', () => {
       alreadyProcessedPenalty: 15,
     };
 
-    expect(computeCandidateScore(weak).totalScore).toBeLessThan(50);
-    expect(classifyCandidateScore(computeCandidateScore(weak).totalScore)).toBe('SKIP');
+    const result = computeCandidateScore(weak);
+    expect(result.totalScore).toBeLessThan(50);
+    expect(classifyCandidateScore(result.totalScore)).toBe('SKIP');
+    expect(result.rejectedCriteria.length).toBeGreaterThan(0);
+    expect(result.skipReason).toContain('Score too low');
   });
 
   it('rewards fresh liquid markets with good spreads', () => {
@@ -37,8 +40,11 @@ describe('candidate scoring', () => {
       alreadyProcessedPenalty: 0,
     };
 
-    expect(computeCandidateScore(strong).totalScore).toBeGreaterThanOrEqual(85);
-    expect(classifyCandidateScore(computeCandidateScore(strong).totalScore)).toBe('TRIAGE_AND_RESEARCH');
+    const result = computeCandidateScore(strong);
+    expect(result.totalScore).toBeGreaterThanOrEqual(85);
+    expect(classifyCandidateScore(result.totalScore)).toBe('TRIAGE_AND_RESEARCH');
+    expect(result.acceptedCriteria).toContain('LIQUIDITY');
+    expect(result.acceptedCriteria).toContain('SPREAD');
   });
 
   it('classifies elite scores for full research and judge path', () => {
@@ -54,7 +60,105 @@ describe('candidate scoring', () => {
       alreadyProcessedPenalty: 0,
     };
 
-    expect(computeCandidateScore(elite).totalScore).toBeGreaterThanOrEqual(90);
-    expect(classifyCandidateScore(computeCandidateScore(elite).totalScore)).toBe('FULL_RESEARCH');
+    const result = computeCandidateScore(elite);
+    expect(result.totalScore).toBeGreaterThanOrEqual(90);
+    expect(classifyCandidateScore(result.totalScore)).toBe('FULL_RESEARCH');
+    expect(result.skipReason).toBe('');
+    expect(result.rejectedCriteria.length).toBe(0);
+  });
+
+  it('incorporates signal scores (edge, confidence, wallet) and penalties', () => {
+    const signal: CandidateScoreInput = {
+      liquidity: 100000,
+      spread: 0.01,
+      volume24h: 100000,
+      freshnessMinutes: 5,
+      priceMovePercent: 3,
+      categoryPriority: 5,
+      adjustedEdge: 0.06,
+      confidence: 0.8,
+      walletSignalScore: 15,
+      relatedMarketSignalScore: 10,
+      sourceQuality: 70,
+      resolutionClarity: 60,
+      duplicatePenalty: 0,
+      stalePenalty: 0,
+      alreadyProcessedPenalty: 0,
+      uncertaintyPenalty: 0.1,
+      contradictionPenalty: 0.2,
+      oracleRiskLevel: 'MEDIUM',
+      correlationRiskPenalty: 5,
+      manipulationRiskPenalty: 5,
+    };
+
+    const result = computeCandidateScore(signal);
+    expect(result.edgeScore).toBeGreaterThan(0);
+    expect(result.confidenceScore).toBeGreaterThan(0);
+    expect(result.walletSignalScore).toBeGreaterThan(0);
+    expect(result.relatedMarketSignalScore).toBeGreaterThan(0);
+    expect(result.oracleRiskPenalty).toBe(3);
+    expect(result.totalScore).toBeGreaterThan(50);
+    expect(result.acceptedCriteria).toContain('EDGE');
+    expect(result.acceptedCriteria).toContain('CONFIDENCE');
+    expect(result.rejectedCriteria).toContain('ORACLE_RISK');
+  });
+
+  it('handles BLOCK-level oracle risk with severe penalty', () => {
+    const block: CandidateScoreInput = {
+      liquidity: 200000,
+      spread: 0.005,
+      volume24h: 200000,
+      freshnessMinutes: 1,
+      priceMovePercent: 5,
+      categoryPriority: 10,
+      oracleRiskLevel: 'BLOCK',
+      duplicatePenalty: 0,
+      stalePenalty: 0,
+      alreadyProcessedPenalty: 0,
+    };
+
+    const result = computeCandidateScore(block);
+    expect(result.oracleRiskPenalty).toBe(20);
+    expect(result.rejectedCriteria).toContain('ORACLE_RISK');
+  });
+
+  it('returns acceptedCriteria and rejectedCriteria arrays', () => {
+    const input: CandidateScoreInput = {
+      liquidity: 500,
+      spread: 0.15,
+      volume24h: 100,
+      freshnessMinutes: 100,
+      priceMovePercent: 0.1,
+      categoryPriority: 0,
+      duplicatePenalty: 10,
+      stalePenalty: 10,
+      alreadyProcessedPenalty: 20,
+    };
+
+    const result = computeCandidateScore(input);
+    expect(result.acceptedCriteria).toEqual([]);
+    expect(result.rejectedCriteria).toContain('DUPLICATE');
+    expect(result.rejectedCriteria).toContain('STALE');
+    expect(result.rejectedCriteria).toContain('ALREADY_PROCESSED');
+    expect(result.skipReason).toBeTruthy();
+  });
+
+  it('handles orderbook quality as penalty', () => {
+    const poorOrderbook: CandidateScoreInput = {
+      liquidity: 100000,
+      spread: 0.01,
+      volume24h: 100000,
+      freshnessMinutes: 5,
+      priceMovePercent: 3,
+      categoryPriority: 5,
+      orderbookQuality: 3,
+      duplicatePenalty: 0,
+      stalePenalty: 0,
+      alreadyProcessedPenalty: 0,
+    };
+
+    const result = computeCandidateScore(poorOrderbook);
+    expect(result.orderbookQualityPenalty).toBeGreaterThan(5);
+    expect(result.rejectedCriteria).toContain('ORDERBOOK_QUALITY');
   });
 });

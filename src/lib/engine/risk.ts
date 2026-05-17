@@ -5,6 +5,8 @@ import {
   OrderSide,
   StrategySettings,
   StageServiceMapping,
+  ClusterExposure,
+  TailRiskWarning,
 } from '@/lib/types';
 
 const MAX_POSITION_SIZE = 5000;
@@ -18,8 +20,18 @@ const MAX_DAILY_EXPOSURE = 50000;
 const MAX_CATEGORY_EXPOSURE = 10000;
 const MIN_LIQUIDITY = 1000;
 const MAX_SPREAD = 0.05;
+const MAX_CLUSTER_UTILIZATION = 0.8;
+const MAX_CLUSTER_OVERLAP = 3;
+const TAIL_RISK_MAX_SEEKED = 3;
 
-export function computeRisk(input: RiskEngineInput): RiskEngineOutput {
+export function computeRisk(
+  input: RiskEngineInput,
+  clusterOpts?: {
+    clusterExposures?: ClusterExposure[];
+    tailRiskWarnings?: TailRiskWarning[];
+    clusterOverlapCount?: number;
+  },
+): RiskEngineOutput {
   const minLiquidity = input.minLiquidity ?? MIN_LIQUIDITY;
   const maxSpread = input.maxSpread ?? MAX_SPREAD;
   const maxDailyExposure = input.maxDailyExposure ?? MAX_DAILY_EXPOSURE;
@@ -42,6 +54,48 @@ export function computeRisk(input: RiskEngineInput): RiskEngineOutput {
 
   if (input.categoryExposure >= maxCategoryExposure) {
     return skip('CORRELATED_RISK', `Category exposure ${input.categoryExposure} reached limit ${maxCategoryExposure}`, edge, input);
+  }
+
+  // ── Phase 10: Cluster exposure limit check ──
+  if (clusterOpts?.clusterExposures?.length) {
+    for (const ce of clusterOpts.clusterExposures) {
+      if (ce.utilization >= MAX_CLUSTER_UTILIZATION) {
+        return skip(
+          'CLUSTER_EXPOSURE_EXCEEDED',
+          `Cluster "${ce.clusterKey}" (${ce.clusterType}) utilization ${(ce.utilization * 100).toFixed(0)}% exceeds ${(MAX_CLUSTER_UTILIZATION * 100).toFixed(0)}% limit`,
+          edge,
+          input,
+        );
+      }
+    }
+  }
+
+  // ── Phase 10: Correlation cluster overlap check ──
+  if (clusterOpts?.clusterOverlapCount != null && clusterOpts.clusterOverlapCount >= MAX_CLUSTER_OVERLAP) {
+    return skip(
+      'CORRELATION_CLUSTER_OVERLAP',
+      `Market belongs to ${clusterOpts.clusterOverlapCount} overlapping risk clusters (max ${MAX_CLUSTER_OVERLAP})`,
+      edge,
+      input,
+    );
+  }
+
+  // ── Phase 10: Tail-risk check ──
+  if (clusterOpts?.tailRiskWarnings?.length) {
+    const criticalWarnings = clusterOpts.tailRiskWarnings.filter(
+      w => w.severity === 'CRITICAL' || w.severity === 'HIGH',
+    );
+    if (criticalWarnings.length > 0) {
+      const top = criticalWarnings[0];
+      if (top.winsWiped >= TAIL_RISK_MAX_SEEKED) {
+        return skip(
+          'TAIL_RISK_HIGH',
+          `Tail-risk critical: 1 loss on "${top.marketTitle ?? top.marketId}" ($${top.lossAmount.toFixed(0)}) wipes ${top.winsWiped} wins`,
+          edge,
+          input,
+        );
+      }
+    }
   }
 
   if (input.catalystTiming === 'CLOSE') {

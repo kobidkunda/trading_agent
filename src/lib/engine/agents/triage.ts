@@ -7,6 +7,7 @@ export interface TriageOutput {
   status: 'RELEVANT' | 'IRRELEVANT' | 'AMBIGUOUS';
   reason: string;
   worthResearch: boolean;
+  score: number;
 }
 
 export async function runTriageAgent(
@@ -43,6 +44,7 @@ export async function runTriageAgent(
       status: data.status || 'AMBIGUOUS',
       reason: data.reason || 'No reason provided',
       worthResearch: data.worthResearch ?? data.status === 'RELEVANT',
+      score: data.score || 0,
     };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -53,6 +55,7 @@ export async function runTriageAgent(
       status: 'AMBIGUOUS',
       reason: `Triage failed: ${errorMsg}`,
       worthResearch: false,
+      score: 0,
     };
   }
 }

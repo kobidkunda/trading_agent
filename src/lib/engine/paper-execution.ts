@@ -68,11 +68,17 @@ export function resolvePaperFill(params: {
   price: number;
   fillModel: 'INSTANT' | 'BOOK_AWARE';
   liquidity: number;
+  fillProbability?: number | null;
+  priceImpact?: number | null;
+  bidDepth?: number | null;
+  askDepth?: number | null;
+  spread?: number | null;
 }): {
   filledSize: number;
   avgFillPrice: number;
   remainingSize: number;
   isFullyFilled: boolean;
+  lifecycleStatus: 'SUBMITTED' | 'PARTIALLY_FILLED' | 'FAILED';
 } {
   if (params.fillModel === 'INSTANT') {
     return {
@@ -80,19 +86,62 @@ export function resolvePaperFill(params: {
       avgFillPrice: params.price,
       remainingSize: 0,
       isFullyFilled: true,
+      lifecycleStatus: 'PARTIALLY_FILLED',
     };
   }
 
-  // BOOK_AWARE: simulate partial fills based on liquidity
-  const fillRatio = Math.min(1, params.liquidity / (params.size * params.price * 100));
-  const filledSize = Math.round(params.size * fillRatio * 100) / 100;
-  const slippage = params.price * (1 - fillRatio) * 0.01;
-  const avgFillPrice = params.price + slippage;
+  const fillProb = params.fillProbability ?? null;
+
+  if (fillProb === null) {
+    // Fallback: use old liquidity-based model when fillProbability unavailable
+    const fillRatio = Math.min(1, params.liquidity / (params.size * params.price * 100));
+    const filledSize = Math.round(params.size * fillRatio * 100) / 100;
+    const slippage = params.price * (1 - fillRatio) * 0.01;
+    const avgFillPrice = params.price + slippage;
+    const isFullyFilled = filledSize >= params.size;
+
+    return {
+      filledSize: Math.max(0, filledSize),
+      avgFillPrice: Math.max(0, avgFillPrice),
+      remainingSize: Math.max(0, params.size - filledSize),
+      isFullyFilled,
+      lifecycleStatus: isFullyFilled ? 'PARTIALLY_FILLED' : 'FAILED',
+    };
+  }
+
+  if (fillProb < 0.20) {
+    return {
+      filledSize: 0,
+      avgFillPrice: 0,
+      remainingSize: params.size,
+      isFullyFilled: false,
+      lifecycleStatus: 'FAILED',
+    };
+  }
+
+  if (fillProb < 0.50) {
+    const partialRatio = fillProb * 1.2;
+    const filledSize = Math.round(params.size * partialRatio * 100) / 100;
+    const impactCost = (params.priceImpact ?? 0) * 0.5;
+    const avgFillPrice = params.price + impactCost;
+
+    return {
+      filledSize: Math.max(0, filledSize),
+      avgFillPrice: Math.max(0, avgFillPrice),
+      remainingSize: Math.max(0, params.size - filledSize),
+      isFullyFilled: false,
+      lifecycleStatus: 'PARTIALLY_FILLED',
+    };
+  }
+
+  const impactCost = params.priceImpact ?? 0;
+  const avgFillPrice = params.price + impactCost;
 
   return {
-    filledSize: Math.max(0, filledSize),
+    filledSize: params.size,
     avgFillPrice: Math.max(0, avgFillPrice),
-    remainingSize: Math.max(0, params.size - filledSize),
-    isFullyFilled: filledSize >= params.size,
+    remainingSize: 0,
+    isFullyFilled: true,
+    lifecycleStatus: 'PARTIALLY_FILLED',
   };
 }

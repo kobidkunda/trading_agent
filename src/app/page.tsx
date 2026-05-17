@@ -16,6 +16,19 @@ import {
   FlaskConical,
   Database,
   Network,
+  Target,
+  Wallet,
+  GitCompare,
+  BarChart3,
+  Shield,
+  ScrollText,
+  CheckCircle,
+  ListOrdered,
+  Gauge,
+  TrendingUp,
+  History,
+  SlidersHorizontal,
+  Cpu,
 } from 'lucide-react';
 import { useTradingStore, type PageView } from '@/store/trading-store';
 import { Button } from '@/components/ui/button';
@@ -41,6 +54,20 @@ import { PipelineSettings } from '@/components/trading/PipelineSettings';
 import { VectorDB } from '@/components/trading/VectorDB';
 import { SystemMap } from '@/components/trading/SystemMap';
 import { ResearchProvider } from '@/components/trading/ResearchProvider';
+import { CandidatesDashboard } from '@/components/trading/CandidatesDashboard';
+import { APlusSignalsDashboard } from '@/components/trading/APlusSignalsDashboard';
+import { CalibrationDashboard } from '@/components/trading/CalibrationDashboard';
+import { RiskDashboard } from '@/components/trading/RiskDashboard';
+import { PaperOrdersDashboard } from '@/components/trading/PaperOrdersDashboard';
+import { OutcomesDashboard } from '@/components/trading/OutcomesDashboard';
+import { ResearchQueueDashboard } from '@/components/trading/ResearchQueueDashboard';
+import { WalletsDashboard } from '@/components/trading/WalletsDashboard';
+import { RelatedMarketsDashboard } from '@/components/trading/RelatedMarketsDashboard';
+import { OrderbookDashboard } from '@/components/trading/OrderbookDashboard';
+import { PaperBetsDashboard } from '@/components/trading/PaperBetsDashboard';
+import { BacktestsDashboard } from '@/components/trading/BacktestsDashboard';
+import { StrategyOptimizerDashboard } from '@/components/trading/StrategyOptimizerDashboard';
+import { AppSettings } from '@/components/trading/AppSettings';
 
 interface NavItem {
   id: PageView;
@@ -53,10 +80,24 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'strategy', label: 'Strategy Hub', icon: Settings },
   { id: 'credentials', label: 'Credentials', icon: Key },
   { id: 'triage', label: 'Market Triage', icon: ScanSearch },
+  { id: 'candidates', label: 'Candidates', icon: Target },
+  { id: 'aPlusSignals', label: 'A+ Signals', icon: TrendingUp },
   { id: 'research', label: 'Research Ledger', icon: BookOpen },
+  { id: 'researchQueue', label: 'Research Queue', icon: ListOrdered },
   { id: 'prompts', label: 'Prompt Studio', icon: FileText },
+  { id: 'wallets', label: 'Wallets', icon: Wallet },
+  { id: 'relatedMarkets', label: 'Related Markets', icon: GitCompare },
+  { id: 'orderbook', label: 'Orderbook', icon: Gauge },
+  { id: 'risk', label: 'Risk', icon: Shield },
+  { id: 'paperOrders', label: 'Paper Orders', icon: ScrollText },
+  { id: 'paperBets', label: 'Paper Bets', icon: BarChart3 },
+  { id: 'outcomes', label: 'Outcomes', icon: CheckCircle },
+  { id: 'calibration', label: 'Calibration', icon: BarChart3 },
+  { id: 'backtests', label: 'Backtests', icon: History },
+  { id: 'optimizer', label: 'Optimizer', icon: Cpu },
   { id: 'live', label: 'Live Status', icon: Radio },
   { id: 'health', label: 'System Health', icon: Activity },
+  { id: 'settings', label: 'Settings', icon: SlidersHorizontal },
   { id: 'vectorDb', label: 'Vector DB', icon: Database },
   { id: 'pipelineSettings', label: 'Pipeline', icon: Settings },
   { id: 'map', label: 'System Map', icon: Network },
@@ -336,14 +377,42 @@ function PageContent() {
       return <CredentialManager />;
     case 'triage':
       return <MarketTriage />;
+    case 'candidates':
+      return <CandidatesDashboard />;
+    case 'aPlusSignals':
+      return <APlusSignalsDashboard />;
     case 'research':
       return <ResearchLedger />;
+    case 'researchQueue':
+      return <ResearchQueueDashboard />;
     case 'prompts':
       return <PromptStudio />;
+    case 'wallets':
+      return <WalletsDashboard />;
+    case 'relatedMarkets':
+      return <RelatedMarketsDashboard />;
+    case 'orderbook':
+      return <OrderbookDashboard />;
+    case 'risk':
+      return <RiskDashboard />;
+    case 'paperOrders':
+      return <PaperOrdersDashboard />;
+    case 'paperBets':
+      return <PaperBetsDashboard />;
+    case 'outcomes':
+      return <OutcomesDashboard />;
+    case 'calibration':
+      return <CalibrationDashboard />;
+    case 'backtests':
+      return <BacktestsDashboard />;
+    case 'optimizer':
+      return <StrategyOptimizerDashboard />;
     case 'live':
       return <LiveStatus />;
     case 'health':
       return <SystemHealth />;
+    case 'settings':
+      return <AppSettings />;
     case 'vectorDb':
       return <VectorDB />;
     case 'pipelineSettings':

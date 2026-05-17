@@ -48,6 +48,13 @@ model Market {
   resolutionTime DateTime?
   firstSeenAt   DateTime @default(now())
   lastSeenAt    DateTime @default(now())
+  lastSnapshotAt    DateTime?
+  latestPrice       Float?
+  latestSpread      Float?
+  latestLiquidity   Float?
+  duplicateOf       String?
+  duplicateStatus   String?
+  lastResearchAt    DateTime?
   isActive      Boolean  @default(true)
   isClosed      Boolean  @default(false)
   isResolved    Boolean  @default(false)
@@ -67,11 +74,14 @@ model Market {
   outcomes         Outcome[]
   postmortems Postmortem[]
   paperBets PaperBet[]
-
-  @@unique([venue, externalId])
-  @@index([normalizedTitle])
-  @@index([titleHash])
-  @@index([lastSeenAt])
+  walletTrades WalletTrade[]
+  ensemblePredictions EnsemblePrediction[]
+  relatedAsA RelatedMarket[] @relation("RelatedA")
+  relatedAsB RelatedMarket[] @relation("RelatedB")
+  orderbookSnapshots OrderbookSnapshot[]
+  clusterMarketLinks ClusterMarketLink[]
+  oracleCheck OracleCheck?
+  historicalSnapshots HistoricalSnapshot[]
 }
 
 model MarketSnapshot {
@@ -132,6 +142,26 @@ model VenueCursor {
   updatedAt   DateTime @updatedAt
 }
 
+model HistoricalSnapshot {
+  id              String   @id @default(cuid())
+  marketId        String
+  market          Market   @relation(fields: [marketId], references: [id])
+  price           Float
+  impliedProb     Float
+  liquidity       Float
+  spread          Float
+  volume24h       Float    @default(0)
+  bestBid         Float?
+  bestAsk         Float?
+  snapshotTime    DateTime
+  predictedProb   Float?
+  walletSignalStrength Float?
+  candidateScore  Float?
+  createdAt       DateTime @default(now())
+
+  @@index([marketId, snapshotTime])
+}
+
 // ============ TRADE CANDIDATES ============
 
 model TradeCandidate {
@@ -152,11 +182,26 @@ model TradeCandidate {
   sourceScanRunId String?
   sourceScanRun  ScanRun? @relation(fields: [sourceScanRunId], references: [id])
   candidateScore Float?
+  adjustedEdge        Float?
+  rawEdge             Float?
+  biasAdjustedProb    Float?
+  walletSignalScore   Float?
+  relatedMarketSignal Float?
+  oracleRiskPenalty   Float?
+  correlationRiskPenalty Float?
+  manipulationRiskPenalty Float?
+  uncertaintyPenalty  Float?
+  contradictionPenalty Float?
+  acceptedCriteria    String?
+  rejectedCriteria    String?
+  skipReason          String?
+  paperReturn         Float?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   decisions      Decision[]
   researchRuns   ResearchRun[]
+  ensemblePredictions EnsemblePrediction[]
 
   @@unique([marketId])
   @@index([stage, nextEligibleAt])
@@ -177,6 +222,19 @@ model CandidateRun {
   duplicatePenalty       Float     @default(0)
   stalePenalty           Float     @default(0)
   alreadyProcessedPenalty Float    @default(0)
+  edgeScore               Float    @default(0)
+  confidenceScore         Float    @default(0)
+  sourceQualityScore      Float    @default(0)
+  resolutionClarityScore  Float    @default(0)
+  recencyScore            Float    @default(0)
+  categoryPriorityScore   Float    @default(0)
+  walletSignalScore       Float    @default(0)
+  relatedMarketSignalScore Float   @default(0)
+  uncertaintyPenalty      Float    @default(0)
+  contradictionPenalty    Float    @default(0)
+  oracleRiskPenalty       Float    @default(0)
+  correlationRiskPenalty  Float    @default(0)
+  manipulationRiskPenalty Float    @default(0)
   decision               String?
   reason                 String?
   nextEligibleAt         DateTime?
@@ -202,6 +260,7 @@ model ResearchRun {
 
   sources      ResearchSource[]
   agentOutputs AgentOutput[]
+  causalTreeNodes CausalTreeNode[]
 }
 
 model ResearchSource {
@@ -249,7 +308,7 @@ model Decision {
   market          Market   @relation(fields: [marketId], references: [id])
   candidateId     String?
   candidate       TradeCandidate? @relation(fields: [candidateId], references: [id])
-  action          String   // BUY, SKIP
+  action          String   // BID, SKIP, WATCH
   side            String?  // YES, NO
   reasonCode      String?  // LOW_LIQUIDITY, WIDE_SPREAD, etc.
   reason          String?
@@ -265,10 +324,12 @@ model Decision {
   mode            TradingMode @default(PAPER)
   dataSource      DataSource  @default(REAL)
   executionMode   ExecutionMode @default(SIMULATED)
-  dryRun Boolean @default(true)
-  paperBet PaperBet?
+  dryRun          Boolean @default(true)
+  brierScore      Float?
+  paperBet        PaperBet?
   watchlistEntries Watchlist[]
-  createdAt DateTime @default(now())
+  createdAt       DateTime @default(now())
+
 }
 
 model Watchlist {
@@ -304,6 +365,9 @@ model Order {
   remainingSize Float    @default(0)
   avgFillPrice  Float?
   failureReason String?
+  spreadCost      Float?
+  slippageCost    Float?
+  estimatedFillCost Float?
   status        String   @default("PENDING") // PENDING, SUBMITTED, PARTIAL, FILLED, CANCELLED, FAILED
   retryCount    Int      @default(0)
   submittedAt   DateTime?
@@ -409,6 +473,245 @@ model Postmortem {
   createdAt     DateTime @default(now())
 }
 
+// ── WALLET INTELLIGENCE (Phase 5) ──
+model Wallet {
+  id            String   @id @default(cuid())
+  address       String   @unique
+  label         String?
+  venue         String   @default("POLYMARKET")
+  totalTrades   Int      @default(0)
+  resolvedTrades Int     @default(0)
+  winRate       Float?
+  profitFactor  Float?
+  realizedPnl   Float    @default(0)
+  brierScore    Float?
+  categorySpecialization String?
+  avgPositionSize Float?
+  avgHoldTimeMs Int?
+  drawdown      Float?
+  recentPerformance Float?
+  avgEdge       Float?
+  rank          Int?
+  isActive      Boolean  @default(true)
+  lastActivityAt DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  trades WalletTrade[]
+}
+
+model WalletTrade {
+  id            String   @id @default(cuid())
+  walletId      String
+  wallet        Wallet   @relation(fields: [walletId], references: [id])
+  marketId      String?
+  market        Market?  @relation(fields: [marketId], references: [id])
+  externalMarketId String?
+  side          String
+  quantity      Float
+  price         Float
+  tradeTimestamp DateTime
+  category      String?
+  resolutionDate DateTime?
+  currentPosition Float?
+  realizedPnl   Float?
+  unrealizedPnl Float?
+  createdAt     DateTime @default(now())
+
+  @@index([walletId, tradeTimestamp])
+  @@index([marketId])
+}
+
+model EnsemblePrediction {
+  id              String   @id @default(cuid())
+  marketId        String
+  market          Market   @relation(fields: [marketId], references: [id])
+  candidateId     String?
+  candidate       TradeCandidate? @relation(fields: [candidateId], references: [id])
+  source          String
+  predictedProb   Float
+  confidence      Float?
+  weight          Float    @default(1.0)
+  brierScore      Float?
+  category        String?
+  createdAt       DateTime @default(now())
+
+  @@index([marketId, source])
+  @@index([candidateId])
+}
+
+model CorrelationCluster {
+  id            String   @id @default(cuid())
+  clusterType   String
+  clusterKey    String
+  label         String?
+  exposureLimit Float?
+  currentExposure Float  @default(0)
+  maxLoss       Float?
+  lossToWinRatio Float?
+  tailRiskLevel String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  marketLinks ClusterMarketLink[]
+
+  @@unique([clusterType, clusterKey])
+}
+
+model ClusterMarketLink {
+  id            String   @id @default(cuid())
+  clusterId     String
+  cluster       CorrelationCluster @relation(fields: [clusterId], references: [id])
+  marketId      String
+  market        Market   @relation(fields: [marketId], references: [id])
+  exposureWeight Float   @default(1.0)
+  createdAt     DateTime @default(now())
+
+  @@unique([clusterId, marketId])
+}
+
+model OracleCheck {
+  id              String   @id @default(cuid())
+  marketId        String
+  market          Market   @relation(fields: [marketId], references: [id])
+  oracleSource    String?
+  resolutionCriteria String?
+  resolutionDate  DateTime?
+  timezone        String?
+  ambiguousWording Boolean  @default(false)
+  humanDiscretion Boolean  @default(false)
+  appealProcess   Boolean  @default(false)
+  crossVenueMismatch Boolean @default(false)
+  riskLevel       String
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([marketId])
+}
+
+
+// ── CAUSAL TREE NODES (Phase 7) ──
+model CausalTreeNode {
+  id            String   @id @default(cuid())
+  researchRunId String
+  researchRun   ResearchRun @relation(fields: [researchRunId], references: [id])
+  parentId      String?
+  parent        CausalTreeNode? @relation("CausalTreeParent", fields: [parentId], references: [id])
+  children      CausalTreeNode[] @relation("CausalTreeParent")
+  label         String
+  probability   Float?
+  importanceWeight Float   @default(0)
+  evidence      String?
+  sourceQuality Float?
+  confidence    Float?
+  contradictions String?
+  lastUpdated   DateTime @default(now())
+
+  @@index([researchRunId])
+}
+
+
+// ── RELATED MARKETS (Phase 8) ──
+
+model RelatedMarket {
+  id              String   @id @default(cuid())
+  marketIdA       String
+  marketA         Market   @relation("RelatedA", fields: [marketIdA], references: [id])
+  marketIdB       String
+  marketB         Market   @relation("RelatedB", fields: [marketIdB], references: [id])
+  relationshipType String
+  priceInconsistency Float?
+  contradictionScore Float?
+  possibleEdge    Float?
+  alertText       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([marketIdA, marketIdB])
+  @@index([marketIdA])
+  @@index([marketIdB])
+}
+
+// ── STRATEGY CONFIG VERSIONS (Phase 16) ──
+model StrategyConfigVersion {
+  id              String   @id @default(cuid())
+  version         Int
+  name            String?
+  config          String
+  status          String   @default("DRAFT")
+  dateRangeStart  DateTime?
+  dateRangeEnd    DateTime?
+  sampleSize      Int?
+  aPlusWinRate    Float?
+  aPlusROI        Float?
+  brierScore      Float?
+  drawdown        Float?
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  backtestRuns    BacktestRun[]
+
+  @@unique([version])
+}
+
+// ── BACKTESTING (Phase 15) ──
+model BacktestRun {
+  id              String   @id @default(cuid())
+  strategyConfigId String?
+  strategyConfig  StrategyConfigVersion? @relation(fields: [strategyConfigId], references: [id])
+  status          String   @default("PENDING")
+  mode            String
+  periodStart     DateTime
+  periodEnd       DateTime
+  totalMarkets    Int      @default(0)
+  totalBets       Int      @default(0)
+  winRate         Float?
+  roi             Float?
+  brierScore      Float?
+  drawdown        Float?
+  sharpeRatio     Float?
+  result          String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+}
+
+
+model OrderbookSnapshot {
+  id            String   @id @default(cuid())
+  marketId      String
+  market        Market   @relation(fields: [marketId], references: [id])
+  bestBid       Float?
+  bestAsk       Float?
+  spread        Float?
+  bidDepth       Float?
+  askDepth       Float?
+  depthImbalance Float?
+  largeBidWall   Float?
+  largeAskWall   Float?
+  thinBookDanger Boolean  @default(false)
+  priceImpact    Float?
+  fillProbability Float?
+  recentMovement Float?
+  depthDecay     Float?
+  rawJson       String?
+  capturedAt     DateTime @default(now())
+
+  @@index([marketId, capturedAt])
+}
+
+
+// ── RESEARCH CHECKPOINT (Phase 13) ──
+model ResearchCheckpoint {
+  id              String   @id @default(cuid())
+  jobId           String   @unique
+  job             Job      @relation(fields: [jobId], references: [id])
+  state           String
+  lastHeartbeatAt DateTime @default(now())
+  createdAt       DateTime @default(now())
+}
+
 // ============ PROMPT TEMPLATES ============
 
 model PromptTemplate {
@@ -433,7 +736,7 @@ model Credential {
   service       String   // polymarket, kalshi, gemini, openai, qdrant, mem0, ollama, searxng
   label         String
   encryptedData String   // encrypted JSON of credentials
-  maskedPreview String?  // e.g. "pk_****abcd"
+  maskedPreview String?  // e.g. \"pk_****abcd\"
   serviceUrl    String?  // self-hosted service URL (e.g. http://localhost:6333)
   isActive      Boolean  @default(true)
   lastTestedAt  DateTime?
@@ -442,9 +745,6 @@ model Credential {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
-
-// ============ SETTINGS ============
-
 model Settings {
   id                  String   @id @default(cuid())
   key                  String   @unique
@@ -452,6 +752,7 @@ model Settings {
   description          String?
   updatedAt            DateTime @updatedAt
 }
+
 
 // ============ AUDIT LOGS ============
 
@@ -476,9 +777,17 @@ model Job {
   result        String?  // JSON
   retryCount    Int      @default(0)
   maxRetries    Int      @default(3)
+  nextRetryAt     DateTime?
+  lockExpiresAt   DateTime?
+  heartbeatAt     DateTime?
+  maxRuntimeSec   Int      @default(300)
+  dedupKey        String?
+  dependencyJobId String?
+  progress        Float?
   startedAt     DateTime?
   completedAt   DateTime?
   error         String?
+  researchCheckpoints ResearchCheckpoint[]
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
