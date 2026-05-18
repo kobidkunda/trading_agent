@@ -128,9 +128,11 @@ model ScanRun {
   marketsSkipped Int         @default(0)
   queuedCandidates Int       @default(0)
   errorMessage   String?
-  cursorStart    String?
-  cursorEnd      String?
-  metadataJson   String?
+  cursorStart       String?
+  cursorEnd         String?
+  marketsFetchedNew Int         @default(0)
+  repeatRate        Float?
+  metadataJson      String?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
   marketId       String?
@@ -186,7 +188,12 @@ model TradeCandidate {
   lockExpiresAt  DateTime?
   retryCount     Int      @default(0)
   lastError      String?
-  cooldownUntil  DateTime?
+  cooldownUntil      DateTime?
+  lastDecisionAt     DateTime?
+  lastResearchAt     DateTime?
+  lastExecutionAt    DateTime?
+  lastQueuedAt       DateTime?
+  reprocessReason    String?
   sourceScanRunId String?
   sourceScanRun  ScanRun? @relation(fields: [sourceScanRunId], references: [id])
   candidateScore Float?

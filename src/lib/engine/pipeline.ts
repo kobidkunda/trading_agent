@@ -23,6 +23,7 @@ import { runEnsemblePipeline } from '@/lib/engine/ensemble-probability';
 import { computeCandidateScore } from '@/lib/engine/candidate-scoring';
 import { computeClusterAwareExposure, computeExposureTotals } from '@/lib/engine/risk-exposure';
 import { buildWatchlistPayload, shouldCreateExecutionJob, shouldCreateWatchlistEntry } from '@/lib/engine/pipeline-decision-helpers';
+import { computeNextEligibleAt } from '@/lib/engine/candidate-dedupe';
 import { causalTreeEngine } from '@/lib/engine/causal-tree';
 import { getPolymarketMarkets } from '@/lib/venues/polymarket';
 import { getKalshiMarkets } from '@/lib/venues/kalshi';
@@ -1166,6 +1167,13 @@ export async function runPipelineForMarket(
       data: { status: 'COMPLETED', completedAt: new Date() },
     });
 
+    if (candidate) {
+      await db.tradeCandidate.update({
+        where: { id: candidate.id },
+        data: { lastResearchAt: new Date() },
+      });
+    }
+
     // ── Phase 6 ENSEMBLE: Collect predictions, compute weighted ensemble, detect disagreement ──
     let ensembleUncertaintyBoost = 0;
     let modelDisagreement = 0;
@@ -1459,6 +1467,8 @@ export async function runPipelineForMarket(
           stage: 'DECIDED',
           candidateScore: enrichedScore.totalScore,
           adjustedEdge: gatedRiskResult.edge,
+          lastDecisionAt: new Date(),
+          nextEligibleAt: computeNextEligibleAt(new Date(), 24),
         },
       });
 
@@ -1493,7 +1503,10 @@ export async function runPipelineForMarket(
       if (candidate) {
         await db.tradeCandidate.update({
           where: { id: candidate.id },
-          data: { stage: 'WATCHING' },
+          data: {
+            stage: 'WATCHING',
+            nextEligibleAt: computeNextEligibleAt(new Date(), 6),
+          },
         });
       }
     }
@@ -1576,7 +1589,11 @@ export async function runPipelineForMarket(
         if (candidate) {
           await db.tradeCandidate.update({
             where: { id: candidate.id },
-            data: { stage: 'EXECUTED' },
+            data: {
+              stage: 'EXECUTED',
+              cooldownUntil: computeNextEligibleAt(new Date(), 48),
+              lastExecutionAt: new Date(),
+            },
           });
         }
       }

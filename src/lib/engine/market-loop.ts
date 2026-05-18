@@ -1,7 +1,7 @@
 import { db } from '@/lib/db';
 import { runScanner } from '@/lib/engine/scanner';
 import { computeCandidateScore, classifyCandidateScore } from '@/lib/engine/candidate-scoring';
-import { shouldSkipCandidate, normalizeMarketTitle, createTitleHash } from '@/lib/engine/candidate-dedupe';
+import { shouldSkipCandidate, normalizeMarketTitle, createTitleHash, shouldReprocessMarket, computeNextEligibleAt } from '@/lib/engine/candidate-dedupe';
 import { getEffectiveTradingConfig } from '@/lib/engine/trading-settings';
 import { normalizeTradingMode } from '@/lib/engine/mode';
 import { classifyOrderTerminalState } from '@/lib/engine/order-tracker';
@@ -253,6 +253,31 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
       };
 
       const dedupeDecision = shouldSkipCandidate(dedupeInput);
+
+      let effectiveSkip = dedupeDecision.skip;
+      let effectiveSkipReason = dedupeDecision.reason;
+
+      if (dedupeDecision.skip && dedupeDecision.reason === 'COOLDOWN_ACTIVE' && existingCandidate) {
+        const reprocessCheck = shouldReprocessMarket({
+          existingCandidate: {
+            stage: existingCandidate.stage,
+            cooldownUntil: existingCandidate.cooldownUntil?.toISOString() ?? null,
+            nextEligibleAt: existingCandidate.nextEligibleAt?.toISOString() ?? null,
+            lastDecisionAt: existingCandidate.lastDecisionAt?.toISOString() ?? null,
+            lastExecutionAt: existingCandidate.lastExecutionAt?.toISOString() ?? null,
+            lastResearchAt: existingCandidate.lastResearchAt?.toISOString() ?? null,
+            walletSignalScore: existingCandidate.walletSignalScore,
+            retryCount: existingCandidate.retryCount,
+          },
+          priceChange: priceMovePercent,
+          priceChangeThreshold: 0.03,
+          now,
+        });
+        if (reprocessCheck.shouldReprocess) {
+          effectiveSkip = false;
+          effectiveSkipReason = null;
+        }
+      }
       const duplicatePenalty = existingCandidate ? 15 : 0;
       const stalePenalty = freshnessMinutes > 60 ? 10 : 0;
       const alreadyProcessedPenalty = existingCandidate && ['DECIDED', 'EXECUTED'].includes(existingCandidate.stage) ? 25 : 0;
@@ -283,11 +308,11 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
 
       const action = classifyCandidateScore(score.totalScore);
       const thresholdBlocked = score.totalScore < candidateThreshold;
-      const queueBlocked = thresholdBlocked || action === 'SKIP' || action === 'SNAPSHOT_ONLY' || dedupeDecision.skip;
+      const queueBlocked = thresholdBlocked || action === 'SKIP' || action === 'SNAPSHOT_ONLY' || effectiveSkip;
       const skipReason = thresholdBlocked
         ? buildThresholdSkipReason(score.totalScore, candidateThreshold)
-        : dedupeDecision.skip
-          ? dedupeDecision.reason
+        : effectiveSkip
+          ? effectiveSkipReason
           : score.skipReason || null;
       const targetStage =
         queueBlocked && (!existingCandidate || ['SCANNED', 'WATCHING'].includes(existingCandidate.stage))
@@ -379,13 +404,18 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
   });
 
   for (const candidate of staleCandidates) {
+    const newRetryCount = candidate.retryCount + 1;
+    const backoffHours = Math.pow(2, newRetryCount);
+    const nextEligible = computeNextEligibleAt(new Date(), backoffHours);
+
     await db.tradeCandidate.update({
       where: { id: candidate.id },
       data: {
         stage: 'SCANNED',
         processingLock: null,
         lockExpiresAt: null,
-        retryCount: { increment: 1 },
+        retryCount: newRetryCount,
+        nextEligibleAt: nextEligible,
       },
     });
   }

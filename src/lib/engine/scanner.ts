@@ -3,6 +3,7 @@ import { getAllPolymarketMarkets, loadPolymarketCursor, savePolymarketCursor } f
 import { getAllKalshiMarkets, loadKalshiCursor, saveKalshiCursor } from '@/lib/venues/kalshi';
 import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
 import { upsertScannedMarket } from '@/lib/engine/scanner-upsert';
+import { createTitleHash } from '@/lib/engine/candidate-dedupe';
 import { normalizeTradingMode } from '@/lib/engine/mode';
 import type { ScanMode } from '@/lib/types';
 
@@ -36,11 +37,12 @@ export async function runScanner(
 
   // Skip real scanning in DEMO mode
   if (mode === 'DEMO') {
-    return { totalScanned: 0, totalNew: 0, venues: [], mode: 'DEMO', message: 'DEMO mode: no real scanning' };
+    return { totalScanned: 0, totalNew: 0, totalExisting: 0, venues: [], mode: 'DEMO', message: 'DEMO mode: no real scanning' };
   }
 
   let totalScanned = 0;
   let totalNew = 0;
+  let totalExisting = 0;
 
   for (const venue of enabledVenues) {
     const scanRun = await db.scanRun.create({
@@ -86,7 +88,7 @@ export async function runScanner(
 
       if (venue === 'POLYMARKET') {
         cursorStart =
-          scanMode === 'RESUME_FROM_CURSOR'
+          scanMode === 'RESUME_FROM_CURSOR' || scanMode === 'INCREMENTAL_SCAN'
             ? await loadPolymarketCursor()
             : null;
         const result = await getAllPolymarketMarkets({
@@ -100,10 +102,12 @@ export async function runScanner(
         nextCursor = result.nextCursor;
         hasMore = result.hasMore;
         pagesScanned = result.pagesScanned;
-        await savePolymarketCursor(nextCursor, hasMore);
+        if (nextCursor !== null) {
+          await savePolymarketCursor(nextCursor, hasMore);
+        }
       } else if (venue === 'KALSHI') {
         cursorStart =
-          scanMode === 'RESUME_FROM_CURSOR'
+          scanMode === 'RESUME_FROM_CURSOR' || scanMode === 'INCREMENTAL_SCAN'
             ? await loadKalshiCursor()
             : null;
         const result = await getAllKalshiMarkets({
@@ -115,7 +119,9 @@ export async function runScanner(
         nextCursor = result.nextCursor;
         hasMore = result.hasMore;
         pagesScanned = result.pagesScanned;
-        await saveKalshiCursor(nextCursor, hasMore);
+        if (nextCursor !== null) {
+          await saveKalshiCursor(nextCursor, hasMore);
+        }
         markets = result.markets.map((m) => ({
           externalId: m.ticker,
           title: m.title,
@@ -136,11 +142,21 @@ export async function runScanner(
         continue;
       }
 
+      const seenHashes = new Set<string>();
+
       for (const m of markets) {
         if (enabledCategories.length > 0 && !enabledCategories.includes(m.category)) {
           marketsSkipped++;
           continue;
         }
+
+        // In-cycle dedup: Polymarket returns same titles with different externalIds
+        const hash = createTitleHash(m.title);
+        if (seenHashes.has(hash)) {
+          marketsSkipped++;
+          continue;
+        }
+        seenHashes.add(hash);
 
         const upsertResult = await upsertScannedMarket({
           market: m,
@@ -155,10 +171,14 @@ export async function runScanner(
 
         if (upsertResult.updated) {
           marketsUpdated++;
+          totalExisting++;
         }
 
         totalScanned++;
       }
+
+      const denominator = marketsCreated + marketsUpdated;
+      const repeatRate = denominator > 0 ? (marketsUpdated / denominator) * 100 : 0;
 
       await db.scanRun.update({
         where: { id: scanRun.id },
@@ -166,9 +186,11 @@ export async function runScanner(
           status: 'COMPLETED',
           finishedAt: new Date(),
           marketsFetched: markets.length,
+          marketsFetchedNew: marketsCreated,
           marketsCreated,
           marketsUpdated,
           marketsSkipped,
+          repeatRate,
           cursorStart,
           cursorEnd: nextCursor,
           metadataJson: JSON.stringify({
@@ -208,5 +230,5 @@ export async function runScanner(
     create: { key: 'last_scan_time', value: new Date().toISOString() },
   });
 
-  return { totalScanned, totalNew, venues: enabledVenues, mode };
+  return { totalScanned, totalNew, totalExisting, venues: enabledVenues, mode };
 }

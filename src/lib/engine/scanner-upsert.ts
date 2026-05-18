@@ -2,7 +2,6 @@ import { db } from '@/lib/db';
 import { createTitleHash, normalizeMarketTitle } from '@/lib/engine/candidate-dedupe';
 import { serializeCriteria } from '@/lib/engine/candidate-criteria';
 import { classifyCandidateScore, computeCandidateScore } from '@/lib/engine/candidate-scoring';
-import { enqueueCandidateJobs } from '@/lib/engine/candidate-job-enqueuer';
 import { scanRelatedMarkets } from '@/lib/engine/related-market';
 import { correlationClusterManager } from '@/lib/engine/correlation-risk';
 
@@ -58,7 +57,8 @@ export async function upsertScannedMarket(params: {
   enqueueCandidateJobs?: boolean;
 }) {
   const { market, scanRunId } = params;
-  const shouldEnqueueJobs = params.enqueueCandidateJobs ?? true;
+  // enqueueCandidateJobs param accepted for backward compatibility but no-ops here.
+  // market-loop.ts is sole owner of candidate job enqueueing.
   const normalizedTitle = normalizeMarketTitle(market.title);
   const titleHash = createTitleHash(market.title);
   const dataSource = market.dataSource || 'REAL';
@@ -195,13 +195,6 @@ export async function upsertScannedMarket(params: {
       },
     });
 
-    if (shouldEnqueueJobs && scoreAction !== 'SKIP' && scoreAction !== 'SNAPSHOT_ONLY') {
-      await enqueueCandidateJobs(scoreAction, {
-        marketId: created.id,
-        candidateId: createdCandidate.id,
-      });
-    }
-
     scanRelatedMarkets(created.id).catch(err =>
       console.error('Related market scan failed for', created.id, err),
     );
@@ -320,13 +313,6 @@ export async function upsertScannedMarket(params: {
         lastProcessedAt: new Date(),
       },
     });
-
-    if (shouldEnqueueJobs && scoreAction !== 'SKIP' && scoreAction !== 'SNAPSHOT_ONLY') {
-      await enqueueCandidateJobs(scoreAction, {
-        marketId: existing.id,
-        candidateId: existingCandidate.id,
-      });
-    }
   }
 
   scanRelatedMarkets(existing.id).catch(err =>

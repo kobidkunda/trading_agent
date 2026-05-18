@@ -3,7 +3,18 @@
 import { db } from '@/lib/db';
 import { orderbookEngine, type OrderbookPriceLevel } from '@/lib/engine/orderbook-microstructure';
 
-const POLYMARKET_BASE_URL = 'https://clob.polymarket.com';
+const POLYMARKET_DIRECT_URL = 'https://clob.polymarket.com';
+const POLYMARKET_DEFAULT_URL = POLYMARKET_DIRECT_URL;
+
+async function getPolymarketBaseUrl(): Promise<string> {
+  try {
+    const setting = await db.settings.findUnique({ where: { key: 'polymarket_proxy_url' } });
+    if (setting?.value) return setting.value;
+    return POLYMARKET_DEFAULT_URL;
+  } catch {
+    return POLYMARKET_DEFAULT_URL;
+  }
+}
 const DEFAULT_PAGE_LIMIT = 100;
 const DEFAULT_TIMEOUT_MS = 15000;
 
@@ -142,7 +153,8 @@ export async function getPolymarketOrderbook(
   }
 
   try {
-    const response = await fetch(`${POLYMARKET_BASE_URL}/book?token_id=${encodeURIComponent(tokenId)}`, {
+    const baseUrl = await getPolymarketBaseUrl();
+    const response = await fetch(`${baseUrl}/book?token_id=${encodeURIComponent(tokenId)}`, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(timeoutMs),
@@ -222,7 +234,8 @@ export async function getPolymarketMarkets(options: VenueScanOptions = {}): Prom
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   try {
     const cursorParam = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
-    const response = await fetch(`${POLYMARKET_BASE_URL}/markets?limit=${limit}&active=true${cursorParam}`, {
+    const baseUrl = await getPolymarketBaseUrl();
+    const response = await fetch(`${baseUrl}/markets?limit=${limit}&active=true${cursorParam}`, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(timeoutMs),

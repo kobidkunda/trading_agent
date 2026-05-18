@@ -14,12 +14,81 @@ export async function GET(request: NextRequest) {
     const search = searchParams.get('search');
     const limit = parseInt(searchParams.get('limit') || '50');
     const offset = parseInt(searchParams.get('offset') || '0');
+    const onlyNew = searchParams.get('onlyNew') === 'true';
+    const onlyChanged = searchParams.get('onlyChanged') === 'true';
+    const excludeCooldown = searchParams.get('excludeCooldown') === 'true';
+    const excludeExecuted = searchParams.get('excludeExecuted') === 'true';
+    const excludeRecentlyResearched = searchParams.get('excludeRecentlyResearched') === 'true';
+    const minCandidateScore = parseInt(searchParams.get('minCandidateScore') || '0');
+    const sortBy = searchParams.get('sortBy') || 'updatedAt';
+
+    const now = new Date();
 
     const where: Prisma.MarketWhereInput = {};
     if (venue) where.venue = venue;
     if (status) where.status = status;
     if (category) where.category = category;
     if (search) where.title = { contains: search };
+
+    // Build candidate-level filters
+    const candidateWhere: Prisma.TradeCandidateWhereInput | undefined =
+      onlyNew || onlyChanged || excludeCooldown || excludeExecuted || excludeRecentlyResearched || minCandidateScore > 0
+        ? {}
+        : undefined;
+
+    if (candidateWhere) {
+      if (onlyNew) {
+        // Markets with NO candidate or candidate created within last 24h
+        candidateWhere.OR = [
+          { lastProcessedAt: null },
+          { stage: 'SCANNED' },
+        ];
+      }
+      if (onlyChanged) {
+        // Markets where price moved meaningfully (candidate updated after first scan)
+        candidateWhere.lastProcessedAt = { not: null };
+        candidateWhere.stage = { not: 'SCANNED' };
+      }
+      if (excludeCooldown) {
+        candidateWhere.AND = candidateWhere.AND || [];
+        (candidateWhere.AND as Prisma.TradeCandidateWhereInput[]).push({
+          OR: [
+            { cooldownUntil: null },
+            { cooldownUntil: { lt: now } },
+          ],
+        });
+        (candidateWhere.AND as Prisma.TradeCandidateWhereInput[]).push({
+          OR: [
+            { nextEligibleAt: null },
+            { nextEligibleAt: { lt: now } },
+          ],
+        });
+      }
+      if (excludeExecuted) {
+        candidateWhere.NOT = { stage: 'EXECUTED' };
+      }
+      if (excludeRecentlyResearched) {
+        const researchCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        if (candidateWhere.AND) {
+          (candidateWhere.AND as Prisma.TradeCandidateWhereInput[]).push({
+            OR: [
+              { lastResearchAt: null },
+              { lastResearchAt: { lt: researchCutoff } },
+            ],
+          });
+        } else {
+          candidateWhere.OR = [
+            { lastResearchAt: null },
+            { lastResearchAt: { lt: researchCutoff } },
+          ];
+        }
+      }
+      if (minCandidateScore > 0) {
+        candidateWhere.candidateScore = { gte: minCandidateScore };
+      }
+
+      where.tradeCandidates = { some: candidateWhere };
+    }
 
     const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
       db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
@@ -33,13 +102,21 @@ export async function GET(request: NextRequest) {
       tradingMode: tradingModeSetting?.value ?? null,
     });
 
+    // Determine sort order
+    const orderBy: Prisma.MarketOrderByWithRelationInput =
+      sortBy === 'score'
+        ? { tradeCandidates: { _count: 'desc' } }
+        : sortBy === 'firstSeen'
+          ? { firstSeenAt: 'desc' }
+          : { updatedAt: 'desc' };
+
     const markets = await db.market.findMany({
       where,
       include: {
         snapshots: { orderBy: { timestamp: 'desc' }, take: 1 },
         tradeCandidates: { orderBy: { updatedAt: 'desc' }, take: 1 },
       },
-      orderBy: { updatedAt: 'desc' },
+      orderBy,
       take: limit,
       skip: offset,
     });
@@ -48,19 +125,53 @@ export async function GET(request: NextRequest) {
 
     const enrichedMarkets = visibleMarkets.map((market) => {
       const candidate = market.tradeCandidates[0];
-      const duplicateStatus = candidate?.cooldownUntil
-        ? 'COOLDOWN'
-        : candidate?.processingLock
-          ? 'DUPLICATE'
-          : 'UNIQUE';
+      const now = new Date();
+      const isCooldown =
+        (candidate?.cooldownUntil && new Date(candidate.cooldownUntil) > now) ||
+        (candidate?.nextEligibleAt && new Date(candidate.nextEligibleAt) > now);
+      const hasActiveLock = candidate?.processingLock != null && candidate?.lockExpiresAt && new Date(candidate.lockExpiresAt) > now;
+
+      let reprocessStatus = 'FRESH';
+      if (candidate?.stage === 'EXECUTED') {
+        reprocessStatus = 'EXECUTED';
+      } else if (isCooldown) {
+        reprocessStatus = 'COOLDOWN';
+      } else if (hasActiveLock) {
+        reprocessStatus = 'PROCESSING';
+      } else if (candidate?.stage === 'DECIDED') {
+        reprocessStatus = 'DECIDED';
+      } else if (candidate?.stage === 'WATCHING') {
+        reprocessStatus = 'WATCHING';
+      }
 
       return {
         ...market,
-        duplicateStatus,
+        duplicateStatus: reprocessStatus,
+        candidateStage: candidate?.stage ?? null,
+        candidateScore: candidate?.candidateScore ?? null,
+        lastDecisionAt: candidate?.lastDecisionAt ?? null,
+        lastResearchAt: candidate?.lastResearchAt ?? null,
+        lastExecutionAt: candidate?.lastExecutionAt ?? null,
+        nextEligibleAt: candidate?.nextEligibleAt ?? null,
+        cooldownUntil: candidate?.cooldownUntil ?? null,
       };
     });
 
-    return NextResponse.json({ markets: enrichedMarkets, total: enrichedMarkets.length, limit, offset });
+    return NextResponse.json({
+      markets: enrichedMarkets,
+      total: enrichedMarkets.length,
+      limit,
+      offset,
+      appliedFilters: {
+        onlyNew,
+        onlyChanged,
+        excludeCooldown,
+        excludeExecuted,
+        excludeRecentlyResearched,
+        minCandidateScore,
+        sortBy,
+      },
+    });
   } catch (error) {
     return NextResponse.json({ error: 'Failed to fetch markets' }, { status: 500 });
   }

@@ -2,7 +2,17 @@
 
 import { db } from '@/lib/db';
 
-const KALSHI_BASE_URL = 'https://api.elections.kalshi.com/trade-api/v2'
+const KALSHI_DIRECT_URL = 'https://external-api.kalshi.com/trade-api/v2';
+
+async function getKalshiBaseUrl(): Promise<string> {
+  try {
+    const setting = await db.settings.findUnique({ where: { key: 'kalshi_proxy_url' } });
+    if (setting?.value) return setting.value;
+    return KALSHI_DIRECT_URL;
+  } catch {
+    return KALSHI_DIRECT_URL;
+  }
+}
 
 export interface GetAllKalshiMarketsOptions {
   maxPages?: number;
@@ -33,7 +43,8 @@ export interface KalshiMarketsResponse {
 export async function getKalshiMarkets(limit: number = 100, cursor?: string): Promise<KalshiMarketsResponse> {
   try {
     const cursorParam = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
-    const response = await fetch(`${KALSHI_BASE_URL}/markets?limit=${limit}${cursorParam}`, {
+    const baseUrl = await getKalshiBaseUrl();
+    const response = await fetch(`${baseUrl}/markets?limit=${limit}${cursorParam}`, {
       cache: 'no-store'
     })
 
@@ -82,7 +93,8 @@ export async function getAllKalshiMarkets(
 
 export async function getKalshiMarket(ticker: string): Promise<KalshiMarket | null> {
   try {
-    const response = await fetch(`${KALSHI_BASE_URL}/markets/${ticker}`, {
+    const baseUrl = await getKalshiBaseUrl();
+    const response = await fetch(`${baseUrl}/markets/${ticker}`, {
       cache: 'no-store'
     })
 
