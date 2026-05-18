@@ -30,6 +30,7 @@ const DEFAULT_MODEL_TIERS: Record<string, ModelTier> = {
   'paper_flashgem': { id: 'paper_flashgem', tier: 'fast', family: 'flash', estimatedQuality: 0.73, estimatedSpeed: 0.95 },
   'gemini-2-5-flash': { id: 'gemini-2-5-flash', tier: 'fast', family: 'gemini', estimatedQuality: 0.76, estimatedSpeed: 0.92 },
   'kimi-k2p5-turbo': { id: 'kimi-k2p5-turbo', tier: 'fast', family: 'kimi', estimatedQuality: 0.78, estimatedSpeed: 0.9 },
+  'flash_free_only': { id: 'flash_free_only', tier: 'fast', family: 'free', estimatedQuality: 0.7, estimatedSpeed: 0.96 },
   
   // Lite tier - fastest, lowest quality
   'paper_lite': { id: 'paper_lite', tier: 'lite', family: 'lite', estimatedQuality: 0.65, estimatedSpeed: 0.98 },
