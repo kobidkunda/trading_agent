@@ -24,7 +24,8 @@ export type PageView =
   | 'paperBets'
   | 'backtests'
   | 'optimizer'
-  | 'settings';
+  | 'settings'
+  | 'logs';
 
 export interface TradingPageDefinition {
   id: PageView;
@@ -59,6 +60,7 @@ export const TRADING_PAGES: TradingPageDefinition[] = [
   { id: 'pipelineSettings', label: 'Pipeline', slug: 'pipeline' },
   { id: 'map', label: 'System Map', slug: 'system-map' },
   { id: 'researchProvider', label: 'Research Provider', slug: 'research-provider' },
+  { id: 'logs', label: 'Logs', slug: 'logs' },
 ];
 
 const PAGE_BY_ID = new Map(TRADING_PAGES.map((page) => [page.id, page] as const));

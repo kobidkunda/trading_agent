@@ -75,7 +75,7 @@ export class WalletIngestionEngine {
           for (const wallet of batch) {
             try {
               const upserted = await tx.wallet.upsert({
-                where: { address: wallet.address },
+                where: { venue_address: { venue, address: wallet.address } },
                 create: {
                   address: wallet.address,
                   venue,

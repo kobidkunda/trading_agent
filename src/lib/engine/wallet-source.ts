@@ -42,6 +42,9 @@ export interface WalletSourceConfig {
   mode: WalletSourceMode;
   sourceName: string;
   trusted: boolean;
+  apiKey?: string;
+  addresses?: string[];
+  scanIntervalMs?: number;
 }
 
 export const DEFAULT_WALLET_SOURCE_CONFIG: WalletSourceConfig = {
@@ -61,7 +64,32 @@ export function normalizeWalletSourceConfig(input: Partial<WalletSourceConfig> |
     mode: normalizedMode,
     sourceName: input?.sourceName?.trim() || normalizedMode.toLowerCase(),
     trusted: normalizedMode === 'LIVE_CONNECTOR' ? Boolean(input?.trusted) : false,
+    apiKey: input?.apiKey,
+    addresses: input?.addresses,
+    scanIntervalMs: input?.scanIntervalMs,
   };
+}
+
+export async function createWalletSourceAdapter(
+  config: WalletSourceConfig,
+): Promise<WalletSourceAdapter> {
+  switch (config.mode) {
+    case 'LIVE_CONNECTOR': {
+      const { createPolymarketWalletSource } = await import(
+        '@/lib/engine/wallet-source-polymarket'
+      );
+      return createPolymarketWalletSource({
+        apiKey: config.apiKey,
+        addresses: config.addresses,
+        scanIntervalMs: config.scanIntervalMs,
+      });
+    }
+    case 'IMPORT':
+      return new ImportWalletSourceAdapter();
+    case 'DISABLED':
+    default:
+      return new DisabledWalletSourceAdapter();
+  }
 }
 
 export class DisabledWalletSourceAdapter implements WalletSourceAdapter {

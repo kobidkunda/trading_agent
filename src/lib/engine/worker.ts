@@ -1,11 +1,24 @@
 import { db } from '@/lib/db';
 import { runScanner } from '@/lib/engine/scanner';
 import { runMarketLoopOnce } from '@/lib/engine/market-loop';
-import { runPipelineForMarket } from '@/lib/engine/pipeline';
-import { normalizeTradingMode } from '@/lib/engine/mode';
+import {
+  runTriageStage,
+  runResearchStage,
+  runJudgeStage,
+  runRiskStage,
+  runExecuteStage,
+} from '@/lib/engine/pipeline';
 import { getEffectiveTradingConfig } from '@/lib/engine/trading-settings';
 import { classifyOrderTerminalState, processPaperOrderFill } from '@/lib/engine/order-tracker';
-import { saveCheckpoint } from '@/lib/engine/worker-checkpoint';
+import type { ResearchDepth } from '@/lib/types';
+import { analyzeOracleRisk, type OracleRiskResult } from '@/lib/engine/oracle-mismatch';
+import {
+  saveCheckpoint,
+  saveFailureCheckpoint,
+  deleteCheckpoint,
+  loadDeepResearchProgress,
+  logStageTransition,
+} from '@/lib/engine/worker-checkpoint';
 
 type WorkerStatus = 'STOPPED' | 'RUNNING';
 
@@ -106,10 +119,18 @@ async function releaseAllStaleLocks(): Promise<void> {
     });
     const marketId = extractMarketId(job.payload);
     if (marketId) {
+      const candidate = await db.tradeCandidate.findUnique({ where: { marketId }, select: { stage: true } });
       await db.tradeCandidate.updateMany({
         where: { marketId, processingLock: { not: null } },
         data: { processingLock: null, lockExpiresAt: null },
       });
+      await logStageTransition(marketId, {
+        from: candidate?.stage ?? 'UNKNOWN',
+        to: 'SCANNED',
+        timestamp: new Date().toISOString(),
+        reason: 'Stale lock released at startup',
+        jobId: job.id,
+      }).catch(() => {});
     }
   }
 
@@ -136,10 +157,18 @@ async function releaseAllStaleLocks(): Promise<void> {
       });
       const marketId = extractMarketId(job.payload);
       if (marketId) {
+        const candidate = await db.tradeCandidate.findUnique({ where: { marketId }, select: { stage: true } });
         await db.tradeCandidate.updateMany({
           where: { marketId, processingLock: { not: null } },
           data: { processingLock: null, lockExpiresAt: null },
         });
+        await logStageTransition(marketId, {
+          from: candidate?.stage ?? 'UNKNOWN',
+          to: 'SCANNED',
+          timestamp: new Date().toISOString(),
+          reason: 'Heartbeat lost — stale job recovered at startup',
+          jobId: job.id,
+        }).catch(() => {});
       }
     }
   }
@@ -161,10 +190,18 @@ async function cleanupStaleLocks(): Promise<number> {
     });
     const marketId = extractMarketId(job.payload);
     if (marketId) {
+      const candidate = await db.tradeCandidate.findUnique({ where: { marketId }, select: { stage: true } });
       await db.tradeCandidate.updateMany({
         where: { marketId, processingLock: { not: null } },
         data: { processingLock: null, lockExpiresAt: null },
       });
+      await logStageTransition(marketId, {
+        from: candidate?.stage ?? 'UNKNOWN',
+        to: 'SCANNED',
+        timestamp: new Date().toISOString(),
+        reason: 'Lock timeout — recovering stale stage',
+        jobId: job.id,
+      }).catch(() => {});
     }
     cleaned++;
   }
@@ -186,10 +223,18 @@ async function cleanupStaleLocks(): Promise<number> {
       });
       const marketId = extractMarketId(job.payload);
       if (marketId) {
+        const candidate = await db.tradeCandidate.findUnique({ where: { marketId }, select: { stage: true } });
         await db.tradeCandidate.updateMany({
           where: { marketId, processingLock: { not: null } },
           data: { processingLock: null, lockExpiresAt: null },
         });
+        await logStageTransition(marketId, {
+          from: candidate?.stage ?? 'UNKNOWN',
+          to: 'SCANNED',
+          timestamp: new Date().toISOString(),
+          reason: 'Heartbeat lost — recovering stale stage',
+          jobId: job.id,
+        }).catch(() => {});
       }
       cleaned++;
     }
@@ -223,7 +268,7 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
   });
 
   try {
-    const result = await processJob(job.type, job.payload);
+    const result = await processJob(job.type, job.payload, job.id);
     await db.job.update({
       where: { id: job.id },
       data: {
@@ -233,6 +278,8 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
         lockExpiresAt: null,
       },
     });
+
+    await deleteCheckpoint(job.id).catch(() => {});
 
     return {
       jobId: job.id,
@@ -259,6 +306,14 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
       },
     });
 
+    // Save failure checkpoint for post-mortem / retry analysis
+    const marketId = extractMarketId(job.payload);
+    await saveFailureCheckpoint(job.id, errorMessage, job.type, {
+      marketId: marketId ?? undefined,
+      retryCount: currentRetryCount + 1,
+      isRetryable,
+    }).catch(() => {});
+
     if (
       isRetryable &&
       [
@@ -269,17 +324,25 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
         'DEEP_RESEARCH',
         'JUDGE_MARKET',
         'RISK_CHECK',
+        'ORACLE_CHECK',
       ].includes(job.type)
     ) {
       try {
-        const marketId = extractMarketId(job.payload);
         if (marketId) {
           const candidate = await db.tradeCandidate.findUnique({ where: { marketId } });
           if (candidate && candidate.processingLock) {
+            const previousStage = candidate.stage;
             await db.tradeCandidate.update({
               where: { marketId },
               data: { processingLock: null, lockExpiresAt: null },
             });
+            await logStageTransition(marketId, {
+              from: previousStage,
+              to: 'SCANNED',
+              timestamp: new Date().toISOString(),
+              reason: `Job failed: ${errorMessage.slice(0, 200)}`,
+              jobId: job.id,
+            }).catch(() => {});
           }
         }
       } catch {}
@@ -339,92 +402,378 @@ async function tick() {
   }
 }
 
-const RESEARCH_JOB_TYPES = new Set([
-  'RESEARCH_MARKET', 'RESEARCH',
-  'QUICK_RESEARCH', 'STANDARD_RESEARCH', 'DEEP_RESEARCH',
-  'TRIAGE_MARKET', 'TRIAGE',
-  'JUDGE_MARKET', 'JUDGE',
-  'RISK_CHECK', 'RISK',
-]);
+// ── Inter-stage data lookups ─────────────────────────────────────────
+// Each stage persists output to DB; subsequent stages look up what they need.
 
-async function processJob(jobType: string, payload: string | null): Promise<Record<string, unknown>> {
+async function lookupResearchRunForMarket(marketId: string): Promise<{
+  researchRunId: string;
+  researchContext: string;
+  depth: ResearchDepth;
+} | null> {
+  const researchRun = await db.researchRun.findFirst({
+    where: { marketId, status: 'COMPLETED' },
+    orderBy: { completedAt: 'desc' },
+  });
+  if (!researchRun) return null;
+
+  // Gather research context from sources + agent outputs
+  const [sources, agentOutputs] = await Promise.all([
+    db.researchSource.findMany({
+      where: { researchRunId: researchRun.id },
+      orderBy: { extractedAt: 'asc' },
+    }),
+    db.agentOutput.findMany({
+      where: { researchRunId: researchRun.id },
+      orderBy: { createdAt: 'asc' },
+    }),
+  ]);
+
+  const parts: string[] = [];
+  for (const s of sources) {
+    if (s.content) parts.push(`Source: ${s.url}\n${s.title ? `Title: ${s.title}\n` : ''}${s.content.slice(0, 2000)}`);
+  }
+  for (const o of agentOutputs) {
+    if (o.summary) parts.push(`[${o.role}] ${o.summary}`);
+    else if (o.rawOutput) parts.push(`[${o.role}] ${o.rawOutput.slice(0, 2000)}`);
+  }
+  const researchContext = parts.join('\n\n');
+
+  return {
+    researchRunId: researchRun.id,
+    researchContext,
+    depth: (researchRun.depth as ResearchDepth) || 'STANDARD',
+  };
+}
+
+async function lookupJudgeParams(marketId: string): Promise<{
+  judgeProbability: number;
+  judgeConfidence: number;
+  judgeUncertainty: number;
+  ensembleUncertaintyBoost: number;
+  modelDisagreement: number;
+  disagreementLevel: 'LOW' | 'MODERATE' | 'HIGH';
+} | null> {
+  // Check the latest Decision for judge params (written by runRiskStage)
+  const decision = await db.decision.findFirst({
+    where: { marketId },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (decision && decision.judgeProbability != null) {
+    return {
+      judgeProbability: decision.judgeProbability,
+      judgeConfidence: decision.confidence ?? 0.5,
+      judgeUncertainty: decision.uncertainty ?? 0.3,
+      ensembleUncertaintyBoost: 0,
+      modelDisagreement: 0,
+      disagreementLevel: 'LOW' as const,
+    };
+  }
+
+  // Fallback: look up agent_outputs for JUDGE/MIROFISH_PREDICT roles
+  const agentOutputs = await db.agentOutput.findMany({
+    where: {
+      researchRun: { marketId, status: 'COMPLETED' },
+      role: { in: ['JUDGE', 'MIROFISH_PREDICT', 'ENSEMBLE'] },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  for (const output of agentOutputs) {
+    try {
+      const parsed = JSON.parse(output.output || '{}') as Record<string, unknown>;
+      if (parsed.finalProbability != null || parsed.judgeProbability != null) {
+        return {
+          judgeProbability: (parsed.finalProbability as number) ?? (parsed.judgeProbability as number) ?? 0.5,
+          judgeConfidence: (parsed.finalConfidence as number) ?? (parsed.judgeConfidence as number) ?? 0.5,
+          judgeUncertainty: (parsed.finalUncertainty as number) ?? (parsed.judgeUncertainty as number) ?? 0.3,
+          ensembleUncertaintyBoost: (parsed.ensembleUncertaintyBoost as number) ?? 0,
+          modelDisagreement: (parsed.modelDisagreement as number) ?? 0,
+          disagreementLevel: (parsed.disagreementLevel as 'LOW' | 'MODERATE' | 'HIGH') ?? 'LOW',
+        };
+      }
+    } catch { /* skip unparseable */ }
+  }
+
+  return null;
+}
+
+async function lookupDecisionForMarket(marketId: string): Promise<{
+  decisionId: string;
+  judgeProbability: number;
+  judgeConfidence: number;
+  judgeUncertainty: number;
+} | null> {
+  const decision = await db.decision.findFirst({
+    where: { marketId },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (!decision) return null;
+
+  return {
+    decisionId: decision.id,
+    judgeProbability: decision.judgeProbability ?? 0.5,
+    judgeConfidence: decision.confidence ?? 0.5,
+    judgeUncertainty: decision.uncertainty ?? 0.3,
+  };
+}
+
+function validateMarket(marketId: string): Promise<boolean> {
+  return db.market
+    .findUnique({ where: { id: marketId }, select: { id: true } })
+    .then((m) => !!m);
+}
+
+function resolveDepthFromType(jobType: string): ResearchDepth {
+  if (jobType.includes('QUICK')) return 'QUICK';
+  if (jobType.includes('DEEP')) return 'DEEP';
+  return 'STANDARD';
+}
+
+// ── processJob ───────────────────────────────────────────────────────
+
+async function processJob(jobType: string, payload: string | null, jobId?: string): Promise<Record<string, unknown>> {
   const data: Record<string, unknown> = payload ? JSON.parse(payload) : {};
 
   switch (jobType) {
     case 'SCAN_VENUE':
     case 'SCAN':
       return await runScanner(data.venues as string[], data.categories as string[]);
+
     case 'SCORE_CANDIDATES':
       return { status: 'SCORED', scanRunId: data.scanRunId ?? null };
+
     case 'TRIAGE_MARKET':
-    case 'TRIAGE':
+    case 'TRIAGE': {
+      const marketId = String(data.marketId);
+      if (!(await validateMarket(marketId))) {
+        return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
+      }
+      const result = await runTriageStage(marketId) as unknown as Record<string, unknown>;
+      if (jobId) {
+        await logStageTransition(marketId, {
+          from: 'SCANNED',
+          to: 'TRIAGED',
+          timestamp: new Date().toISOString(),
+          jobId,
+        }).catch(() => {});
+      }
+      return result;
+    }
+
     case 'RESEARCH_MARKET':
     case 'RESEARCH':
     case 'QUICK_RESEARCH':
     case 'STANDARD_RESEARCH':
-    case 'DEEP_RESEARCH':
+    case 'DEEP_RESEARCH': {
+      const marketId = String(data.marketId);
+      if (!(await validateMarket(marketId))) {
+        return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
+      }
+      const depth = resolveDepthFromType(jobType);
+
+      if (jobId && depth === 'DEEP') {
+        const drProgress = await loadDeepResearchProgress(jobId).catch(() => null);
+        const resumePayload = drProgress ? { ...drProgress, jobId } : { jobId };
+        const result = await runResearchStage(marketId, depth, undefined, resumePayload) as unknown as Record<string, unknown>;
+        if (jobId) {
+          await logStageTransition(marketId, {
+            from: 'TRIAGED',
+            to: 'RESEARCHING',
+            timestamp: new Date().toISOString(),
+            jobId,
+          }).catch(() => {});
+        }
+        return result;
+      }
+
+      if (jobId) {
+        await logStageTransition(marketId, {
+          from: 'TRIAGED',
+          to: 'RESEARCHING',
+          timestamp: new Date().toISOString(),
+          jobId,
+        }).catch(() => {});
+      }
+      return await runResearchStage(marketId, depth) as unknown as Record<string, unknown>;
+    }
+
     case 'JUDGE_MARKET':
-    case 'JUDGE':
+    case 'JUDGE': {
+      const marketId = String(data.marketId);
+      if (!(await validateMarket(marketId))) {
+        return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
+      }
+      const research = await lookupResearchRunForMarket(marketId);
+      if (!research) {
+        return { status: 'NO_RESEARCH_RUN', marketId, skipped: true, message: 'No completed ResearchRun found for market' };
+      }
+      const result = await runJudgeStage(marketId, research.researchRunId, research.researchContext, research.depth) as unknown as Record<string, unknown>;
+      if (jobId) {
+        await logStageTransition(marketId, {
+          from: 'RESEARCHING',
+          to: 'JUDGED',
+          timestamp: new Date().toISOString(),
+          jobId,
+        }).catch(() => {});
+      }
+      return result;
+    }
+
     case 'RISK_CHECK':
     case 'RISK': {
       const marketId = String(data.marketId);
-      const marketExists = await db.market.findUnique({
-        where: { id: marketId },
-        select: { id: true },
-      });
-
-      if (!marketExists) {
+      if (!(await validateMarket(marketId))) {
         return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
       }
-
-      try {
-        await db.tradeCandidate.upsert({
-          where: { marketId },
-          update: { stage: determineStage(jobType), processingLock: `${jobType}_${Date.now()}`, lockExpiresAt: new Date(Date.now() + 300_000) },
-          create: { marketId, stage: determineStage(jobType), processingLock: `${jobType}_${Date.now()}`, lockExpiresAt: new Date(Date.now() + 300_000) },
-        });
-      } catch {}
-
-      const result = await runPipelineForMarket(marketId);
-
-      // Save checkpoint for research jobs so they can be resumed
-      if (RESEARCH_JOB_TYPES.has(jobType)) {
-        try {
-          // Find the parent Job id that triggered this pipeline work
-          const parentJob = await db.job.findFirst({
-            where: { type: jobType, payload: { contains: `"marketId":"${marketId}"` }, status: 'RUNNING' },
-            select: { id: true },
-            orderBy: { startedAt: 'desc' },
-          });
-          if (parentJob) {
-            await saveCheckpoint(parentJob.id, { marketId, stage: determineStage(jobType), pipelineResult: result });
-          }
-        } catch {}
+      const judge = await lookupJudgeParams(marketId);
+      if (!judge) {
+        return { status: 'NO_JUDGE_PARAMS', marketId, skipped: true, message: 'No judge/decision data found for market' };
       }
-
+      const result = await runRiskStage(
+        marketId,
+        judge.judgeProbability,
+        judge.judgeConfidence,
+        judge.judgeUncertainty,
+        judge.ensembleUncertaintyBoost,
+        judge.modelDisagreement,
+        judge.disagreementLevel,
+      ) as unknown as Record<string, unknown>;
+      if (jobId) {
+        await logStageTransition(marketId, {
+          from: 'JUDGED',
+          to: 'DECIDED',
+          timestamp: new Date().toISOString(),
+          jobId,
+        }).catch(() => {});
+      }
       return result;
     }
+
     case 'PAPER_EXECUTE':
-    case 'EXECUTE':
-      return { status: 'PAPER_EXECUTE', marketId: data.marketId };
+    case 'EXECUTE': {
+      const marketId = String(data.marketId);
+      if (!(await validateMarket(marketId))) {
+        return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
+      }
+      let decisionId = typeof data.decisionId === 'string' ? data.decisionId : undefined;
+      let judgeProb = typeof data.judgeProbability === 'number' ? data.judgeProbability : 0.5;
+      let judgeConf = typeof data.judgeConfidence === 'number' ? data.judgeConfidence : 0.5;
+      let judgeUnc = typeof data.judgeUncertainty === 'number' ? data.judgeUncertainty : 0.3;
+
+      if (!decisionId || !data.judgeProbability) {
+        const decision = await lookupDecisionForMarket(marketId);
+        if (!decision) {
+          return { status: 'NO_DECISION', marketId, skipped: true, message: 'No Decision found for market' };
+        }
+        decisionId = decisionId || decision.decisionId;
+        judgeProb = data.judgeProbability != null ? judgeProb : decision.judgeProbability;
+        judgeConf = data.judgeConfidence != null ? judgeConf : decision.judgeConfidence;
+        judgeUnc = data.judgeUncertainty != null ? judgeUnc : decision.judgeUncertainty;
+      }
+
+      const result = await runExecuteStage(marketId, decisionId!, undefined as any, false, judgeProb, judgeConf, judgeUnc) as unknown as Record<string, unknown>;
+      if (jobId) {
+        await logStageTransition(marketId, {
+          from: 'DECIDED',
+          to: 'EXECUTED',
+          timestamp: new Date().toISOString(),
+          jobId,
+        }).catch(() => {});
+      }
+      return result;
+    }
+
     case 'LIVE_EXECUTE':
       return { status: 'LIVE_EXECUTE_BLOCKED', marketId: data.marketId, message: 'Live execution disabled until safety flag enabled' };
+
     case 'ORDER_TRACK':
       return await processOrderTracking(data.marketId as string);
+
     case 'RESOLUTION_CHECK':
     case 'SETTLE':
       return { status: 'SETTLE_PENDING', marketId: data.marketId };
+
+    case 'ORACLE_CHECK':
+      return await processOracleCheck(data.marketId as string);
+
     default:
       throw new Error(`Unknown job type: ${jobType}`);
   }
 }
 
-function determineStage(jobType: string): string {
-  if (jobType.includes('TRIAGE')) return 'TRIAGED';
-  if (jobType.includes('RESEARCH') || jobType === 'DEEP_RESEARCH') return 'RESEARCHING';
-  if (jobType.includes('JUDGE')) return 'JUDGED';
-  if (jobType.includes('RISK')) return 'DECIDED';
-  return 'SCANNED';
+async function processOracleCheck(marketId: string): Promise<Record<string, unknown>> {
+  if (!marketId) return { status: 'NO_MARKET_ID' };
+
+  const market = await db.market.findUnique({
+    where: { id: marketId },
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      venue: true,
+      oracleCheck: true,
+    },
+  });
+
+  if (!market) {
+    return { status: 'MARKET_NOT_FOUND', marketId };
+  }
+
+  const result: OracleRiskResult = analyzeOracleRisk({
+    title: market.title,
+    description: market.description ?? '',
+    crossVenueMismatch: 0,
+  });
+
+  const requiresManualReview = result.riskLevel === 'HIGH' || result.riskLevel === 'BLOCK';
+  const existingManualStatus = market.oracleCheck?.manualReviewStatus;
+  const manualReviewStatus = requiresManualReview
+    ? (existingManualStatus === 'APPROVED' || existingManualStatus === 'REJECTED'
+       ? existingManualStatus
+       : 'PENDING')
+    : 'NOT_REQUIRED';
+
+  let resolutionDate: Date | null = null;
+  if (result.deadline) {
+    const parsed = new Date(result.deadline);
+    if (!isNaN(parsed.getTime())) {
+      resolutionDate = parsed;
+    }
+  }
+
+  const oracleCheckData = {
+    oracleSource: result.oracleSource,
+    resolutionCriteria: result.resolutionCriteria,
+    resolutionDate,
+    timezone: result.timezone,
+    ambiguousWording: result.hasAmbiguousWording,
+    humanDiscretion: result.hasHumanDiscretion,
+    appealProcess: result.hasAppealProcess,
+    crossVenueMismatch: result.crossVenueMismatch > 0,
+    riskLevel: result.riskLevel,
+    oracleRiskReasons: result.issues.length > 0 ? result.issues.join('; ') : null,
+    manualReviewRequired: requiresManualReview,
+    manualReviewStatus,
+    manualReviewRequestedAt: requiresManualReview && manualReviewStatus === 'PENDING'
+      ? new Date()
+      : undefined,
+    notes: result.issues.length > 0 ? `Oracle risk issues: ${result.issues.join(', ')}` : null,
+  };
+
+  await db.oracleCheck.upsert({
+    where: { marketId },
+    create: { marketId, ...oracleCheckData },
+    update: oracleCheckData,
+  });
+
+  return {
+    status: 'COMPLETED',
+    marketId,
+    riskLevel: result.riskLevel,
+    requiresManualReview,
+    manualReviewStatus,
+    issuesFound: result.issues.length,
+  };
 }
 
 async function processOrderTracking(marketId?: string): Promise<Record<string, unknown>> {

@@ -48,7 +48,7 @@ const TIER_PRIORITY = ['premium', 'standard', 'fast', 'lite'];
 export async function fetchAvailableModels(): Promise<string[]> {
   try {
     const cred = await getCredentialForService('llm');
-    const baseUrl = cred?.baseUrl || process.env.OPENAI_BASE_URL || 'http://192.168.88.97:4444/v1';
+    const baseUrl = cred?.baseUrl || process.env.OPENAI_BASE_URL || '';
     const apiKey = cred?.apiKey || process.env.OPENAI_API_KEY || '';
     
     console.log('[ModelDiscovery] Fetching available models from LiteLLM...');

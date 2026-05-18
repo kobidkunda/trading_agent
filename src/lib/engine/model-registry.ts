@@ -122,11 +122,24 @@ export class ModelRegistry {
         : (prevBrier * prevN + brier) / (prevN + 1);
     const sampleSize = prevN + 1;
     const status =
-      rollingBrier > 0.3 && sampleSize >= 25
+      rollingBrier > 0.3 && sampleSize >= 100
         ? 'DISABLED'
         : sampleSize >= 10
           ? 'ACTIVE'
           : model.status;
+
+    // Weight adjustment multiplier based on per-prediction Brier
+    let multiplier: number;
+    if (brier > 0.25) {
+      multiplier = 0.5;
+    } else if (brier < 0.10) {
+      multiplier = 1.25;
+    } else {
+      // Linear interpolation: Brier 0.10 → 1.0x, Brier 0.25 → 0.5x
+      const t = (brier - 0.10) / (0.25 - 0.10);
+      multiplier = 1.0 - t * 0.5;
+    }
+    const newWeight = Math.max(0.05, Math.min(3.0, model.weight * multiplier));
 
     await db.modelRegistryRecord.update({
       where: { id: model.id },
@@ -136,6 +149,7 @@ export class ModelRegistry {
         lastEvaluatedAt: new Date(),
         enabled: status !== 'DISABLED',
         status,
+        weight: newWeight,
       },
     });
   }

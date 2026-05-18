@@ -16,11 +16,12 @@ describe('related market formulas', () => {
         confidence: 0.9,
         reason: 'same entity',
       },
-      { impliedProb: 0.62 },
-      { impliedProb: 0.54 },
+      { impliedProb: 0.62, signalSource: 'FRESH_PRICE' as const },
+      { impliedProb: 0.54, signalSource: 'FRESH_PRICE' as const },
     );
 
-    expect(result.expectedRule).toContain('approximately equal');
+    expect(result.expectedRule).toContain('P(A)');
+    expect(result.expectedRule).toContain('symmetric');
     expect(result.violationScore).toBeCloseTo(0.08, 5);
     expect(result.severity).toBe('HIGH');
     expect(result.action).toBe('DEEP_RESEARCH');
@@ -37,8 +38,8 @@ describe('related market formulas', () => {
         confidence: 0.92,
         reason: 'opposite outcomes',
       },
-      { impliedProb: 0.70 },
-      { impliedProb: 0.20 },
+      { impliedProb: 0.70, signalSource: 'FRESH_PRICE' as const },
+      { impliedProb: 0.20, signalSource: 'FRESH_PRICE' as const },
     );
 
     expect(result.violationScore).toBeCloseTo(0.10, 5);
@@ -56,8 +57,8 @@ describe('related market formulas', () => {
         confidence: 0.6,
         reason: 'weak implication',
       },
-      { impliedProb: 0.68 },
-      { impliedProb: 0.50 },
+      { impliedProb: 0.68, signalSource: 'FRESH_PRICE' as const },
+      { impliedProb: 0.50, signalSource: 'FRESH_PRICE' as const },
     );
 
     expect(result.violationScore).toBeCloseTo(0.18, 5);

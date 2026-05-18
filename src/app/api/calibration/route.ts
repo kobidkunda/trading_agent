@@ -4,7 +4,10 @@ import { BrierCalibrationEngine } from '@/lib/engine/brier-calibration';
 
 export async function GET() {
   const bets = await db.paperBet.findMany({
-    where: { actualOutcome: { not: null } },
+    where: {
+      actualOutcome: { not: null },
+      executionStatus: { in: ['FILLED', 'PARTIAL'] },
+    },
     select: {
       predictedProb: true,
       actualOutcome: true,

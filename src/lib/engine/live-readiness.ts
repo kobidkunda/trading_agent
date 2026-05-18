@@ -19,6 +19,7 @@ async function countPaperAPlus(d: typeof db): Promise<number> {
     where: {
       resolvedAt: { not: null },
       brierScore: { not: null },
+      executionStatus: { in: ['FILLED', 'PARTIAL'] },
       market: { dataSource: 'REAL' },
       decision: { mode: 'PAPER' },
       setupType: 'A_PLUS_BET',
@@ -33,6 +34,7 @@ async function getAPlusStats(d: typeof db): Promise<{ roi: number | null; brier:
     where: {
       resolvedAt: { not: null },
       brierScore: { not: null },
+      executionStatus: { in: ['FILLED', 'PARTIAL'] },
       market: { dataSource: 'REAL' },
       decision: { mode: 'PAPER' },
       setupType: 'A_PLUS_BET',

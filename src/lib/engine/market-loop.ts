@@ -1,14 +1,16 @@
 import { db } from '@/lib/db';
 import { runScanner } from '@/lib/engine/scanner';
 import { computeCandidateScore, classifyCandidateScore } from '@/lib/engine/candidate-scoring';
-import { shouldSkipCandidate, normalizeMarketTitle, createTitleHash, shouldReprocessMarket, computeNextEligibleAt } from '@/lib/engine/candidate-dedupe';
+import { shouldSkipCandidate, normalizeMarketTitle, createTitleHash, shouldReprocessMarket, computeNextEligibleAt, type ReprocessReason } from '@/lib/engine/candidate-dedupe';
 import { getEffectiveTradingConfig } from '@/lib/engine/trading-settings';
+import { logStageTransition } from '@/lib/engine/worker-checkpoint';
 import { normalizeTradingMode } from '@/lib/engine/mode';
 import { classifyOrderTerminalState } from '@/lib/engine/order-tracker';
 import { analyzeOracleRisk } from '@/lib/engine/oracle-mismatch';
 import { serializeCriteria } from '@/lib/engine/candidate-criteria';
 import { categoryPriorityForMarket } from '@/lib/engine/market-loop-helpers';
 import { enqueueCandidateJobs } from '@/lib/engine/candidate-job-enqueuer';
+import { computeFreshWalletSignal } from '@/lib/engine/wallet-signal';
 
 export interface MarketLoopResult {
   scanned: number;
@@ -24,6 +26,34 @@ function clamp(value: number, min: number, max: number): number {
 
 function buildThresholdSkipReason(score: number, candidateThreshold: number): string {
   return `BELOW_CANDIDATE_THRESHOLD:${score.toFixed(2)}<${candidateThreshold}`;
+}
+
+export type SortPriorityTag =
+  | 'NEW'
+  | 'MATERIAL_CHANGE'
+  | 'WALLET_SIGNAL'
+  | 'RELATED_CONTRADICTION'
+  | 'APLUS_SCORE'
+  | 'REFRESHED_ONLY';
+
+function mapReprocessReasonToTag(reason: ReprocessReason | string): SortPriorityTag {
+  if (reason === 'new_candidate') return 'NEW';
+  if (reason === 'price_move_3pct' || reason === 'liquidity_change_25pct' || reason === 'spread_improve_30pct') return 'MATERIAL_CHANGE';
+  if (reason === 'wallet_signal_new') return 'WALLET_SIGNAL';
+  if (reason === 'related_contradiction') return 'RELATED_CONTRADICTION';
+  return 'APLUS_SCORE';
+}
+
+function computeSortPriority(tag: SortPriorityTag): number {
+  const map: Record<SortPriorityTag, number> = {
+    NEW: 0,
+    MATERIAL_CHANGE: 1,
+    WALLET_SIGNAL: 2,
+    RELATED_CONTRADICTION: 3,
+    APLUS_SCORE: 4,
+    REFRESHED_ONLY: 5,
+  };
+  return map[tag];
 }
 
 function computeResolutionClarity(market: {
@@ -150,6 +180,15 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
 
     processedMarketCount += recentMarkets.length;
 
+    // Sort batch by reprocess priority: NEW → existing-active → terminal
+    recentMarkets.sort((a, b) => {
+      const aCand = a.tradeCandidates[0] ?? null;
+      const bCand = b.tradeCandidates[0] ?? null;
+      const aPri = aCand ? (['DECIDED', 'EXECUTED'].includes(aCand.stage) ? 3 : 2) : 0;
+      const bPri = bCand ? (['DECIDED', 'EXECUTED'].includes(bCand.stage) ? 3 : 2) : 0;
+      return aPri - bPri;
+    });
+
     for (const market of recentMarkets) {
       const existingCandidate = market.tradeCandidates[0] ?? null;
       const latestSnapshot = market.snapshots[0] ?? null;
@@ -177,10 +216,27 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
                 impliedPredictions.length,
             )
           : 0;
-      const walletSignalScore = existingCandidate?.walletSignalScore ?? 0;
+      const freshWalletSignal = await computeFreshWalletSignal(market.id);
+      const walletSignalScore = freshWalletSignal.score;
+      const walletSignalReason = freshWalletSignal.signalReason;
+      const signalFreshnessHours = freshWalletSignal.signalFreshnessHours;
+      const hasTrustedWalletSignal = freshWalletSignal.hasTrustedSignal;
       const relatedMarketSignalScore =
         existingCandidate?.relatedMarketSignal ??
-        (market.relatedAsA.length + market.relatedAsB.length) * 2;
+        (() => {
+          const allRelated = [...market.relatedAsA, ...market.relatedAsB];
+          if (allRelated.length === 0) return 0;
+          const violationSum = allRelated.reduce((sum, rel) => {
+            const v = rel.violationScore ?? 0;
+            if (v <= 0) return sum;
+            try {
+              const rule = rel.expectedRule ? JSON.parse(rel.expectedRule) : null;
+              if (rule?.source && rule.source !== 'FRESH_PRICE') return sum;
+            } catch {  }
+            return sum + v;
+          }, 0);
+          return Math.min(16, violationSum * 80);
+        })();
       const correlationRiskPenalty =
         existingCandidate?.correlationRiskPenalty ??
         Math.min(20, market.positions.reduce((sum, position) => sum + position.currentSize, 0) / 1000);
@@ -206,7 +262,7 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
               description: market.description ?? '',
               crossVenueMismatch: 0,
             });
-      const spreadSource = latestOrderbook ? 'REAL_ORDERBOOK' : 'ESTIMATED';
+      const spreadSource = (latestOrderbook?.spreadSource as 'REAL_ORDERBOOK' | 'ESTIMATED') || 'ESTIMATED';
 
       const freshnessMinutes = Math.max(0, (Date.now() - new Date(market.lastSeenAt).getTime()) / 60000);
       const priceMovePercent = Math.abs(currentProb - previousProb);
@@ -254,25 +310,53 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
 
       const dedupeDecision = shouldSkipCandidate(dedupeInput);
 
+      // ── Material-change reprocess gate ────────────────────────────────────
+      const prevLiquidity = previousSnapshot?.liquidity ?? liquidity;
+      const prevSpread = previousSnapshot?.spread ?? spread;
+      const liquidityChange = prevLiquidity > 0 ? Math.abs(liquidity - prevLiquidity) / prevLiquidity : 0;
+      const spreadImprovement = prevSpread > 0 ? (prevSpread - spread) / prevSpread : 0;
+      const hasNewWalletSignal =
+        hasTrustedWalletSignal &&
+        existingCandidate != null &&
+        walletSignalScore > 0 &&
+        walletSignalScore > (existingCandidate.walletSignalScore ?? 0);
+      const hasRelatedContradiction =
+        existingCandidate != null &&
+        relatedMarketSignalScore > (existingCandidate.relatedMarketSignal ?? 0);
+
+      const reprocessCheck = shouldReprocessMarket({
+        existingCandidate: existingCandidate ? {
+          stage: existingCandidate.stage,
+          cooldownUntil: existingCandidate.cooldownUntil?.toISOString() ?? null,
+          nextEligibleAt: existingCandidate.nextEligibleAt?.toISOString() ?? null,
+          lastDecisionAt: existingCandidate.lastDecisionAt?.toISOString() ?? null,
+          lastExecutionAt: existingCandidate.lastExecutionAt?.toISOString() ?? null,
+          lastResearchAt: existingCandidate.lastResearchAt?.toISOString() ?? null,
+          walletSignalScore: existingCandidate.walletSignalScore,
+          retryCount: existingCandidate.retryCount,
+        } : null,
+        priceChange: priceMovePercent,
+        priceChangeThreshold: 0.03,
+        liquidityChange,
+        liquidityChangeThreshold: 0.25,
+        spreadImprovement,
+        spreadImprovementThreshold: 0.30,
+        hasNewWalletSignal,
+        hasRelatedContradiction,
+        now,
+      });
+
+      const sortTag: SortPriorityTag = reprocessCheck.shouldReprocess
+        ? mapReprocessReasonToTag(reprocessCheck.reason)
+        : 'REFRESHED_ONLY';
+      const sortPriority = computeSortPriority(sortTag);
+
+      const reprocessBlocked = !reprocessCheck.shouldReprocess;
+
       let effectiveSkip = dedupeDecision.skip;
       let effectiveSkipReason = dedupeDecision.reason;
 
       if (dedupeDecision.skip && dedupeDecision.reason === 'COOLDOWN_ACTIVE' && existingCandidate) {
-        const reprocessCheck = shouldReprocessMarket({
-          existingCandidate: {
-            stage: existingCandidate.stage,
-            cooldownUntil: existingCandidate.cooldownUntil?.toISOString() ?? null,
-            nextEligibleAt: existingCandidate.nextEligibleAt?.toISOString() ?? null,
-            lastDecisionAt: existingCandidate.lastDecisionAt?.toISOString() ?? null,
-            lastExecutionAt: existingCandidate.lastExecutionAt?.toISOString() ?? null,
-            lastResearchAt: existingCandidate.lastResearchAt?.toISOString() ?? null,
-            walletSignalScore: existingCandidate.walletSignalScore,
-            retryCount: existingCandidate.retryCount,
-          },
-          priceChange: priceMovePercent,
-          priceChangeThreshold: 0.03,
-          now,
-        });
         if (reprocessCheck.shouldReprocess) {
           effectiveSkip = false;
           effectiveSkipReason = null;
@@ -297,6 +381,7 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         sourceQuality,
         resolutionClarity,
         walletSignalScore,
+        signalFreshnessHours,
         relatedMarketSignalScore,
         orderbookQuality,
         oracleRiskLevel: oracleRisk.riskLevel,
@@ -308,12 +393,17 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
 
       const action = classifyCandidateScore(score.totalScore);
       const thresholdBlocked = score.totalScore < candidateThreshold;
-      const queueBlocked = thresholdBlocked || action === 'SKIP' || action === 'SNAPSHOT_ONLY' || effectiveSkip;
+      const refreshOnlyBlock =
+        reprocessBlocked && existingCandidate && score.totalScore >= candidateThreshold;
+      const queueBlocked =
+        thresholdBlocked || action === 'SKIP' || action === 'SNAPSHOT_ONLY' || effectiveSkip || refreshOnlyBlock;
       const skipReason = thresholdBlocked
         ? buildThresholdSkipReason(score.totalScore, candidateThreshold)
         : effectiveSkip
           ? effectiveSkipReason
-          : score.skipReason || null;
+          : refreshOnlyBlock
+            ? `REFRESHED_ONLY:${reprocessCheck.reason}`
+            : score.skipReason || null;
       const targetStage =
         queueBlocked && (!existingCandidate || ['SCANNED', 'WATCHING'].includes(existingCandidate.stage))
           ? 'WATCHING'
@@ -334,6 +424,7 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         adjustedEdge,
         rawEdge: adjustedEdge,
         walletSignalScore,
+        walletSignalReason,
         relatedMarketSignal: relatedMarketSignalScore,
         oracleRiskPenalty: score.oracleRiskPenalty,
         correlationRiskPenalty,
@@ -344,6 +435,8 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         rejectedCriteria: rejectedCriteriaStr,
         skipReason,
         lastProcessedAt: new Date(),
+        reprocessReason: refreshOnlyBlock ? reprocessCheck.reason : (reprocessCheck.shouldReprocess ? reprocessCheck.reason : null),
+        ...(queueBlocked ? {} : { lastQueuedAt: new Date() }),
       };
 
       let candidateId = existingCandidate?.id ?? null;
@@ -374,6 +467,56 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
       if (queueBlocked) {
         totalCandidatesSkipped++;
         continue;
+      }
+
+      if (score.totalScore >= 85) {
+        const oracleResult = analyzeOracleRisk({
+          title: market.title,
+          description: market.description ?? '',
+          crossVenueMismatch: 0,
+        });
+        const requiresManual = oracleResult.riskLevel === 'HIGH' || oracleResult.riskLevel === 'BLOCK';
+        let resolutionDate: Date | null = null;
+        if (oracleResult.deadline) {
+          const parsed = new Date(oracleResult.deadline);
+          if (!isNaN(parsed.getTime())) resolutionDate = parsed;
+        }
+        await db.oracleCheck.upsert({
+          where: { marketId: market.id },
+          create: {
+            marketId: market.id,
+            oracleSource: oracleResult.oracleSource,
+            resolutionCriteria: oracleResult.resolutionCriteria,
+            resolutionDate,
+            timezone: oracleResult.timezone,
+            ambiguousWording: oracleResult.hasAmbiguousWording,
+            humanDiscretion: oracleResult.hasHumanDiscretion,
+            appealProcess: oracleResult.hasAppealProcess,
+            crossVenueMismatch: oracleResult.crossVenueMismatch > 0,
+            riskLevel: oracleResult.riskLevel,
+            oracleRiskReasons: oracleResult.issues.length > 0 ? oracleResult.issues.join('; ') : null,
+            manualReviewRequired: requiresManual,
+            manualReviewStatus: requiresManual ? 'PENDING' : 'NOT_REQUIRED',
+            manualReviewRequestedAt: requiresManual ? new Date() : undefined,
+            notes: oracleResult.issues.length > 0 ? `Oracle risk issues: ${oracleResult.issues.join(', ')}` : null,
+          },
+          update: {
+            oracleSource: oracleResult.oracleSource,
+            resolutionCriteria: oracleResult.resolutionCriteria,
+            resolutionDate,
+            timezone: oracleResult.timezone,
+            ambiguousWording: oracleResult.hasAmbiguousWording,
+            humanDiscretion: oracleResult.hasHumanDiscretion,
+            appealProcess: oracleResult.hasAppealProcess,
+            crossVenueMismatch: oracleResult.crossVenueMismatch > 0,
+            riskLevel: oracleResult.riskLevel,
+            oracleRiskReasons: oracleResult.issues.length > 0 ? oracleResult.issues.join('; ') : null,
+            manualReviewRequired: requiresManual,
+            manualReviewStatus: 'PENDING',
+            manualReviewRequestedAt: requiresManual ? new Date() : undefined,
+            notes: oracleResult.issues.length > 0 ? `Oracle risk issues: ${oracleResult.issues.join(', ')}` : null,
+          },
+        });
       }
 
       if (totalJobsCreated < maxJobs && candidateId) {
@@ -418,6 +561,13 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         nextEligibleAt: nextEligible,
       },
     });
+
+    await logStageTransition(candidate.marketId, {
+      from: 'RESEARCHING',
+      to: 'SCANNED',
+      timestamp: new Date().toISOString(),
+      reason: `Stale research lock expired (retry ${newRetryCount}/3)`,
+    }).catch(() => {});
   }
 
   // Step 4: Clean up expired paper orders

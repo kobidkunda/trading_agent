@@ -32,6 +32,13 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+.env.example
+
+# credentials - NEVER commit real credentials
+creds-current.yml
+tcc-initial.yml
+*-creds.yml
+*.cred.yml
 
 # vercel
 .vercel

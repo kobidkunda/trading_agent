@@ -22,6 +22,9 @@ import {
   XCircle,
   Timer,
   FileText,
+  Star,
+  Sparkles,
+  RotateCcw,
 } from 'lucide-react';
 import {
   Card,
@@ -67,8 +70,11 @@ interface MarketApiRecord {
   category: string;
   status: string;
   dataSource?: 'MOCK' | 'REAL';
+  firstSeenAt?: string | null;
   lastSeenAt?: string | null;
-  duplicateStatus?: 'UNIQUE' | 'DUPLICATE' | 'COOLDOWN';
+  duplicateStatus?: string;
+  reprocessReason?: string | null;
+  lastDecisionAt?: string | null;
   resolutionTime: string | null;
   createdAt: string;
   updatedAt: string;
@@ -90,6 +96,8 @@ interface MarketApiRecord {
     researchQueued: boolean;
     candidateScore?: number | null;
     nextEligibleAt?: string | null;
+    reprocessReason?: string | null;
+    lastDecisionAt?: string | null;
   }>
 }
 
@@ -203,8 +211,11 @@ interface MarketRow {
   dataSource: 'MOCK' | 'REAL';
   candidateScore: number | null;
   nextEligibleAt: string | null;
-  duplicateStatus: 'UNIQUE' | 'DUPLICATE' | 'COOLDOWN';
+  duplicateStatus: string;
   lastSeenAt: string | null;
+  firstSeenAt: string | null;
+  reprocessReason: string | null;
+  lastDecisionAt: string | null;
 }
 
 function flattenMarketRecord(m: MarketApiRecord): MarketRow {
@@ -217,7 +228,7 @@ function flattenMarketRecord(m: MarketApiRecord): MarketRow {
     dataSource: m.dataSource ?? 'REAL',
     candidateScore: candidate?.candidateScore ?? null,
     nextEligibleAt: candidate?.nextEligibleAt ?? null,
-    duplicateStatus: m.duplicateStatus ?? 'UNIQUE',
+    duplicateStatus: (m.duplicateStatus as 'UNIQUE' | 'DUPLICATE' | 'COOLDOWN') ?? 'UNIQUE',
     lastSeenAt: m.lastSeenAt ?? null,
   });
   return {
@@ -242,6 +253,9 @@ function flattenMarketRecord(m: MarketApiRecord): MarketRow {
     nextEligibleAt: details.nextEligibleAt,
     duplicateStatus: details.duplicateStatus,
     lastSeenAt: details.lastSeenAt,
+    firstSeenAt: m.firstSeenAt ?? null,
+    reprocessReason: m.reprocessReason ?? candidate?.reprocessReason ?? null,
+    lastDecisionAt: m.lastDecisionAt ?? candidate?.lastDecisionAt ?? null,
   };
 }
 
@@ -941,6 +955,15 @@ function venueColor(v: Venue): string {
 
 // ── component ────────────────────────────────────────────────────────────────
 
+type PriorityFilter = 'aplus' | 'new' | 'changed' | 'all';
+
+const PRIORITY_CONFIG: Record<PriorityFilter, { label: string; icon: React.ElementType; params: string }> = {
+  aplus: { label: '⭐ A+', icon: Star, params: 'onlyAPlus=true&sortPriority=score' },
+  new: { label: '🆕 New', icon: Sparkles, params: 'onlyNew=true&sortBy=firstSeen' },
+  changed: { label: '🔄 Changed', icon: RotateCcw, params: 'onlyChanged=true&sortBy=updatedAt' },
+  all: { label: 'All', icon: Filter, params: 'sortBy=updatedAt' },
+};
+
 export function MarketTriage() {
   const { tradingMode } = useTradingStore();
   const [markets, setMarkets] = useState<MarketRow[]>([]);
@@ -948,21 +971,28 @@ export function MarketTriage() {
   const [search, setSearch] = useState('');
   const [venueFilter, setVenueFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('aplus');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+
+  const fetchUrl = useMemo(() => {
+    const params = new URLSearchParams(PRIORITY_CONFIG[priorityFilter].params);
+    params.set('limit', '200');
+    return `/api/markets?${params.toString()}`;
+  }, [priorityFilter]);
 
   useEffect(() => {
     let cancelled = false;
     async function fetchMarkets() {
       try {
-        const res = await fetch('/api/markets');
+        const res = await fetch(fetchUrl);
         if (res.ok && !cancelled) {
           const data = await res.json();
           const raw = data.markets ?? [];
           setMarkets(raw.map(flattenMarketRecord));
         }
       } catch {
-        // failed silently - no toast import
+        // failed silently
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -973,12 +1003,12 @@ export function MarketTriage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [fetchUrl]);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const res = await fetch('/api/markets');
+      const res = await fetch(fetchUrl);
       if (res.ok) {
         const data = await res.json();
         const raw = data.markets ?? [];
@@ -989,7 +1019,7 @@ export function MarketTriage() {
     } finally {
       setTimeout(() => setRefreshing(false), 800);
     }
-  }, []);
+  }, [fetchUrl]);
 
   const filtered = useMemo(() => {
     return filterMarketsForMode(markets, tradingMode).filter((m) => {
@@ -1097,6 +1127,40 @@ export function MarketTriage() {
             ))}
           </div>
 
+          {/* Priority filter chips */}
+          <Card className="border-gray-800 bg-gray-900">
+            <CardContent className="p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="mr-1 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  View
+                </span>
+                {(Object.keys(PRIORITY_CONFIG) as PriorityFilter[]).map((key) => {
+                  const cfg = PRIORITY_CONFIG[key];
+                  const Icon = cfg.icon;
+                  const active = priorityFilter === key;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => {
+                        setPriorityFilter(key);
+                        setLoading(true);
+                      }}
+                      className={cn(
+                        'inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors',
+                        active
+                          ? 'bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 shadow-sm shadow-emerald-500/10'
+                          : 'border border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600 hover:text-gray-300',
+                      )}
+                    >
+                      <Icon className="h-3 w-3" />
+                      {cfg.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Filters */}
           <Card className="border-gray-800 bg-gray-900">
             <CardContent className="p-4">
@@ -1163,13 +1227,14 @@ export function MarketTriage() {
                       <TableHead className="text-gray-500">Meta</TableHead>
                       <TableHead className="text-gray-500">Triage</TableHead>
                       <TableHead className="text-gray-500">Stage</TableHead>
+                      <TableHead className="text-gray-500">Change</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filtered.length === 0 ? (
                       <TableRow className="border-gray-800">
                         <TableCell
-                          colSpan={9}
+                          colSpan={10}
                           className="py-8 text-center text-sm text-gray-600"
                         >
                           No markets match the current filters
@@ -1241,17 +1306,31 @@ export function MarketTriage() {
                             <TableCell>
                               <div className="space-y-1 text-[10px] text-gray-400">
                                 <p>ID: {m.externalId ?? '—'}</p>
-                                <p>Age: {m.snapshotAgeMinutes}m</p>
+                                {m.firstSeenAt && (
+                                  <p>1st: {new Date(m.firstSeenAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</p>
+                                )}
+                                {m.lastDecisionAt && (
+                                  <p>Dec: {new Date(m.lastDecisionAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</p>
+                                )}
                                 <p>Score: {m.candidateScore ?? '—'}</p>
                                 <p>Src: {m.dataSource}</p>
                               </div>
                             </TableCell>
                             <TableCell>{triageBadge(m.triageStatus)}</TableCell>
                             <TableCell>{stageBadge(m.stage)}</TableCell>
+                            <TableCell>
+                              {m.reprocessReason ? (
+                                <Badge className="text-[9px] border-amber-500/30 bg-amber-500/10 text-amber-400 max-w-24 truncate" title={m.reprocessReason}>
+                                  {m.reprocessReason}
+                                </Badge>
+                              ) : (
+                                <span className="text-[10px] text-gray-700">—</span>
+                              )}
+                            </TableCell>
                           </TableRow>
                           {expandedId === m.id && (
                             <TableRow key={`${m.id}-detail`} className="border-gray-800 bg-gray-900/80">
-                              <TableCell colSpan={9} className="p-0">
+                              <TableCell colSpan={10} className="p-0">
                                 <InlineMarketDetail market={m} onClose={() => setExpandedId(null)} />
                               </TableCell>
                             </TableRow>

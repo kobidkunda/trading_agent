@@ -163,6 +163,30 @@ export interface RelationshipResult {
 export type RelationshipSeverity = 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'BLOCK';
 export type RelationshipAction = 'NONE' | 'FLAG' | 'DEEP_RESEARCH' | 'MANUAL_REVIEW' | 'BLOCK_A_PLUS';
 
+/**
+ * Signal quality indicator for related market evaluations.
+ * - FRESH_PRICE: both markets have prices updated within 6 hours — usable for trading signals
+ * - STALE_PRICE: prices present but older than 6 hours — store relationship but do NOT use for signals
+ * - MISSING_PRICE: one or both markets lack price data — skip evaluation entirely
+ */
+export type RelationSignalSource = 'FRESH_PRICE' | 'STALE_PRICE' | 'MISSING_PRICE';
+
+const VIOLATION_MISSING_PRICE = -1;
+
+/**
+ * For directional relationships (A_IMPLIES_B, NESTED_THRESHOLD):
+ * marketIdA is always the source (implying market) and marketIdB is the
+ * target (implied market). The relationship is evaluated in that direction only.
+ *
+ * Example: "BTC > $120K" (A, source) implies "BTC > $100K" (B, target).
+ * P(A) must be ≤ P(B) — the harder condition is less probable.
+ * The lower threshold does NOT imply the higher one.
+ *
+ * Non-directional relationships (SAME_OUTCOME, OPPOSITE_OUTCOME, DUPLICATE,
+ * MUTUALLY_EXCLUSIVE, COLLECTIVELY_EXHAUSTIVE, RANGE_BUCKET) have marketIdA/B
+ * sorted alphabetically for deterministic storage.
+ */
+
 export interface RelationshipEvaluation {
   relationshipType: RelationshipType;
   expectedRule: string;
@@ -384,15 +408,39 @@ function coversAllOutcomes(outcomesA: string[], outcomesB: string[]): boolean {
 
 export function evaluateRelationship(
   relationship: RelationshipResult,
-  marketA: { impliedProb: number },
-  marketB: { impliedProb: number },
+  marketA: { impliedProb: number | null; signalSource: RelationSignalSource },
+  marketB: { impliedProb: number | null; signalSource: RelationSignalSource },
 ): RelationshipEvaluation {
   const { type, confidence } = relationship;
-  const formulaVersion = 'trusted-paper-v1';
+  const formulaVersion = 'trusted-paper-v2';
+
+  const signalSource = (
+    marketA.signalSource === 'MISSING_PRICE' || marketB.signalSource === 'MISSING_PRICE'
+  ) ? 'MISSING_PRICE' as const
+    : (marketA.signalSource === 'STALE_PRICE' || marketB.signalSource === 'STALE_PRICE')
+      ? 'STALE_PRICE' as const
+      : 'FRESH_PRICE' as const;
+
+  if (signalSource === 'MISSING_PRICE') {
+    return {
+      relationshipType: type,
+      expectedRule: JSON.stringify({ rule: 'MISSING_PRICE', note: 'Cannot evaluate without price data' }),
+      violationScore: VIOLATION_MISSING_PRICE,
+      confidence,
+      severity: 'NONE',
+      action: 'NONE',
+      reason: 'Missing price data for one or both markets',
+      formulaVersion,
+      explanation: relationship.reason,
+      priceInconsistency: null,
+      possibleEdge: null,
+    };
+  }
+
   const probA = marketA.impliedProb;
   const probB = marketB.impliedProb;
 
-  let expectedRule = '';
+  let expectedRuleObj: Record<string, unknown> = { source: signalSource };
   let violationScore = 0;
   let priceInconsistency: number | null = null;
   let possibleEdge: number | null = null;
@@ -401,33 +449,33 @@ export function evaluateRelationship(
   switch (type) {
     case 'DUPLICATE':
     case 'SAME_OUTCOME':
-      expectedRule = 'P(A) should approximately equal P(B)';
-      violationScore = Math.abs(probA - probB);
+      expectedRuleObj = { ...expectedRuleObj, rule: 'P(A) ≈ P(B)', direction: 'symmetric' };
+      violationScore = Math.abs((probA ?? 0) - (probB ?? 0));
       priceInconsistency = violationScore;
       possibleEdge = violationScore > 0.03 ? violationScore / 2 : null;
       break;
     case 'OPPOSITE_OUTCOME':
-      expectedRule = 'P(A) + P(B) should approximately equal 1';
-      violationScore = Math.abs((probA + probB) - 1);
+      expectedRuleObj = { ...expectedRuleObj, rule: 'P(A) + P(B) ≈ 1', direction: 'symmetric' };
+      violationScore = Math.abs(((probA ?? 0) + (probB ?? 0)) - 1);
       priceInconsistency = violationScore;
       possibleEdge = violationScore > 0.03 ? violationScore / 2 : null;
       break;
     case 'A_IMPLIES_B':
     case 'NESTED_THRESHOLD':
-      expectedRule = 'P(A) must be less than or equal to P(B)';
-      violationScore = Math.max(0, probA - probB);
+      expectedRuleObj = { ...expectedRuleObj, rule: 'P(A) ≤ P(B)', direction: 'A→B', sourceMarket: 'marketIdA', targetMarket: 'marketIdB' };
+      violationScore = Math.max(0, (probA ?? 0) - (probB ?? 0));
       priceInconsistency = violationScore;
       possibleEdge = violationScore > 0.03 ? violationScore : null;
       break;
     case 'B_IMPLIES_A':
-      expectedRule = 'P(B) must be less than or equal to P(A)';
-      violationScore = Math.max(0, probB - probA);
+      expectedRuleObj = { ...expectedRuleObj, rule: 'P(B) ≤ P(A)', direction: 'B→A', sourceMarket: 'marketIdB', targetMarket: 'marketIdA' };
+      violationScore = Math.max(0, (probB ?? 0) - (probA ?? 0));
       priceInconsistency = violationScore;
       possibleEdge = violationScore > 0.03 ? violationScore : null;
       break;
     case 'MUTUALLY_EXCLUSIVE': {
-      const total = probA + probB;
-      expectedRule = 'Sum of mutually exclusive probabilities must be <= 1';
+      const total = (probA ?? 0) + (probB ?? 0);
+      expectedRuleObj = { ...expectedRuleObj, rule: 'P(A) + P(B) ≤ 1', direction: 'symmetric' };
       violationScore = Math.max(0, total - 1);
       priceInconsistency = violationScore;
       possibleEdge = violationScore > 0.03 ? violationScore : null;
@@ -436,8 +484,8 @@ export function evaluateRelationship(
     }
     case 'COLLECTIVELY_EXHAUSTIVE':
     case 'RANGE_BUCKET': {
-      const total = probA + probB;
-      expectedRule = 'Exhaustive outcome probabilities should sum to approximately 1';
+      const total = (probA ?? 0) + (probB ?? 0);
+      expectedRuleObj = { ...expectedRuleObj, rule: 'P(A) + P(B) ≈ 1', direction: 'symmetric' };
       violationScore = Math.abs(total - 1);
       priceInconsistency = violationScore;
       possibleEdge = violationScore > 0.05 ? violationScore / 2 : null;
@@ -446,12 +494,14 @@ export function evaluateRelationship(
     }
     case 'UNRELATED':
     default:
-      expectedRule = 'No deterministic pricing rule';
+      expectedRuleObj = { ...expectedRuleObj, rule: 'NONE', direction: 'none' };
       violationScore = 0;
       priceInconsistency = null;
       possibleEdge = null;
       break;
   }
+
+  const expectedRule = JSON.stringify(expectedRuleObj);
 
   const severity = deriveSeverity(type, violationScore);
   const action = deriveAction(confidence, severity);
@@ -547,13 +597,13 @@ export async function computeRelatedMarketSignal(
   for (const rel of related) {
     breakdown[rel.relationshipType] = (breakdown[rel.relationshipType] || 0) + 1;
 
-    if ((rel.violationScore ?? rel.contradictionScore ?? 0) > 0) {
+    const violation = rel.violationScore ?? rel.contradictionScore ?? 0;
+    if (violation > 0 && violation !== VIOLATION_MISSING_PRICE) {
       contradictory++;
-      const score = rel.violationScore ?? rel.contradictionScore ?? 0;
-      cumulativeScore += score * 10;
-      if (rel.alertText && score > maxAlertScore) {
+      cumulativeScore += violation * 10;
+      if (rel.alertText && violation > maxAlertScore) {
         maxAlert = rel.alertText;
-        maxAlertScore = score;
+        maxAlertScore = violation;
       }
     }
   }
@@ -571,6 +621,15 @@ export async function computeRelatedMarketSignal(
 // Main Scanner Entry Point
 // ────────────────────────────────────────────
 
+/** Check freshness: returns signalSource based on lastSeenAt age */
+function freshnessToSignalSource(lastSeenAt: Date | null, latestPrice: number | null): RelationSignalSource {
+  if (latestPrice == null) return 'MISSING_PRICE';
+  if (!lastSeenAt) return 'MISSING_PRICE';
+  const ageHours = (Date.now() - lastSeenAt.getTime()) / (1000 * 60 * 60);
+  if (ageHours > 6) return 'STALE_PRICE';
+  return 'FRESH_PRICE';
+}
+
 export async function scanRelatedMarkets(marketId: string): Promise<number> {
   const market = await db.market.findUnique({
     where: { id: marketId },
@@ -578,6 +637,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
       id: true,
       title: true,
       latestPrice: true,
+      lastSeenAt: true,
     },
   });
 
@@ -595,12 +655,14 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
       id: true,
       title: true,
       latestPrice: true,
+      lastSeenAt: true,
     },
   });
 
   if (recentMarkets.length === 0) return 0;
 
   const entitiesA = extractEntities(market.title);
+  const sigSrcA = freshnessToSignalSource(market.lastSeenAt, market.latestPrice);
   let pairCount = 0;
 
   for (const other of recentMarkets) {
@@ -614,14 +676,28 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
 
     if (relationship.type === 'UNRELATED') continue;
 
+    const sigSrcB = freshnessToSignalSource(other.lastSeenAt, other.latestPrice);
+
     const evaluation = evaluateRelationship(
       relationship,
-      { impliedProb: market.latestPrice ?? 0.5 },
-      { impliedProb: other.latestPrice ?? 0.5 },
+      { impliedProb: market.latestPrice, signalSource: sigSrcA },
+      { impliedProb: other.latestPrice, signalSource: sigSrcB },
     );
 
-    // Deterministic pair ordering: A < B lexicographically
-    const pair = [market.id, other.id].sort();
+    // Directional pair ordering:
+    // For directional relationships, marketIdA is always the source, marketIdB the target.
+    // B_IMPLIES_A gets normalized to A_IMPLIES_B with swapped pair.
+    // For all non-directional types, sort alphabetically for deterministic storage.
+    let pair: [string, string];
+    let finalType = relationship.type;
+    if (relationship.type === 'A_IMPLIES_B' || relationship.type === 'NESTED_THRESHOLD') {
+      pair = [market.id, other.id];
+    } else if (relationship.type === 'B_IMPLIES_A') {
+      pair = [other.id, market.id];
+      finalType = 'A_IMPLIES_B';
+    } else {
+      pair = [market.id, other.id].sort() as [string, string];
+    }
 
     await db.relatedMarket.upsert({
       where: {
@@ -633,7 +709,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
         create: {
           marketIdA: pair[0],
           marketIdB: pair[1],
-          relationshipType: relationship.type,
+          relationshipType: finalType,
           relationshipConfidence: relationship.confidence,
           expectedRule: evaluation.expectedRule,
           formulaVersion: evaluation.formulaVersion,
@@ -647,7 +723,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
           alertText: evaluation.reason,
         },
         update: {
-          relationshipType: relationship.type,
+          relationshipType: finalType,
           relationshipConfidence: relationship.confidence,
           expectedRule: evaluation.expectedRule,
           formulaVersion: evaluation.formulaVersion,

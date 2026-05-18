@@ -216,19 +216,22 @@ export function resolvePaperFill(params: {
     };
   }
 
-  if (fillProb < 0.20) {
+  if (fillProb < 0.10) {
+    // Very low fill probability — NO_FILL but retryable (not terminal FAIL).
+    // Subsequent fill attempts may succeed as orderbook conditions improve.
     return {
       filledSize: 0,
       avgFillPrice: 0,
       remainingSize: params.size,
       isFullyFilled: false,
-      lifecycleStatus: 'FAILED',
+      lifecycleStatus: 'SUBMITTED',
     };
   }
 
   if (fillProb < 0.75) {
-    const partialRatio = Math.min(0.65, fillProb * 0.9);
-    const filledSize = Math.round(params.size * partialRatio * 100) / 100;
+    // Partial fill proportional to fillProbability (not scaled down).
+    // Fill at fillProb * size, which represents actual fill likelihood.
+    const filledSize = Math.round(params.size * fillProb * 100) / 100;
     const impactCost = Math.max(params.priceImpact ?? 0, (params.spread ?? 0) * 0.25);
     const avgFillPrice = params.price + impactCost;
 

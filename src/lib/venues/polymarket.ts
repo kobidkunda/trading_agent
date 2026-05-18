@@ -247,7 +247,7 @@ export async function getPolymarketMarkets(options: VenueScanOptions = {}): Prom
     }
 
     const data = await response.json();
-    const markets = Array.isArray(data) ? data : data.markets || [];
+    const markets = Array.isArray(data) ? data : (data.markets || data.data || []);
     const nextCursor = data.next_cursor || data.cursor || null;
     const hasMore = Boolean(nextCursor);
 
@@ -317,10 +317,22 @@ export async function getPolymarketMarkets(options: VenueScanOptions = {}): Prom
   }
 }
 
+function fingerprintPage(externalIds: string[]): string {
+  let hash = 5381;
+  for (const id of [...externalIds].sort()) {
+    for (let i = 0; i < id.length; i++) {
+      hash = ((hash << 5) + hash) + id.charCodeAt(i);
+    }
+    hash = (hash ^ (hash >>> 16)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
 export async function getAllPolymarketMarkets(
   options: GetAllPolymarketMarketsOptions = {},
-): Promise<{ markets: PolymarketFetchResult['markets']; nextCursor: string | null; pagesScanned: number; hasMore: boolean; }> {
+): Promise<{ markets: PolymarketFetchResult['markets']; nextCursor: string | null; pagesScanned: number; hasMore: boolean; pageFingerprints: string[] }> {
   const allMarkets: PolymarketFetchResult['markets'] = [];
+  const pageFingerprints: string[] = [];
   const maxPages = options.maxPages ?? 5;
   const scanUntilNoCursor = options.scanUntilNoCursor ?? false;
   const rateLimitMs = options.rateLimitMs ?? 500;
@@ -341,6 +353,8 @@ export async function getAllPolymarketMarkets(
     if (result.markets.length === 0) {
       break;
     }
+    const pageIds = result.markets.map((m) => m.externalId);
+    pageFingerprints.push(fingerprintPage(pageIds));
     allMarkets.push(...result.markets);
     pageCount++;
     if (!result.nextCursor || !result.hasMore) break;
@@ -357,6 +371,7 @@ export async function getAllPolymarketMarkets(
     nextCursor,
     pagesScanned: pageCount,
     hasMore,
+    pageFingerprints,
   };
 }
 

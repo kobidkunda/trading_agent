@@ -22,6 +22,7 @@ async function getEnsembleForMarket(marketId: string) {
     predictedProb: r.predictedProb,
     confidence: r.confidence ?? 0.5,
     weight: r.weight,
+    category: r.category,
   }));
 
   const result = computeWeightedEnsemble(predictions);
@@ -91,6 +92,12 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'recompute requires marketId' }, { status: 400 });
       }
 
+      const market = await db.market.findUnique({
+        where: { id: body.marketId },
+        select: { category: true },
+      });
+      const marketCategory = market?.category ?? 'general';
+
       const researchRuns = await db.researchRun.findMany({
         where: { marketId: body.marketId },
         orderBy: { createdAt: 'desc' },
@@ -104,7 +111,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const predictions = await collectPredictionsFromAgentOutputs(researchRuns[0].id);
+      const predictions = await collectPredictionsFromAgentOutputs(researchRuns[0].id, marketCategory);
 
       if (predictions.length === 0) {
         return NextResponse.json(

@@ -33,6 +33,21 @@ export interface CandidateDedupeDecision {
 
 // ── Reprocess / cooldown override ──────────────────────────────────────
 
+export type ReprocessReason =
+  | 'new_candidate'
+  | 'price_move_3pct'
+  | 'liquidity_change_25pct'
+  | 'spread_improve_30pct'
+  | 'wallet_signal_new'
+  | 'related_contradiction'
+  | 'cooldown_expired'
+  | 'manual_force'
+  | 'eligible'
+  | `exponential_backoff:retry_${number}`
+  | `terminal_decided`
+  | `terminal_executed`
+  | 'cooldown_active';
+
 export interface ReprocessCandidateState {
   stage: string;
   cooldownUntil: string | null;
@@ -46,18 +61,29 @@ export interface ReprocessCandidateState {
 
 export interface ReprocessCheckInput {
   existingCandidate: ReprocessCandidateState | null;
+  /** Absolute price change (0-1 scale) */
   priceChange: number;
   priceChangeThreshold: number;
+  /** Absolute liquidity change as fraction of previous (0-∞) */
+  liquidityChange: number;
+  liquidityChangeThreshold: number;
+  /** Spread improvement as fraction of previous (positive = tightened) */
+  spreadImprovement: number;
+  spreadImprovementThreshold: number;
+  /** New wallet signal detected since last action */
+  hasNewWalletSignal: boolean;
+  /** Related-market contradiction surfaced since last check */
+  hasRelatedContradiction: boolean;
   now: string;
 }
 
 export interface ReprocessCheckResult {
   shouldReprocess: boolean;
-  reason: string;
+  reason: ReprocessReason | string;
 }
 
 const COOLDOWN_HOURS_WATCH = 6;
-const COOLDOWN_HOURS_DECIDED = 24;
+const COOLDOWN_HOURS_DECIDED = 12;
 const COOLDOWN_HOURS_EXECUTED = 24;
 
 export const COOLDOWN_DEFAULTS = {
@@ -69,14 +95,22 @@ export const COOLDOWN_DEFAULTS = {
 /**
  * Determines whether an existing candidate should be reprocessed.
  *
+ * Material-change gate: only rescore/reenqueue if the market materially changed
+ * (price move, liquidity change, spread improvement) or has new signals.
+ * REFRESHED_ONLY markets get snapshots but not new candidate jobs.
+ *
  * Rules (evaluated in order):
- * 1. No existing candidate → always reprocess
- * 2. Cooldown active AND price moved >= threshold → override (price signal)
- * 3. Cooldown active AND new (higher) wallet signal since last action → override
- * 4. Cooldown active → skip
- * 5. EXECUTED stage with cooldown AND price unchanged → skip
- * 6. Failed research with high retry count → exponential backoff
- * 7. Otherwise → eligible
+ * 1. No existing candidate → new_candidate
+ * 2. Price moved >= 3% → price_move_3pct (material change)
+ * 3. Liquidity changed >= 25% → liquidity_change_25pct (material change)
+ * 4. Spread improved >= 30% → spread_improve_30pct (material change)
+ * 5. New wallet signal → wallet_signal_new
+ * 6. Related-market contradiction → related_contradiction
+ * 7. Terminal stages (DECIDED/EXECUTED): only reprocess if material change or manual force
+ *    DECIDED cooldown = 12h, EXECUTED cooldown = 24h
+ * 8. Cooldown active → cooldown_active
+ * 9. Exponential backoff for RESEARCHING retries
+ * 10. Otherwise → cooldown_expired
  */
 export function shouldReprocessMarket(input: ReprocessCheckInput): ReprocessCheckResult {
   const cand = input.existingCandidate;
@@ -85,37 +119,46 @@ export function shouldReprocessMarket(input: ReprocessCheckInput): ReprocessChec
     return { shouldReprocess: true, reason: 'new_candidate' };
   }
 
+  // ── Material change checks (bypass all cooldowns) ──────────────────────
+  if (input.priceChange >= input.priceChangeThreshold) {
+    return { shouldReprocess: true, reason: 'price_move_3pct' };
+  }
+
+  if (input.liquidityChange >= input.liquidityChangeThreshold) {
+    return { shouldReprocess: true, reason: 'liquidity_change_25pct' };
+  }
+
+  if (input.spreadImprovement >= input.spreadImprovementThreshold) {
+    return { shouldReprocess: true, reason: 'spread_improve_30pct' };
+  }
+
+  // ── Signal-based overrides ───────────────────────────────────────────
+  if (input.hasNewWalletSignal) {
+    return { shouldReprocess: true, reason: 'wallet_signal_new' };
+  }
+
+  if (input.hasRelatedContradiction) {
+    return { shouldReprocess: true, reason: 'related_contradiction' };
+  }
+
+  // ── Terminal stage gate ──────────────────────────────────────────────
+  const isTerminal = cand.stage === 'DECIDED' || cand.stage === 'EXECUTED';
+  if (isTerminal) {
+    // Only reprocess if material change (checked above) or manual force
+    // (manual_force is set externally; if not material, block)
+    return { shouldReprocess: false, reason: `terminal_${cand.stage.toLowerCase()}` };
+  }
+
+  // ── Cooldown check ───────────────────────────────────────────────────
   const cooldownActive =
     isFuture(cand.cooldownUntil, input.now) ||
     isFuture(cand.nextEligibleAt, input.now);
-
-  // Price override: cooldown is bypassed when price moves >= threshold
-  if (cooldownActive && input.priceChange >= input.priceChangeThreshold) {
-    return { shouldReprocess: true, reason: 'price_move_override' };
-  }
-
-  // Wallet signal override: new/higher wallet signal since last decision/execution
-  if (cooldownActive) {
-    const lastActionAt = cand.lastExecutionAt ?? cand.lastDecisionAt;
-    if (
-      cand.walletSignalScore != null &&
-      cand.walletSignalScore > 0 &&
-      (!lastActionAt || new Date(cand.cooldownUntil!).getTime() > new Date(lastActionAt).getTime())
-    ) {
-      return { shouldReprocess: true, reason: 'wallet_signal_override' };
-    }
-  }
 
   if (cooldownActive) {
     return { shouldReprocess: false, reason: 'cooldown_active' };
   }
 
-  // EXECUTED market with cooldown but no price movement → still skip
-  if (cand.stage === 'EXECUTED' && cand.cooldownUntil && isFuture(cand.cooldownUntil, input.now)) {
-    return { shouldReprocess: false, reason: 'executed_cooldown_active' };
-  }
-
-  // Exponential backoff for failed research: 2^retry * 30min
+  // ── Exponential backoff for failed research ───────────────────────────
   if (cand.stage === 'RESEARCHING' && cand.retryCount >= 2) {
     const backoffMs = Math.pow(2, cand.retryCount) * 30 * 60 * 1000;
     const lastAttemptAt = cand.lastResearchAt ? new Date(cand.lastResearchAt).getTime() : Date.now();
@@ -125,7 +168,7 @@ export function shouldReprocessMarket(input: ReprocessCheckInput): ReprocessChec
     }
   }
 
-  return { shouldReprocess: true, reason: 'eligible' };
+  return { shouldReprocess: true, reason: 'cooldown_expired' };
 }
 
 export function computeNextEligibleAt(now: Date, hoursFromNow: number): Date {

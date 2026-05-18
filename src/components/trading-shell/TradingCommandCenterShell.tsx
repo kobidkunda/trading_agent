@@ -29,6 +29,7 @@ import {
   History,
   SlidersHorizontal,
   Cpu,
+  ClipboardList,
 } from 'lucide-react';
 import { useTradingStore } from '@/store/trading-store';
 import {
@@ -74,6 +75,7 @@ import { PaperBetsDashboard } from '@/components/trading/PaperBetsDashboard';
 import { BacktestsDashboard } from '@/components/trading/BacktestsDashboard';
 import { StrategyOptimizerDashboard } from '@/components/trading/StrategyOptimizerDashboard';
 import { AppSettings } from '@/components/trading/AppSettings';
+import { LogsDashboard } from '@/components/trading/LogsDashboard';
 
 interface NavItem {
   id: PageView;
@@ -108,6 +110,7 @@ const NAV_ICONS: Record<PageView, React.ElementType> = {
   pipelineSettings: Settings,
   map: Network,
   researchProvider: BookOpen,
+  logs: ClipboardList,
 };
 
 const NAV_ITEMS: NavItem[] = TRADING_PAGES.map((page) => ({
@@ -421,6 +424,8 @@ function PageContent({ activePage }: { activePage: PageView }) {
       return <SystemMap />;
     case 'researchProvider':
       return <ResearchProvider />;
+    case 'logs':
+      return <LogsDashboard />;
     default:
       return <SimulationLab />;
   }

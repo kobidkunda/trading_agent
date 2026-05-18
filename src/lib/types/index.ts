@@ -58,6 +58,7 @@ export const JOB_TYPES = [
   'JUDGE_MARKET',
   'RISK',
   'RISK_CHECK',
+  'ORACLE_CHECK',
   'EXECUTE',
   'PAPER_EXECUTE',
   'LIVE_EXECUTE',
@@ -439,7 +440,7 @@ export type RelationshipType =
   | 'COLLECTIVELY_EXHAUSTIVE'
   | 'NESTED_THRESHOLD'
   | 'RANGE_BUCKET'
-  | 'VENUE_DUPLICATE';
+  | 'DUPLICATE';
 
 export interface APlusSignalConfig {
   minCandidateScore: number;

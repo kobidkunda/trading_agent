@@ -73,13 +73,13 @@ const PIPELINE_STAGES: PipelineStageInfo[] = [
 ];
 
 const SERVICE_DEFS = [
-  { id: 'llm', label: 'LLM Provider', url: 'http://192.168.88.97:4444/v1', icon: Cpu, color: 'text-blue-400', borderColor: 'border-blue-500/40', desc: 'All agent LLM calls (triage, bull, bear, contradiction, judge)' },
-  { id: 'deerflow', label: 'DeerFlow Research', url: 'http://192.168.88.97:2026', icon: Brain, color: 'text-indigo-400', borderColor: 'border-indigo-500/40', desc: 'Deep multi-hop research with optional API model selection and local fallback' },
+  { id: 'llm', label: 'LLM Provider', url: '', icon: Cpu, color: 'text-blue-400', borderColor: 'border-blue-500/40', desc: 'All agent LLM calls (triage, bull, bear, contradiction, judge)' },
+  { id: 'deerflow', label: 'DeerFlow Research', url: '', icon: Brain, color: 'text-indigo-400', borderColor: 'border-indigo-500/40', desc: 'Deep multi-hop research with optional API model selection and local fallback' },
   { id: 'tradingagents', label: 'TradingAgents', url: 'http://localhost:8100', icon: Activity, color: 'text-rose-400', borderColor: 'border-rose-500/40', desc: 'Multi-source analysts with app-driven provider, deep/quick models, and debate rounds' },
-  { id: 'agent-reach', label: 'Agent-Reach', url: 'http://192.168.88.96:7234/mcp', icon: GitBranch, color: 'text-sky-400', borderColor: 'border-sky-500/40', desc: 'Optional MCP social ingestion used directly and as TradingAgents enrichment' },
-  { id: 'searxng', label: 'SearXNG', url: 'http://192.168.88.97:8888', icon: Search, color: 'text-amber-400', borderColor: 'border-amber-500/40', desc: 'Web search for research, DeerFlow iteration, and TradingAgents social discovery' },
+  { id: 'agent-reach', label: 'Agent-Reach', url: '', icon: GitBranch, color: 'text-sky-400', borderColor: 'border-sky-500/40', desc: 'Optional MCP social ingestion used directly and as TradingAgents enrichment' },
+  { id: 'searxng', label: 'SearXNG', url: '', icon: Search, color: 'text-amber-400', borderColor: 'border-amber-500/40', desc: 'Web search for research, DeerFlow iteration, and TradingAgents social discovery' },
   { id: 'finance', label: 'Finance Vendors', url: 'Alpha Vantage / Finnhub', icon: Wallet, color: 'text-emerald-400', borderColor: 'border-emerald-500/40', desc: 'Optional ta-service enrichment for tradable symbols and proxy context' },
-  { id: 'qdrant', label: 'Qdrant', url: 'http://192.168.88.97:6333', icon: Database, color: 'text-purple-400', borderColor: 'border-purple-500/40', desc: 'Vector database for research memory & similar market retrieval' },
+  { id: 'qdrant', label: 'Qdrant', url: '', icon: Database, color: 'text-purple-400', borderColor: 'border-purple-500/40', desc: 'Vector database for research memory & similar market retrieval' },
 ];
 
 export function SystemMap() {
@@ -181,7 +181,7 @@ export function SystemMap() {
                       <Clock className="h-3.5 w-3.5 text-gray-600" />
                     )}
                   </div>
-                  <p className="mt-1 text-[10px] text-gray-600 truncate font-mono">{svc.url}</p>
+                  <p className="mt-1 text-[10px] text-gray-600 truncate font-mono">{svc.url || 'Not configured'}</p>
                   <p className="mt-1 text-[11px] text-gray-500">{svc.desc}</p>
                 </div>
               );

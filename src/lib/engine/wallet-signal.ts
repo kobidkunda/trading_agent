@@ -52,6 +52,67 @@ export async function computeWalletSignalScore(marketId: string): Promise<number
   return Math.min(20, Math.round(score));
 }
 
+/**
+ * Fresh wallet signal result with trust filtering and age decay.
+ * Called from market-loop each iteration to avoid stale scores.
+ */
+export interface FreshWalletSignalResult {
+  score: number;             // 0–20, raw score (before decay in scoring)
+  hasTrustedSignal: boolean;
+  signalReason: string;      // stored on TradeCandidate.walletSignalReason
+  signalFreshnessHours: number; // hours since most recent trusted trade (for decay)
+  trustedTradeCount: number;
+  eligibleTrustedWalletCount: number;
+}
+
+export async function computeFreshWalletSignal(marketId: string): Promise<FreshWalletSignalResult> {
+  const [trustContext, rawScore] = await Promise.all([
+    getWalletSignalTrustContext(marketId),
+    computeWalletSignalScore(marketId),
+  ]);
+
+  if (!trustContext.hasTrustedEligibleWalletSignal) {
+    return {
+      score: 0,
+      hasTrustedSignal: false,
+      signalReason: 'NO_TRUSTED_ELIGIBLE_WALLET',
+      signalFreshnessHours: 0,
+      trustedTradeCount: trustContext.trustedTradeCount,
+      eligibleTrustedWalletCount: trustContext.eligibleTrustedWalletCount,
+    };
+  }
+
+  // Compute freshness: hours since most recent trusted wallet trade for this market
+  const mostRecentTrade = await db.walletTrade.findFirst({
+    where: {
+      marketId,
+      trustedSource: true,
+      wallet: {
+        resolvedTrades: { gte: 10 },
+        activeDays: { gte: 7 },
+        winRate: { gte: 0.5 },
+        profitFactor: { gte: 1.0 },
+        brierScore: { lte: 0.5 },
+      },
+    },
+    orderBy: { tradeTimestamp: 'desc' },
+  });
+
+  const ageMs = mostRecentTrade
+    ? Date.now() - new Date(mostRecentTrade.tradeTimestamp).getTime()
+    : 24 * 60 * 60_000;
+  const signalFreshnessHours = Math.max(0, ageMs / (1000 * 60 * 60));
+
+  return {
+    score: Math.min(20, Math.round(rawScore ?? 0)),
+    hasTrustedSignal: true,
+    signalReason: `TRUSTED:${trustContext.eligibleTrustedWalletCount}w/${trustContext.trustedTradeCount}t_raw=${rawScore}`,
+    signalFreshnessHours,
+    trustedTradeCount: trustContext.trustedTradeCount,
+    eligibleTrustedWalletCount: trustContext.eligibleTrustedWalletCount,
+  };
+}
+
 export async function getWalletSignalTrustContext(marketId: string): Promise<{
   hasAnyWalletSignal: boolean;
   hasTrustedEligibleWalletSignal: boolean;

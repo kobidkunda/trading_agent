@@ -11,7 +11,7 @@ export const RESEARCH_PROVIDER_OPTIONS = [
   { value: 'researchProvider', label: 'Research Provider', color: '#8b5cf6' },
 ] as const;
 
-export const MIROFISH_BASE_URL = 'http://192.168.88.96:5401';
+export const MIROFISH_BASE_URL = process.env.MIROFISH_BASE_URL || '';
 export const MIROFISH_DEFAULT_MODEL = 'free_ling';
 export const FIRECRAWL_SERVICE = 'Firecrawl';
 

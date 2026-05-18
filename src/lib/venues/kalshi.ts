@@ -24,20 +24,37 @@ export interface GetAllKalshiMarketsOptions {
 export interface KalshiMarket {
   ticker: string
   title: string
-  subtitle: string
+  subtitle?: string
+  yes_sub_title?: string
   yes_bid: number
   yes_ask: number
+  yes_bid_dollars?: string
+  yes_ask_dollars?: string
+  no_bid_dollars?: string
+  no_ask_dollars?: string
   open_interest: number
   volume: number
+  volume_24h_fp?: string
+  liquidity_dollars?: string
+  last_price: number
+  last_price_dollars?: string
   close_time: string
   category: string
   status: string
-  last_price: number
 }
 
 export interface KalshiMarketsResponse {
   markets: KalshiMarket[]
   cursor: string
+}
+
+function kalshiParse(value: string | number | undefined | null): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
 }
 
 export async function getKalshiMarkets(limit: number = 100, cursor?: string): Promise<KalshiMarketsResponse> {
@@ -60,10 +77,22 @@ export async function getKalshiMarkets(limit: number = 100, cursor?: string): Pr
   }
 }
 
+function fingerprintPage(externalIds: string[]): string {
+  let hash = 5381;
+  for (const id of [...externalIds].sort()) {
+    for (let i = 0; i < id.length; i++) {
+      hash = ((hash << 5) + hash) + id.charCodeAt(i);
+    }
+    hash = (hash ^ (hash >>> 16)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
 export async function getAllKalshiMarkets(
   options: GetAllKalshiMarketsOptions = {},
-): Promise<{ markets: KalshiMarket[]; nextCursor: string | null; pagesScanned: number; hasMore: boolean }> {
+): Promise<{ markets: KalshiMarket[]; nextCursor: string | null; pagesScanned: number; hasMore: boolean; pageFingerprints: string[] }> {
   const allMarkets: KalshiMarket[] = [];
+  const pageFingerprints: string[] = [];
   const maxPages = options.maxPages ?? 3;
   const scanUntilNoCursor = options.scanUntilNoCursor ?? false;
   const rateLimitMs = options.rateLimitMs ?? 300;
@@ -73,6 +102,8 @@ export async function getAllKalshiMarkets(
   while (pageCount < maxPages || scanUntilNoCursor) {
     const result = await getKalshiMarkets(100, cursor);
     if (!result.markets || result.markets.length === 0) break;
+    const pageIds = result.markets.map((m) => m.ticker);
+    pageFingerprints.push(fingerprintPage(pageIds));
     allMarkets.push(...result.markets);
     pageCount++;
     if (!result.cursor) break;
@@ -88,6 +119,7 @@ export async function getAllKalshiMarkets(
     nextCursor: cursor ?? null,
     pagesScanned: pageCount,
     hasMore: Boolean(cursor),
+    pageFingerprints,
   };
 }
 
@@ -111,7 +143,7 @@ export async function getKalshiMarket(ticker: string): Promise<KalshiMarket | nu
 }
 
 export async function saveKalshiCursor(cursor: string | null, hasMore: boolean): Promise<void> {
-  if (!cursor) return;
+  // null cursor = end-of-scan; must persist so next INCREMENTAL_SCAN doesn't re-fetch
   try {
     await db.venueCursor.upsert({
       where: { venue: 'KALSHI' },

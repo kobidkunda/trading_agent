@@ -1,9 +1,11 @@
 import { db } from '@/lib/db';
 import { updateOrderCompat } from '@/lib/engine/prisma-runtime-compat';
 import { normalizeFillModel } from '@/lib/engine/paper-execution';
-import type { FillModel, FillModelInput, PaperBetExecutionStatus } from '@/lib/types';
+import type { FillModelInput, PaperBetExecutionStatus } from '@/lib/types';
 
 export type OrderTrackerLifecycle = 'PLANNED' | 'SUBMITTED' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'FAILED' | 'EXPIRED';
+
+export const MAX_FILL_ATTEMPTS = 3;
 
 export function classifyOrderTerminalState(order: {
   lifecycleStatus: OrderTrackerLifecycle;
@@ -48,6 +50,8 @@ export async function processPaperOrderFill(params: {
   bidDepth?: number | null;
   askDepth?: number | null;
   spread?: number | null;
+  orderbookAgeSeconds?: number | null;
+  maxFillAttempts?: number;
 }): Promise<{
   filledSize: number;
   avgFillPrice: number;
@@ -81,6 +85,7 @@ export async function processPaperOrderFill(params: {
 
   const { resolvePaperFill } = await import('./paper-execution');
   const fillModel = normalizeFillModel(params.fillModel);
+  const maxAttempts = params.maxFillAttempts ?? MAX_FILL_ATTEMPTS;
 
   const fillResult = resolvePaperFill({
     size: Math.max(0, order.remainingSize || order.size),
@@ -94,8 +99,12 @@ export async function processPaperOrderFill(params: {
     spread: params.spread,
   });
 
+  const fillTimestamp = new Date();
+  const currentAttempt = (order.fillAttemptCount ?? 0) + 1;
+
   const prevFilledSize = order.filledSize ?? 0;
   const incrementalFill = Math.max(0, fillResult.filledSize);
+
   const nextFilledSize = Math.min(order.size, prevFilledSize + incrementalFill);
   const nextRemainingSize = Math.max(0, order.size - nextFilledSize);
   const nextAvgFillPrice =
@@ -105,17 +114,28 @@ export async function processPaperOrderFill(params: {
           (fillResult.avgFillPrice * incrementalFill)
         ) / Math.max(nextFilledSize, 1)
       : order.avgFillPrice;
-  const newLifecycleStatus =
-    fillResult.lifecycleStatus === 'FAILED' && nextFilledSize > 0
-      ? 'PARTIALLY_FILLED'
-      : nextFilledSize >= order.size * 0.999
-        ? 'FILLED'
-        : fillResult.lifecycleStatus;
+
+  const isFullFill = nextFilledSize >= order.size * 0.999;
+  let newLifecycleStatus: OrderTrackerLifecycle;
+
+  if (isFullFill) {
+    newLifecycleStatus = 'FILLED';
+  } else if (incrementalFill > 0) {
+    newLifecycleStatus = 'PARTIALLY_FILLED';
+  } else if (fillResult.lifecycleStatus === 'SUBMITTED') {
+    // NO_FILL from resolvePaperFill (fillProb < 0.10).
+    // Retry if under maxFillAttempts; otherwise fail.
+    newLifecycleStatus = currentAttempt >= maxAttempts ? 'FAILED' : 'SUBMITTED';
+  } else if (fillResult.lifecycleStatus === 'FAILED') {
+    newLifecycleStatus = 'FAILED';
+  } else {
+    newLifecycleStatus = 'SUBMITTED';
+  }
+
   const paperBetExecutionStatus = derivePaperBetExecutionStatus({
     lifecycleStatus: newLifecycleStatus,
     filledSize: nextFilledSize,
   });
-  const fillTimestamp = new Date();
 
   await updateOrderCompat(params.orderId, {
     lifecycleStatus: newLifecycleStatus,
@@ -125,7 +145,11 @@ export async function processPaperOrderFill(params: {
     filledAt: newLifecycleStatus === 'FILLED' ? fillTimestamp : null,
     lastFillAttemptAt: fillTimestamp,
     fillAttemptCount: { increment: 1 },
-    failureReason: newLifecycleStatus === 'FAILED' ? 'Paper fill conditions not met' : null,
+    failureReason: newLifecycleStatus === 'FAILED'
+      ? currentAttempt >= maxAttempts
+        ? `No fill after ${currentAttempt} attempts — max retries exhausted`
+        : 'Paper fill conditions not met'
+      : null,
     status:
       newLifecycleStatus === 'FAILED'
         ? 'FAILED'
@@ -151,6 +175,8 @@ export async function processPaperOrderFill(params: {
           bidDepth: params.bidDepth ?? null,
           askDepth: params.askDepth ?? null,
           spread: params.spread ?? null,
+          orderbookAgeSeconds: params.orderbookAgeSeconds ?? null,
+          fillAttempt: currentAttempt,
         }),
         fillTime: fillTimestamp,
       },
@@ -166,7 +192,6 @@ export async function processPaperOrderFill(params: {
       },
     });
 
-    // Create position only when partially or fully filled
     const existingPosition = await db.position.findFirst({
       where: { marketId: params.marketId, status: { in: ['OPEN', 'WATCH'] } },
     });
@@ -186,7 +211,6 @@ export async function processPaperOrderFill(params: {
         },
       });
     } else {
-      // Update existing position
       const newSize = existingPosition.currentSize + incrementalFill;
       const newAvgPrice = ((existingPosition.avgEntryPrice * existingPosition.currentSize) + (fillResult.avgFillPrice * incrementalFill)) / newSize;
       await db.position.update({
@@ -201,12 +225,15 @@ export async function processPaperOrderFill(params: {
   } else {
     await db.paperBet.updateMany({
       where: { orderId: params.orderId },
-      data: { executionStatus: paperBetExecutionStatus },
+      data: {
+        executionStatus: paperBetExecutionStatus,
+        executedAt: newLifecycleStatus === 'FAILED' ? fillTimestamp : undefined,
+      },
     });
   }
 
   return {
-    filledSize: fillResult.filledSize,
+    filledSize: incrementalFill,
     avgFillPrice: fillResult.avgFillPrice,
     isFullyFilled: newLifecycleStatus === 'FILLED',
     orderStatus: newLifecycleStatus,

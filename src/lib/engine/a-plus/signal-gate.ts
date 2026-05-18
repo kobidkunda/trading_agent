@@ -1,6 +1,13 @@
 import { DEFAULT_APLUS_CONFIG } from '@/lib/constants';
 import type { APlusSignalConfig } from '@/lib/types';
 
+export type APlusFailReason =
+  | 'ORDERBOOK_ESTIMATED'
+  | 'ORDERBOOK_MISSING_BID_ASK'
+  | 'ORDERBOOK_STALE'
+  | 'ORDERBOOK_MISSING_FILL_PROB'
+  | 'ORDERBOOK_MISSING_PRICE_IMPACT';
+
 export interface APlusGateInput {
   candidateScore: number;
   adjustedEdge: number;
@@ -16,6 +23,10 @@ export interface APlusGateInput {
   orderbookQuality: number;
   dataSource: 'REAL' | 'MOCK';
   spreadSource: 'REAL_ORDERBOOK' | 'ESTIMATED';
+  bestBid: number | null | undefined;
+  bestAsk: number | null | undefined;
+  fillProbability: number | null | undefined;
+  priceImpact: number | null | undefined;
   oracleCheckPresent?: boolean;
   orderbookAgeSeconds?: number;
 }
@@ -36,6 +47,29 @@ export function evaluateAPlusSignalGate(
 ): APlusGateResult {
   const reasons: string[] = [];
 
+  // ── Orderbook fail-closed checks (blockers) ──
+  if (input.spreadSource !== 'REAL_ORDERBOOK') {
+    reasons.push(`spreadSource ${input.spreadSource} is not REAL_ORDERBOOK — ORDERBOOK_ESTIMATED`);
+  }
+  if (input.bestBid == null || input.bestAsk == null) {
+    reasons.push(`bestBid/bestAsk missing — ORDERBOOK_MISSING_BID_ASK`);
+  }
+  const maxAge = input.orderbookAgeSeconds != null
+    ? (config.maxOrderbookAgeSeconds ?? 300)
+    : undefined;
+  if (maxAge != null && input.orderbookAgeSeconds != null && input.orderbookAgeSeconds > maxAge) {
+    reasons.push(
+      `orderbookAge ${input.orderbookAgeSeconds.toFixed(0)}s > ${maxAge}s threshold — ORDERBOOK_STALE`,
+    );
+  }
+  if (input.fillProbability == null) {
+    reasons.push(`fillProbability missing — ORDERBOOK_MISSING_FILL_PROB`);
+  }
+  if (input.priceImpact == null) {
+    reasons.push(`priceImpact missing — ORDERBOOK_MISSING_PRICE_IMPACT`);
+  }
+
+  // ── Qualitative scoring checks ──
   if (input.candidateScore < config.minCandidateScore) {
     reasons.push(`candidateScore ${input.candidateScore.toFixed(1)} < ${config.minCandidateScore}`);
   }
@@ -75,27 +109,19 @@ export function evaluateAPlusSignalGate(
   if (input.dataSource !== 'REAL') {
     reasons.push(`dataSource ${input.dataSource} is not REAL`);
   }
-  if (input.spreadSource !== 'REAL_ORDERBOOK') {
-    reasons.push(`spreadSource ${input.spreadSource} is not REAL_ORDERBOOK`);
-  }
-  const maxAge = input.orderbookAgeSeconds != null
-    ? (config.maxOrderbookAgeSeconds ?? 300)
-    : undefined;
-  if (maxAge != null && input.orderbookAgeSeconds != null && input.orderbookAgeSeconds > maxAge) {
-    reasons.push(
-      `orderbookAge ${input.orderbookAgeSeconds.toFixed(0)}s > ${maxAge}s threshold`,
-    );
-  }
 
   return {
     passed: reasons.length === 0,
     reasons,
     blocker: reasons.some((reason) =>
-      reason.includes('spreadSource') ||
+      reason.includes('ORDERBOOK_ESTIMATED') ||
+      reason.includes('ORDERBOOK_MISSING_BID_ASK') ||
+      reason.includes('ORDERBOOK_STALE') ||
+      reason.includes('ORDERBOOK_MISSING_FILL_PROB') ||
+      reason.includes('ORDERBOOK_MISSING_PRICE_IMPACT') ||
       reason.includes('dataSource') ||
       reason.includes('modelDisagreement') ||
-      reason.includes('oracleRiskScore') ||
-      reason.includes('orderbookAge'),
+      reason.includes('oracleRiskScore'),
     ),
   };
 }

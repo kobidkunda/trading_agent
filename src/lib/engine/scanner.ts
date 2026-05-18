@@ -7,6 +7,24 @@ import { createTitleHash } from '@/lib/engine/candidate-dedupe';
 import { normalizeTradingMode } from '@/lib/engine/mode';
 import type { ScanMode } from '@/lib/types';
 
+/**
+ * Scans prediction markets across enabled venues.
+ *
+ * ## Scan Modes
+ *
+ * | Mode               | Cursor behavior                                    |
+ * |--------------------|----------------------------------------------------|
+ * | `FULL_SCAN`        | Ignores saved cursor, fetches from page 0          |
+ * | `INCREMENTAL_SCAN` | Loads saved cursor from VenueCursor, resumes there |
+ * | `RESUME_FROM_CURSOR`| Same as INCREMENTAL_SCAN (available for clarity)   |
+ *
+ * ## Page Fingerprinting
+ *
+ * After each page fetch the scanner computes a fingerprint = hash of all
+ * externalIds on that page. If the same fingerprint appears ≥3 times in
+ * the last 10 pages a `repeatedPageDetected` warning is raised and logged.
+ * The repeat rate is tracked in `metadataJson.repeatRate` for observability.
+ */
 export async function runScanner(
   venues?: string[],
   categories?: string[],
@@ -35,7 +53,6 @@ export async function runScanner(
   const scanRateLimitMs = config.scanRateLimitMs ?? 500;
   const scanTimeoutMs = config.scanTimeoutMs ?? 15000;
 
-  // Skip real scanning in DEMO mode
   if (mode === 'DEMO') {
     return { totalScanned: 0, totalNew: 0, totalExisting: 0, venues: [], mode: 'DEMO', message: 'DEMO mode: no real scanning' };
   }
@@ -85,6 +102,7 @@ export async function runScanner(
       let cursorStart: string | null = null;
       let pagesScanned = 0;
       let hasMore = false;
+      let pageFingerprints: string[] = [];
 
       if (venue === 'POLYMARKET') {
         cursorStart =
@@ -102,9 +120,8 @@ export async function runScanner(
         nextCursor = result.nextCursor;
         hasMore = result.hasMore;
         pagesScanned = result.pagesScanned;
-        if (nextCursor !== null) {
-          await savePolymarketCursor(nextCursor, hasMore);
-        }
+        pageFingerprints = result.pageFingerprints;
+        await savePolymarketCursor(nextCursor, hasMore);
       } else if (venue === 'KALSHI') {
         cursorStart =
           scanMode === 'RESUME_FROM_CURSOR' || scanMode === 'INCREMENTAL_SCAN'
@@ -119,27 +136,78 @@ export async function runScanner(
         nextCursor = result.nextCursor;
         hasMore = result.hasMore;
         pagesScanned = result.pagesScanned;
-        if (nextCursor !== null) {
-          await saveKalshiCursor(nextCursor, hasMore);
-        }
-        markets = result.markets.map((m) => ({
-          externalId: m.ticker,
-          title: m.title,
-          description: m.subtitle || '',
-          category: (m.category || 'other').toLowerCase(),
-          venue: 'KALSHI',
-          status: m.status === 'active' ? 'ACTIVE' : m.status === 'resolved' ? 'RESOLVED' : 'CLOSED',
-          impliedProb: m.last_price / 100,
-          liquidity: m.volume,
-          spread: Math.max(0.01, (m.yes_ask - m.yes_bid) / 100),
-          volume24h: m.volume,
-          bestBid: m.yes_bid / 100,
-          bestAsk: m.yes_ask / 100,
-          spreadSource: 'REAL_ORDERBOOK',
-          resolutionTime: m.close_time || null,
-        }));
+        pageFingerprints = result.pageFingerprints;
+        await saveKalshiCursor(nextCursor, hasMore);
+        markets = result.markets.map((m) => {
+          const rawPrice = (m as any).last_price_dollars ?? m.last_price ?? 0;
+          const rawBid = (m as any).yes_bid_dollars ?? m.yes_bid ?? 0;
+          const rawAsk = (m as any).yes_ask_dollars ?? m.yes_ask ?? 0;
+          const rawLiq = (m as any).liquidity_dollars ?? m.volume ?? 0;
+          const price = typeof rawPrice === 'string' ? Number(rawPrice) : (typeof rawPrice === 'number' ? rawPrice : 0);
+          const bid = typeof rawBid === 'string' ? Number(rawBid) : (typeof rawBid === 'number' ? rawBid : 0);
+          const ask = typeof rawAsk === 'string' ? Number(rawAsk) : (typeof rawAsk === 'number' ? rawAsk : 0);
+          const liq = typeof rawLiq === 'string' ? Number(rawLiq) : (typeof rawLiq === 'number' ? rawLiq : 0);
+          return {
+            externalId: m.ticker,
+            title: m.title,
+            description: ((m as any).yes_sub_title || m.subtitle || ''),
+            category: (m.category || 'other').toLowerCase(),
+            venue: 'KALSHI',
+            status: m.status === 'active' ? 'ACTIVE' : m.status === 'resolved' ? 'RESOLVED' : 'CLOSED',
+            impliedProb: Number.isFinite(price) ? price : 0,
+            liquidity: Number.isFinite(liq) ? liq : 0,
+            spread: Number.isFinite(ask) && Number.isFinite(bid) ? Math.max(0.01, ask - bid) : 0.05,
+            volume24h: Number.isFinite(liq) ? liq : 0,
+            bestBid: Number.isFinite(bid) ? bid : undefined,
+            bestAsk: Number.isFinite(ask) ? ask : undefined,
+            spreadSource: 'REAL_ORDERBOOK',
+            resolutionTime: m.close_time || null,
+          };
+        });
       } else {
         continue;
+      }
+
+      // ── Page repeat detection ───────────────────────────────────────────
+      const WINDOW_SIZE = 10;
+      let repeatedPages = 0;
+      const fingerprintCounts = new Map<string, number>();
+
+      for (const fp of pageFingerprints) {
+        fingerprintCounts.set(fp, (fingerprintCounts.get(fp) || 0) + 1);
+      }
+
+      // Detect repeats: if any fingerprint appears ≥3 times in the window
+      for (let i = 0; i < pageFingerprints.length; i++) {
+        const windowEnd = Math.min(i + WINDOW_SIZE, pageFingerprints.length);
+        const window = pageFingerprints.slice(i, windowEnd);
+        const freq = new Map<string, number>();
+        for (const fp of window) freq.set(fp, (freq.get(fp) || 0) + 1);
+        for (const [fp, count] of freq) {
+          if (count >= 3) {
+            repeatedPages++;
+            if (i === 0 || pageFingerprints[i - 1] !== fp) {
+              console.warn(
+                `[SCANNER] Repeated page fingerprint detected (${fp.slice(0, 8)}) ` +
+                `at page ${i + 1} for ${venue} — cursor may be cycling`,
+              );
+            }
+            break; // count page once even if multiple repeats in window
+          }
+        }
+      }
+
+      const repeatedPageDetected = repeatedPages > 0;
+      const pageRepeatRate = pageFingerprints.length > 0
+        ? repeatedPages / pageFingerprints.length
+        : 0;
+
+      if (pageRepeatRate > 0.25) {
+        console.warn(
+          `[SCANNER] High page-repeat rate ${(pageRepeatRate * 100).toFixed(1)}% ` +
+          `(${repeatedPages}/${pageFingerprints.length} pages) for ${venue}. ` +
+          `Cursor may be stale or API returning overlapping pages.`,
+        );
       }
 
       const seenHashes = new Set<string>();
@@ -150,7 +218,6 @@ export async function runScanner(
           continue;
         }
 
-        // In-cycle dedup: Polymarket returns same titles with different externalIds
         const hash = createTitleHash(m.title);
         if (seenHashes.has(hash)) {
           marketsSkipped++;
@@ -200,6 +267,12 @@ export async function runScanner(
             timeoutMs: scanTimeoutMs,
             scanUntilNoCursor: scanUntilNoCursor || scanMode === 'FULL_SCAN',
             hasMore,
+            repeatedPageDetected,
+            pageRepeatRate,
+            fingerprintHistory: pageFingerprints.map((fp) => fp.slice(0, 8)),
+            fingerprintCounts: Object.fromEntries(
+              [...fingerprintCounts.entries()].map(([k, v]) => [k.slice(0, 8), v]),
+            ),
           }),
         },
       });

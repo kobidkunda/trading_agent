@@ -6,24 +6,27 @@ function normalizeRole(value: string | null | undefined): UserRole | null {
   if (role === 'Admin' || role === 'ResearchOperator' || role === 'RiskReviewer' || role === 'ExecutionReviewer' || role === 'ReadOnlyViewer') {
     return role;
   }
-
   return null;
 }
 
-function isLocalDevelopmentRequest(request: Request): boolean {
+function isLocalhost(request: Request): boolean {
   const host = request.headers.get('host')?.toLowerCase() ?? '';
-  return (
-    process.env.NODE_ENV !== 'production' &&
-    (host.includes('localhost') || host.startsWith('127.0.0.1') || host.startsWith('[::1]'))
-  );
+  return host.includes('localhost') || host.startsWith('127.0.0.1') || host.startsWith('[::1]');
 }
 
+/**
+ * x-role header is a development convenience ONLY.
+ * It must NEVER be usable in production.
+ * Set LOCAL_DEV_AUTH_BYPASS=true in .env.local for local development only.
+ *
+ * Conditions to grant a role via x-role header (ALL must be true):
+ *   1. LOCAL_DEV_AUTH_BYPASS env var explicitly set to 'true'
+ *   2. Request hostname is localhost / 127.0.0.1 / [::1]
+ * In ALL other cases, returns null (blocked).
+ */
 export function getRoleFromRequest(request: Request): UserRole | null {
-  if (process.env.LOCAL_DEV_AUTH_BYPASS === 'true') {
-    return normalizeRole(request?.headers?.get?.('x-role')) ?? 'Admin';
-  }
-  if (isLocalDevelopmentRequest(request)) {
-    return normalizeRole(request?.headers?.get?.('x-role')) ?? 'Admin';
+  if (process.env.LOCAL_DEV_AUTH_BYPASS === 'true' && isLocalhost(request)) {
+    return normalizeRole(request.headers.get('x-role')) ?? 'Admin';
   }
   return null;
 }

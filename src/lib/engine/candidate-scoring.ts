@@ -21,6 +21,7 @@ export interface CandidateScoreInput {
   resolutionClarity?: number;
   recency?: number;
   walletSignalScore?: number;
+  signalFreshnessHours?: number;
   relatedMarketSignalScore?: number;
 
   // ── Quality inputs ──
@@ -104,7 +105,10 @@ export function computeCandidateScore(input: CandidateScoreInput): CandidateScor
   const sourceQualityScore = clamp((input.sourceQuality ?? 0) * 0.1, 0, 10);
   const resolutionClarityScore = clamp((input.resolutionClarity ?? 0) * 0.1, 0, 8);
   const recencyScore = clamp(8 - input.freshnessMinutes / 8, 0, 8);
-  const walletSignalScore = clamp((input.walletSignalScore ?? 0) * 0.5, 0, 10);
+  const rawWalletSignal = input.walletSignalScore ?? 0;
+  const decayFactor = Math.max(0.1, Math.exp(-(input.signalFreshnessHours ?? 0) / 24));
+  const decayedWalletSignal = rawWalletSignal * decayFactor;
+  const walletSignalScore = clamp(decayedWalletSignal * 0.5, 0, 10);
   const relatedMarketSignalScore = clamp((input.relatedMarketSignalScore ?? 0) * 0.5, 0, 8);
 
   // ── Penalties ──

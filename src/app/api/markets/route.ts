@@ -16,13 +16,16 @@ export async function GET(request: NextRequest) {
     const offset = parseInt(searchParams.get('offset') || '0');
     const onlyNew = searchParams.get('onlyNew') === 'true';
     const onlyChanged = searchParams.get('onlyChanged') === 'true';
+    const onlyAPlus = searchParams.get('onlyAPlus') === 'true';
     const excludeCooldown = searchParams.get('excludeCooldown') === 'true';
     const excludeExecuted = searchParams.get('excludeExecuted') === 'true';
     const excludeRecentlyResearched = searchParams.get('excludeRecentlyResearched') === 'true';
     const minCandidateScore = parseInt(searchParams.get('minCandidateScore') || '0');
+    const sortPriority = searchParams.get('sortPriority') === 'score';
     const sortBy = searchParams.get('sortBy') || 'updatedAt';
 
     const now = new Date();
+    const freshThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     const where: Prisma.MarketWhereInput = {};
     if (venue) where.venue = venue;
@@ -32,22 +35,52 @@ export async function GET(request: NextRequest) {
 
     // Build candidate-level filters
     const candidateWhere: Prisma.TradeCandidateWhereInput | undefined =
-      onlyNew || onlyChanged || excludeCooldown || excludeExecuted || excludeRecentlyResearched || minCandidateScore > 0
+      onlyNew || onlyChanged || onlyAPlus || excludeCooldown || excludeExecuted || excludeRecentlyResearched || minCandidateScore > 0
         ? {}
         : undefined;
 
     if (candidateWhere) {
       if (onlyNew) {
-        // Markets with NO candidate or candidate created within last 24h
-        candidateWhere.OR = [
-          { lastProcessedAt: null },
-          { stage: 'SCANNED' },
-        ];
+        // Markets with NO candidate (never processed) OR very recently first-seen AND no candidate yet
+        if (candidateWhere.OR) {
+          (candidateWhere.OR as Prisma.TradeCandidateWhereInput[]).push(
+            { lastProcessedAt: null },
+            { stage: 'SCANNED' },
+          );
+        } else {
+          candidateWhere.OR = [
+            { lastProcessedAt: null },
+            { stage: 'SCANNED' },
+          ];
+        }
       }
       if (onlyChanged) {
-        // Markets where price moved meaningfully (candidate updated after first scan)
-        candidateWhere.lastProcessedAt = { not: null };
-        candidateWhere.stage = { not: 'SCANNED' };
+        // Markets where reprocess reason is set AND not decided/executed
+        if (candidateWhere.AND) {
+          (candidateWhere.AND as Prisma.TradeCandidateWhereInput[]).push({
+            reprocessReason: { not: null },
+            stage: { notIn: ['DECIDED', 'EXECUTED', 'SETTLED'] },
+          });
+        } else {
+          candidateWhere.AND = [{
+            reprocessReason: { not: null },
+            stage: { notIn: ['DECIDED', 'EXECUTED', 'SETTLED'] },
+          }];
+        }
+      }
+      if (onlyAPlus) {
+        // Score >= 90 AND not already decided/executed
+        if (candidateWhere.AND) {
+          (candidateWhere.AND as Prisma.TradeCandidateWhereInput[]).push({
+            candidateScore: { gte: 90 },
+            stage: { notIn: ['DECIDED', 'EXECUTED', 'SETTLED'] },
+          });
+        } else {
+          candidateWhere.AND = [{
+            candidateScore: { gte: 90 },
+            stage: { notIn: ['DECIDED', 'EXECUTED', 'SETTLED'] },
+          }];
+        }
       }
       if (excludeCooldown) {
         candidateWhere.AND = candidateWhere.AND || [];
@@ -65,7 +98,11 @@ export async function GET(request: NextRequest) {
         });
       }
       if (excludeExecuted) {
-        candidateWhere.NOT = { stage: 'EXECUTED' };
+        if (candidateWhere.NOT) {
+          candidateWhere.NOT = { stage: { in: ['EXECUTED', 'SETTLED'] } };
+        } else {
+          candidateWhere.NOT = { stage: { in: ['EXECUTED', 'SETTLED'] } };
+        }
       }
       if (excludeRecentlyResearched) {
         const researchCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -84,10 +121,23 @@ export async function GET(request: NextRequest) {
         }
       }
       if (minCandidateScore > 0) {
-        candidateWhere.candidateScore = { gte: minCandidateScore };
+        if (candidateWhere.AND) {
+          (candidateWhere.AND as Prisma.TradeCandidateWhereInput[]).push({
+            candidateScore: { gte: minCandidateScore },
+          });
+        } else {
+          candidateWhere.candidateScore = { gte: minCandidateScore };
+        }
       }
 
       where.tradeCandidates = { some: candidateWhere };
+    }
+
+    // Additional market-level filters (not candidate-dependent)
+    if (onlyNew && !candidateWhere) {
+      // Fallback: markets with no candidate at all, firstSeen recently
+      where.tradeCandidates = { none: {} };
+      where.firstSeenAt = { gte: freshThreshold };
     }
 
     const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
@@ -102,13 +152,17 @@ export async function GET(request: NextRequest) {
       tradingMode: tradingModeSetting?.value ?? null,
     });
 
-    // Determine sort order
-    const orderBy: Prisma.MarketOrderByWithRelationInput =
-      sortBy === 'score'
-        ? { tradeCandidates: { _count: 'desc' } }
-        : sortBy === 'firstSeen'
-          ? { firstSeenAt: 'desc' }
-          : { updatedAt: 'desc' };
+    // Determine sort order — sortPriority=score overrides sortBy
+    let orderBy: Prisma.MarketOrderByWithRelationInput;
+    if (sortPriority) {
+      orderBy = { tradeCandidates: { _count: 'desc' } };
+    } else if (sortBy === 'score') {
+      orderBy = { tradeCandidates: { _count: 'desc' } };
+    } else if (sortBy === 'firstSeen') {
+      orderBy = { firstSeenAt: 'desc' };
+    } else {
+      orderBy = { updatedAt: 'desc' };
+    }
 
     const markets = await db.market.findMany({
       where,
@@ -154,6 +208,8 @@ export async function GET(request: NextRequest) {
         lastExecutionAt: candidate?.lastExecutionAt ?? null,
         nextEligibleAt: candidate?.nextEligibleAt ?? null,
         cooldownUntil: candidate?.cooldownUntil ?? null,
+        reprocessReason: candidate?.reprocessReason ?? null,
+        firstSeenAt: market.firstSeenAt ?? null,
       };
     });
 
@@ -165,10 +221,12 @@ export async function GET(request: NextRequest) {
       appliedFilters: {
         onlyNew,
         onlyChanged,
+        onlyAPlus,
         excludeCooldown,
         excludeExecuted,
         excludeRecentlyResearched,
         minCandidateScore,
+        sortPriority,
         sortBy,
       },
     });

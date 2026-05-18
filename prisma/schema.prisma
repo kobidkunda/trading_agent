@@ -75,6 +75,7 @@ model Market {
   postmortems Postmortem[]
   paperBets PaperBet[]
   walletTrades WalletTrade[]
+  walletClusterSignals WalletClusterSignal[]
   ensemblePredictions EnsemblePrediction[]
   relatedAsA RelatedMarket[] @relation("RelatedA")
   relatedAsB RelatedMarket[] @relation("RelatedB")
@@ -202,6 +203,7 @@ model TradeCandidate {
   edgeDirection       String?  // YES_EDGE | NO_EDGE | UNKNOWN — which side the edge favors
   biasAdjustedProb    Float?
   walletSignalScore   Float?
+  walletSignalReason  String?
   relatedMarketSignal Float?
   oracleRiskPenalty   Float?
   correlationRiskPenalty Float?
@@ -344,6 +346,8 @@ model Decision {
   brierScore      Float?
   paperBet        PaperBet?
   watchlistEntries Watchlist[]
+  strategyConfigVersionId String?
+  strategyConfigVersion   StrategyConfigVersion? @relation(fields: [strategyConfigVersionId], references: [id])
   createdAt       DateTime @default(now())
 
 }
@@ -395,6 +399,8 @@ model Order {
   filledAt      DateTime?
   cancelledAt   DateTime?
   expiredAt     DateTime?
+  strategyConfigVersionId String?
+  strategyConfigVersion   StrategyConfigVersion? @relation(fields: [strategyConfigVersionId], references: [id])
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -470,6 +476,8 @@ model PaperBet {
   pnl Float? // Simulated profit/loss
   
   // Metadata
+  strategyConfigVersionId String?
+  strategyConfigVersion   StrategyConfigVersion? @relation(fields: [strategyConfigVersionId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
@@ -507,7 +515,7 @@ model Postmortem {
 // ── WALLET INTELLIGENCE (Phase 5) ──
 model Wallet {
   id            String   @id @default(cuid())
-  address       String   @unique
+  address       String
   label         String?
   venue         String   @default("POLYMARKET")
   totalTrades   Int      @default(0)
@@ -532,6 +540,8 @@ model Wallet {
   updatedAt     DateTime @updatedAt
 
   trades WalletTrade[]
+
+  @@unique([venue, address])
 }
 
 model WalletTrade {
@@ -558,6 +568,29 @@ model WalletTrade {
   @@index([walletId, tradeTimestamp])
   @@index([marketId])
   @@unique([walletId, externalMarketId, tradeTimestamp, side])
+}
+
+model WalletClusterSignal {
+  id                 String   @id @default(cuid())
+  marketId           String
+  market             Market   @relation(fields: [marketId], references: [id])
+  side               String   // YES, NO
+  walletCount        Int
+  trustedWalletCount Int
+  combinedSize       Float
+  detectedAt         DateTime @default(now())
+  averageEntryPrice  Float
+  priceAtDetection   Float
+  spreadAtDetection  Float?
+  liquidityAtDetection Float?
+  copyLatePenalty    Float    @default(0)
+  status             String   @default("DETECTED")
+  paperResultJson    String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([marketId])
+  @@index([status])
 }
 
 model ModelRegistryRecord {
@@ -727,8 +760,33 @@ model StrategyConfigVersion {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   backtestRuns    BacktestRun[]
+  decisions       Decision[]
+  orders          Order[]
+  paperBets       PaperBet[]
 
   @@unique([version])
+}
+
+// ── BIAS MODEL VERSION (P1.9) ──
+model BiasModelVersion {
+  id                   String    @id @default(cuid())
+  version              Int
+  category             String
+  probabilityBucketLow  Float
+  probabilityBucketHigh Float
+  sampleSize           Int
+  observedFrequency    Float
+  marketFrequency      Float
+  wangLambda           Float
+  offset               Float
+  dateRangeStart       DateTime?
+  dateRangeEnd         DateTime?
+  status               String    @default("TESTING")
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@unique([version, category, probabilityBucketLow, probabilityBucketHigh])
+  @@index([category, status])
 }
 
 // ── BACKTESTING (Phase 15) ──

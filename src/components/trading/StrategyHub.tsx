@@ -879,7 +879,7 @@ export function StrategyHub() {
                    <Input
                      value={settings.stageRouting?.agentReachServiceUrl || ''}
                      onChange={(e) => updateStageRouting('agentReachServiceUrl', e.target.value)}
-                     placeholder="http://192.168.88.96:7234"
+                     placeholder="http://localhost:8200"
                      className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
                    />
                  </div>

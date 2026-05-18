@@ -1,19 +1,185 @@
 // ── Phase 6: Ensemble Probability Engine ──
 // Dynamic Brier-weighted averaging across LLM, TradingAgents, DeerFlow,
-// MiroFish, wallet, and orderbook predictions.
+// MiroFish, wallet, related-market, orderbook, bias-adjusted baseline,
+// and statistical baseline predictions.
+// Weights sourced from ModelRegistryRecord (DB-persisted per category).
+// Weak models auto-disabled after 100+ samples with rollingBrier > 0.3.
 // Model disagreement detection triggers higher uncertainty.
+// P1.11: Non-LLM signal sources (wallet, related-market, orderbook,
+// bias-adjusted baseline, statistical baseline) contribute probability
+// estimates with per-source confidence scores.
 
 import { db } from '@/lib/db';
+import { ModelRegistry } from '@/lib/engine/model-registry';
+import { computeFreshWalletSignal } from '@/lib/engine/wallet-signal';
+import { computeRelatedMarketSignal } from '@/lib/engine/related-market';
+import { computeBiasAdjustedProb } from '@/lib/engine/bias-correction';
+
+// ============================================================================
+// Non-LLM Signal Converters (P1.11)
+// ============================================================================
+
+/**
+ * Wallet signal → probability contribution.
+ * Weight = min(signalScore / 20, 0.5). Confidence = 0.3 to 0.7 based on signal strength.
+ */
+export async function convertWalletSignalToProbability(
+  marketId: string,
+  marketPrice: number,
+  category: string,
+): Promise<ModelPrediction | null> {
+  const fresh = await computeFreshWalletSignal(marketId);
+  if (!fresh.hasTrustedSignal || fresh.score === 0) return null;
+
+  const signalScore = fresh.score;
+  const direction = fresh.signalReason.includes('YES') ? 'YES' : 'NO';
+  const probAdjust = (signalScore / 20) * (direction === 'YES' ? 0.05 : -0.05);
+  const predictedProb = Math.max(0.001, Math.min(0.999, marketPrice + probAdjust));
+  const weight = Math.min(signalScore / 20, 0.5);
+  const confidence = Math.max(0.3, Math.min(0.7, 0.3 + (signalScore / 20) * 0.4));
+
+  return {
+    source: 'WALLET_SIGNAL',
+    predictedProb,
+    confidence,
+    weight,
+    category,
+  };
+}
+
+/**
+ * Related-market violation score → probability contribution.
+ * Weight = 0.3. Confidence = 0.2 to 0.5.
+ */
+export async function convertRelatedMarketToProbability(
+  marketId: string,
+  marketPrice: number,
+  category: string,
+): Promise<ModelPrediction | null> {
+  const signal = await computeRelatedMarketSignal(marketId);
+  if (signal.score === 0 || signal.contradictoryPairs === 0) return null;
+
+  const violationScore = signal.score;
+  const probAdjust = (violationScore / 10) * 0.03;
+  const predictedProb = Math.max(0.001, Math.min(0.999, marketPrice + probAdjust));
+  const weight = 0.3;
+  const confidence = Math.max(0.2, Math.min(0.5, 0.2 + (violationScore / 20) * 0.3));
+
+  return {
+    source: 'RELATED_MARKET',
+    predictedProb,
+    confidence,
+    weight,
+    category,
+  };
+}
+
+/**
+ * Orderbook pressure → probability contribution.
+ * Tight spread + bid pressure → +0.02, ask pressure → -0.02.
+ * Weight = 0.25.
+ */
+export async function convertOrderbookToProbability(
+  marketId: string,
+  marketPrice: number,
+  category: string,
+): Promise<ModelPrediction | null> {
+  const snapshot = await db.orderbookSnapshot.findFirst({
+    where: { marketId },
+    orderBy: { capturedAt: 'desc' },
+  });
+
+  if (!snapshot || snapshot.bestBid == null || snapshot.bestAsk == null) return null;
+
+  const spreadRatio = snapshot.bestAsk > 0 ? snapshot.bestBid / snapshot.bestAsk : 0;
+  const isTightSpread = spreadRatio > 0.98;
+
+  if (!isTightSpread) return null;
+
+  const depthImbalance = snapshot.depthImbalance ?? 0;
+  const isBidPressure = depthImbalance > 0;
+
+  const predictedProb = isBidPressure
+    ? Math.max(0.001, Math.min(0.999, marketPrice + 0.02))
+    : Math.max(0.001, Math.min(0.999, marketPrice - 0.02));
+
+  const confidence = isTightSpread ? 0.4 : 0.25;
+
+  return {
+    source: 'ORDERBOOK',
+    predictedProb,
+    confidence,
+    weight: 0.25,
+    category,
+  };
+}
+
+/**
+ * Bias-adjusted baseline → probability contribution.
+ * Weight = correctionConfidence from computeBiasAdjustedProb().
+ */
+export function biasAdjustedBaseline(
+  marketPrice: number,
+  category: string,
+  timeToResolution: number,
+  liquidity: number,
+): ModelPrediction {
+  const correction = computeBiasAdjustedProb({
+    marketPrice,
+    category,
+    timeToResolution,
+    liquidity,
+  });
+
+  return {
+    source: 'BIAS_ADJUSTED_BASELINE',
+    predictedProb: correction.biasAdjustedProb,
+    confidence: correction.correctionConfidence,
+    weight: correction.correctionConfidence,
+    category,
+  };
+}
+
+/**
+ * Statistical baseline → simple moving average of last 10 snapshots.
+ * Weight = 0.1.
+ */
+export async function statisticalBaseline(
+  marketId: string,
+  category: string,
+): Promise<ModelPrediction | null> {
+  const snapshots = await db.marketSnapshot.findMany({
+    where: { marketId },
+    orderBy: { capturedAt: 'desc' },
+    take: 10,
+    select: { impliedProb: true },
+  });
+
+  if (snapshots.length === 0) return null;
+
+  const avgProb = snapshots.reduce((s, sn) => s + sn.impliedProb, 0) / snapshots.length;
+
+  return {
+    source: 'STATISTICAL_BASELINE',
+    predictedProb: Math.max(0.001, Math.min(0.999, avgProb)),
+    confidence: Math.min(0.3, snapshots.length / 50),
+    weight: 0.1,
+    category,
+  };
+}
 
 // ============================================================================
 // Types
 // ============================================================================
 
 export interface ModelPrediction {
-  source: string; // 'LLM' | 'TRADINGAGENTS' | 'DEERFLOW' | 'MIROFISH' | 'WALLET' | 'ORDERBOOK' | 'STATISTICAL'
+  source: string; // modelName:version or legacy source label
   predictedProb: number;
   confidence: number;
-  weight: number; // 0-1, initially equal
+  weight: number; // from ModelRegistry, default 1.0
+  category: string | null;
+  perSourceConfidence?: number; // P1.11: per-source confidence override
+  flagForReview?: boolean; // P1.11: flag if confidence < 0.3
 }
 
 export interface EnsembleResult {
@@ -32,20 +198,6 @@ export interface DisagreementDetail {
   maxGapPair: [string, string] | null;
   summary: string;
 }
-
-// ============================================================================
-// Default source weights (pre-Brier calibration)
-// ============================================================================
-
-const DEFAULT_SOURCE_WEIGHTS: Record<string, number> = {
-  LLM: 1.0,
-  TRADINGAGENTS: 1.0,
-  DEERFLOW: 1.0,
-  MIROFISH: 1.0,
-  WALLET: 1.0,
-  ORDERBOOK: 1.0,
-  STATISTICAL: 1.0,
-};
 
 // ============================================================================
 // Core: Weighted Ensemble Computation
@@ -120,7 +272,7 @@ export function computeWeightedEnsemble(predictions: ModelPrediction[]): Ensembl
 // Disagreement Detection
 // ============================================================================
 
-/** Detect model disagreement from a set of predictions */
+/** Detect model disagreement from a set of predictions using weighted std */
 export function detectDisagreement(predictions: ModelPrediction[]): DisagreementDetail {
   if (predictions.length < 2) {
     return {
@@ -132,12 +284,15 @@ export function detectDisagreement(predictions: ModelPrediction[]): Disagreement
     };
   }
 
-  // Standard deviation of predictions
-  const mean = predictions.reduce((s, p) => s + p.predictedProb, 0) / predictions.length;
-  const variance =
-    predictions.reduce((s, p) => s + (p.predictedProb - mean) ** 2, 0) /
-    predictions.length;
-  const std = Math.sqrt(variance);
+  // Weighted mean
+  const totalWeight = predictions.reduce((s, p) => s + p.weight, 0);
+  const weightedMean = predictions.reduce((s, p) => s + p.predictedProb * p.weight, 0) / totalWeight;
+
+  // Weighted variance & std
+  const weightedVariance =
+    predictions.reduce((s, p) => s + p.weight * (p.predictedProb - weightedMean) ** 2, 0) /
+    totalWeight;
+  const std = Math.sqrt(weightedVariance);
 
   // Max-min gap
   const probs = predictions.map((p) => p.predictedProb);
@@ -158,6 +313,10 @@ export function detectDisagreement(predictions: ModelPrediction[]): Disagreement
     }
   }
 
+  // P1.11: flag models with confidence < 0.3 for review
+  const lowConfidenceModels = predictions.filter((p) => p.confidence < 0.3);
+  const flaggedSources = lowConfidenceModels.map((p) => p.source);
+
   // Level determination
   let level: DisagreementDetail['level'];
   let summary: string;
@@ -171,6 +330,13 @@ export function detectDisagreement(predictions: ModelPrediction[]): Disagreement
   } else {
     level = 'LOW';
     summary = `Low disagreement: std=${(std * 100).toFixed(1)}%, max gap=${(maxGap * 100).toFixed(1)}%. Models broadly aligned.`;
+  }
+
+  if (flaggedSources.length > 0) {
+    summary += ` Flagged for review (confidence < 0.3): ${flaggedSources.join(', ')}.`;
+    if (level === 'LOW' && flaggedSources.length >= predictions.length / 2) {
+      level = 'MODERATE';
+    }
   }
 
   return {
@@ -192,14 +358,16 @@ export function detectDisagreement(predictions: ModelPrediction[]): Disagreement
  * - Brier < 0.10 → weight *= 1.25 (upweight, capped at 3.0)
  * - Brier between 0.10-0.25 → gradual scaling
  *
- * Weights decay toward 1.0 over time if no recent resolution data.
+ * Persists weight updates to ModelRegistryRecord via ModelRegistry.evaluateModel()
+ * AND to EnsemblePrediction rows for backward compatibility.
+ * Weak models (rollingBrier>0.3 with 100+ samples) get status=DISABLED.
  */
 export async function updateModelWeights(
   marketId: string,
   source: string,
   outcome: number, // 0 or 1 (actual binary outcome)
+  category?: string | null,
 ): Promise<void> {
-  // Collect all EnsemblePrediction rows for this market+source
   const rows = await db.ensemblePrediction.findMany({
     where: { marketId, source },
     orderBy: { createdAt: 'asc' },
@@ -209,6 +377,8 @@ export async function updateModelWeights(
 
   // Calculate Brier score for each prediction against the actual outcome
   const brierScores: number[] = [];
+  const resolvedCategory = category ?? rows.find((r) => r.category)?.category ?? null;
+
   for (const row of rows) {
     if (row.predictedProb == null) continue;
     const brier = (row.predictedProb - outcome) ** 2;
@@ -219,7 +389,6 @@ export async function updateModelWeights(
   if (brierScores.length === 0) return;
 
   // Collect all EnsemblePrediction rows for this source across all markets
-  // to get a more robust Brier estimate
   const allPredictions = await db.ensemblePrediction.findMany({
     where: { source, brierScore: { not: null } },
   });
@@ -235,16 +404,37 @@ export async function updateModelWeights(
   // Determine weight multiplier
   let multiplier: number;
   if (aggregateBrier > 0.25) {
-    multiplier = 0.5; // significantly downweight
+    multiplier = 0.5;
   } else if (aggregateBrier < 0.10) {
-    multiplier = 1.25; // upweight
+    multiplier = 1.25;
   } else {
     // Linear interpolation: Brier 0.10 → 1.0x, Brier 0.25 → 0.5x
     const t = (aggregateBrier - 0.10) / (0.25 - 0.10);
     multiplier = 1.0 - t * 0.5;
   }
 
-  // Apply to all EnsemblePrediction rows for this source
+  // Persist to ModelRegistryRecord per resolved category
+  if (resolvedCategory) {
+    try {
+      // Evaluate using average Brier of this batch against the model registry
+      const avgBrier = brierScores.reduce((s, v) => s + v, 0) / brierScores.length;
+      await ModelRegistry.evaluateModel(source, resolvedCategory, avgBrier);
+    } catch (e) {
+      console.error(`[Ensemble] ModelRegistry.evaluateModel failed for ${source}/${resolvedCategory}:`, e);
+    }
+  }
+
+  // Also update brierScore on EnsemblePrediction rows (backward compat)
+  for (const row of rows) {
+    await db.ensemblePrediction.update({
+      where: { id: row.id },
+      data: {
+        brierScore: (row.predictedProb - outcome) ** 2,
+      },
+    });
+  }
+
+  // Apply multiplier to all EnsemblePrediction rows for this source
   const currentWeights = await db.ensemblePrediction.findMany({
     where: { source },
     select: { id: true, weight: true },
@@ -255,16 +445,6 @@ export async function updateModelWeights(
     await db.ensemblePrediction.update({
       where: { id: row.id },
       data: { weight: newWeight },
-    });
-  }
-
-  // Also update brierScore on the specific market rows
-  for (const row of rows) {
-    await db.ensemblePrediction.update({
-      where: { id: row.id },
-      data: {
-        brierScore: (row.predictedProb - outcome) ** 2,
-      },
     });
   }
 
@@ -297,10 +477,10 @@ export async function storePredictions(
         candidateId,
         source: pred.source,
         predictedProb: pred.predictedProb,
-        confidence: pred.confidence ?? null,
+        confidence: pred.perSourceConfidence ?? pred.confidence ?? null,
         weight: pred.weight,
         brierScore: null,
-        category: null,
+        category: pred.category ?? null,
       },
     });
   }
@@ -317,22 +497,41 @@ export async function storePredictions(
  * - provider='tradingagents' → source='TRADINGAGENTS'
  * - provider='deerflow' → source='DEERFLOW'
  * - provider='mirofish' → source='MIROFISH'
+ *
+ * When AgentOutput has modelUsed, source becomes "modelUsed:category".
+ * Weights come from ModelRegistryRecord.getWeights(category), not from
+ * stale EnsemblePrediction rows.
  */
 export async function collectPredictionsFromAgentOutputs(
   researchRunId: string,
+  category: string,
 ): Promise<ModelPrediction[]> {
   const outputs = await db.agentOutput.findMany({
     where: { researchRunId },
     orderBy: { createdAt: 'desc' },
   });
 
+  const registryWeights = await ModelRegistry.getWeights(category);
+
   const predictions: ModelPrediction[] = [];
   const seenSources = new Set<string>();
 
   for (const output of outputs) {
-    // Determine source
+    // Determine source — prefer modelUsed:version:category if available,
+    // fall back to legacy provider-based labels
     let source: string | null = null;
-    if (output.role === 'DEBATE_ARBITER' || output.role === 'JUDGE') {
+    if (output.modelUsed) {
+      // modelUsed may already be "modelName:version" or just "modelName"
+      source = output.modelUsed.startsWith('LLM') || output.modelUsed === 'LLM'
+        ? 'LLM'
+        : output.provider === 'tradingagents'
+          ? 'TRADINGAGENTS'
+          : output.provider === 'deerflow'
+            ? 'DEERFLOW'
+            : output.provider === 'mirofish'
+              ? 'MIROFISH'
+              : output.modelUsed;
+    } else if (output.role === 'DEBATE_ARBITER' || output.role === 'JUDGE') {
       source = 'LLM';
     } else if (output.provider === 'tradingagents') {
       source = 'TRADINGAGENTS';
@@ -343,6 +542,16 @@ export async function collectPredictionsFromAgentOutputs(
     }
 
     if (!source || seenSources.has(source)) continue;
+
+    // Resolve weight from ModelRegistry, keyed as "modelName:category"
+    let weight = registryWeights[`${source}:${category}`];
+    if (weight == null) {
+      // Try exact source match (legacy labels)
+      weight = registryWeights[source];
+    }
+    if (weight == null) {
+      weight = 1.0;
+    }
 
     // Parse probability from output JSON
     let predictedProb: number | null = null;
@@ -376,20 +585,12 @@ export async function collectPredictionsFromAgentOutputs(
 
     if (predictedProb == null) continue;
 
-    // Get existing weight for this source, or use default
-    const existingWeight = await db.ensemblePrediction.findFirst({
-      where: { source },
-      orderBy: { createdAt: 'desc' },
-      select: { weight: true },
-    });
-
-    const weight = existingWeight?.weight ?? DEFAULT_SOURCE_WEIGHTS[source] ?? 1.0;
-
     predictions.push({
       source,
       predictedProb: Math.max(0.001, Math.min(0.999, predictedProb)),
       confidence: confidence != null ? Math.max(0.01, Math.min(1, confidence)) : 0.5,
       weight,
+      category,
     });
 
     seenSources.add(source);
@@ -402,18 +603,49 @@ export async function collectPredictionsFromAgentOutputs(
 // Full Ensemble Pipeline (orchestrator)
 // ============================================================================
 
-/** Run full ensemble: collect → compute → store → detect disagreement */
+/** Run full ensemble: collect → merge non-LLM signals → compute → store → detect disagreement */
 export async function runEnsemblePipeline(
   marketId: string,
   candidateId: string | null,
   researchRunId: string,
+  category: string,
 ): Promise<{ result: EnsembleResult; disagreement: DisagreementDetail }> {
-  const predictions = await collectPredictionsFromAgentOutputs(researchRunId);
+  const llmPredictions = await collectPredictionsFromAgentOutputs(researchRunId, category);
 
-  const result = computeWeightedEnsemble(predictions);
-  const disagreement = detectDisagreement(predictions);
+  const market = await db.market.findUnique({
+    where: { id: marketId },
+    select: { latestPrice: true, latestLiquidity: true, resolutionTime: true },
+  });
 
-  await storePredictions(marketId, candidateId, predictions);
+  const marketPrice = market?.latestPrice ?? 0.5;
+  const liquidity = market?.latestLiquidity ?? 1000;
+  const timeToResolution = market?.resolutionTime
+    ? Math.max(1, (new Date(market.resolutionTime).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+    : 30;
+
+  const nonLlmPredictions: ModelPrediction[] = [];
+
+  const walletPred = await convertWalletSignalToProbability(marketId, marketPrice, category);
+  if (walletPred) nonLlmPredictions.push(walletPred);
+
+  const relatedPred = await convertRelatedMarketToProbability(marketId, marketPrice, category);
+  if (relatedPred) nonLlmPredictions.push(relatedPred);
+
+  const orderbookPred = await convertOrderbookToProbability(marketId, marketPrice, category);
+  if (orderbookPred) nonLlmPredictions.push(orderbookPred);
+
+  const biasBaseline = biasAdjustedBaseline(marketPrice, category, timeToResolution, liquidity);
+  nonLlmPredictions.push(biasBaseline);
+
+  const statBaseline = await statisticalBaseline(marketId, category);
+  if (statBaseline) nonLlmPredictions.push(statBaseline);
+
+  const allPredictions = [...llmPredictions, ...nonLlmPredictions];
+
+  const result = computeWeightedEnsemble(allPredictions);
+  const disagreement = detectDisagreement(allPredictions);
+
+  await storePredictions(marketId, candidateId, allPredictions);
 
   return { result, disagreement };
 }
@@ -425,6 +657,7 @@ export async function runEnsemblePipeline(
 /**
  * Called when a market resolves. Updates all model weights based on
  * how close each source's predictions were to the actual outcome.
+ * Persists to both EnsemblePrediction rows and ModelRegistryRecord.
  */
 export async function resolveEnsembleWeights(
   marketId: string,
@@ -432,11 +665,11 @@ export async function resolveEnsembleWeights(
 ): Promise<void> {
   const sources = await db.ensemblePrediction.findMany({
     where: { marketId },
-    select: { source: true },
+    select: { source: true, category: true },
     distinct: ['source'],
   });
 
-  for (const { source } of sources) {
-    await updateModelWeights(marketId, source, actualOutcome);
+  for (const { source, category } of sources) {
+    await updateModelWeights(marketId, source, actualOutcome, category);
   }
 }
