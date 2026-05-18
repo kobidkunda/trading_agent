@@ -104,7 +104,8 @@ function pnlColor(val: number | null): string {
   return 'text-gray-400';
 }
 
-function formatCurrency(val: number): string {
+function formatCurrency(val: number | null | undefined): string {
+  if (val === null || val === undefined || Number.isNaN(val)) return '—';
   return val >= 1000 ? `$${(val / 1000).toFixed(1)}k` : `$${val.toFixed(2)}`;
 }
 
@@ -348,10 +349,14 @@ export function PaperOrdersDashboard() {
                       </TableCell>
                       <TableCell>{sideBadge(o.side)}</TableCell>
                       <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-300">${o.price.toFixed(4)}</span>
+                        <span className="text-xs tabular-nums text-gray-300">
+                          {o.price === null || o.price === undefined ? '—' : `$${o.price.toFixed(4)}`}
+                        </span>
                       </TableCell>
                       <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-300">${o.size.toFixed(2)}</span>
+                        <span className="text-xs tabular-nums text-gray-300">
+                          {o.size === null || o.size === undefined ? '—' : `$${o.size.toFixed(2)}`}
+                        </span>
                       </TableCell>
                       <TableCell>{lifecycleBadge(o.lifecycleStatus)}</TableCell>
                       <TableCell className="text-right">

@@ -56,6 +56,22 @@ interface OutcomeData {
   };
 }
 
+interface OutcomesApiResponse {
+  outcomes?: OutcomeRecord[];
+  summary?: Partial<OutcomeData['summary']>;
+  resolved?: number;
+  accuracy?: number | string | null;
+  totalPnl?: number | null;
+  recentResolved?: Array<{
+    marketId?: string;
+    title?: string;
+    predictedProb?: number | null;
+    actualOutcome?: string | null;
+    correct?: boolean | null;
+    createdAt?: string | Date | null;
+  }>;
+}
+
 function outcomeBadge(result: string) {
   const isYes = result === 'YES';
   const isCancelled = result === 'CANCELLED';
@@ -102,6 +118,7 @@ function formatPct(val: number | null): string {
 }
 
 function formatCurrency(val: number): string {
+  if (!Number.isFinite(val)) return '—';
   return val >= 1000 ? `$${(val / 1000).toFixed(1)}k` : `$${val.toFixed(2)}`;
 }
 
@@ -109,6 +126,90 @@ function formatPnl(val: number | null): string {
   if (val === null) return '—';
   const sign = val >= 0 ? '+' : '';
   return `${sign}${formatCurrency(val)}`;
+}
+
+function toNullableNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function normalizeOutcomesResponse(payload: OutcomesApiResponse): OutcomeData {
+  const fallbackSummary: OutcomeData['summary'] = {
+    total: 0,
+    correct: 0,
+    winRate: 0,
+    avgBrier: 0,
+    totalPnl: 0,
+  };
+
+  if (!payload || typeof payload !== 'object') {
+    return {
+      outcomes: [],
+      summary: fallbackSummary,
+    };
+  }
+
+  if (Array.isArray(payload.outcomes)) {
+    const safeOutcomes = payload.outcomes.filter(Boolean);
+    return {
+      outcomes: safeOutcomes,
+      summary: {
+        total: typeof payload.summary?.total === 'number' ? payload.summary.total : safeOutcomes.length,
+        correct: typeof payload.summary?.correct === 'number' ? payload.summary.correct : safeOutcomes.filter((outcome) => {
+          if (outcome.predictedProb === null) return false;
+          const predictedSide = outcome.predictedProb >= 0.5 ? 'YES' : 'NO';
+          return predictedSide === outcome.result;
+        }).length,
+        winRate: typeof payload.summary?.winRate === 'number' ? payload.summary.winRate : 0,
+        avgBrier: typeof payload.summary?.avgBrier === 'number' ? payload.summary.avgBrier : 0,
+        totalPnl: typeof payload.summary?.totalPnl === 'number' ? payload.summary.totalPnl : 0,
+      },
+    };
+  }
+
+  const normalizedOutcomes: OutcomeRecord[] = Array.isArray(payload.recentResolved)
+    ? payload.recentResolved.map((entry, index) => ({
+        id: `${entry.marketId ?? 'resolved'}-${index}`,
+        marketId: entry.marketId ?? `resolved-${index}`,
+        result: entry.actualOutcome === 'YES' || entry.actualOutcome === 'NO' || entry.actualOutcome === 'CANCELLED'
+          ? entry.actualOutcome
+          : 'NO',
+        resolvedProb: null,
+        resolvedAt: entry.createdAt ? new Date(entry.createdAt).toISOString() : new Date(0).toISOString(),
+        predictedProb: toNullableNumber(entry.predictedProb),
+        actualOutcome: entry.actualOutcome ?? null,
+        brierScore: null,
+        pnl: null,
+        market: {
+          id: entry.marketId ?? `resolved-${index}`,
+          title: entry.title ?? 'Untitled market',
+          venue: '—',
+          category: '—',
+        },
+      }))
+    : [];
+
+  const total = typeof payload.resolved === 'number' ? payload.resolved : normalizedOutcomes.length;
+  const correct = normalizedOutcomes.filter((outcome) => {
+    if (outcome.predictedProb === null) return false;
+    const predictedSide = outcome.predictedProb >= 0.5 ? 'YES' : 'NO';
+    return predictedSide === outcome.result;
+  }).length;
+  const parsedAccuracy = typeof payload.accuracy === 'string'
+    ? Number.parseFloat(payload.accuracy)
+    : payload.accuracy;
+
+  return {
+    outcomes: normalizedOutcomes,
+    summary: {
+      total,
+      correct,
+      winRate: typeof parsedAccuracy === 'number' && Number.isFinite(parsedAccuracy)
+        ? parsedAccuracy / 100
+        : total > 0 ? correct / total : 0,
+      avgBrier: 0,
+      totalPnl: typeof payload.totalPnl === 'number' ? payload.totalPnl : 0,
+    },
+  };
 }
 
 export function OutcomesDashboard() {
@@ -123,7 +224,7 @@ export function OutcomesDashboard() {
         const res = await fetch('/api/outcomes');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
-        if (!cancelled) setData(json);
+        if (!cancelled) setData(normalizeOutcomesResponse(json as OutcomesApiResponse));
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load outcomes');
@@ -169,7 +270,16 @@ export function OutcomesDashboard() {
     );
   }
 
-  if (!data || data.outcomes.length === 0) {
+  const outcomes = Array.isArray(data?.outcomes) ? data.outcomes : [];
+  const summary = data?.summary ?? {
+    total: 0,
+    correct: 0,
+    winRate: 0,
+    avgBrier: 0,
+    totalPnl: 0,
+  };
+
+  if (!data || outcomes.length === 0) {
     return (
       <div className="space-y-6">
         <h2 className="text-xl font-semibold text-white">Outcomes</h2>
@@ -184,7 +294,6 @@ export function OutcomesDashboard() {
     );
   }
 
-  const { summary, outcomes } = data;
   const winRatePct = summary.winRate * 100;
 
   return (

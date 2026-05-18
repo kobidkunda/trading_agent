@@ -63,6 +63,17 @@ interface PaperBet {
 type SortField = 'edge' | 'confidence' | 'brierScore' | 'pnl' | 'createdAt';
 type SortDir = 'asc' | 'desc';
 
+function normalizeBetsPayload(payload: unknown): PaperBet[] {
+  if (Array.isArray(payload)) return payload as PaperBet[];
+  if (payload && typeof payload === 'object') {
+    const record = payload as { bets?: unknown; data?: unknown; results?: unknown };
+    if (Array.isArray(record.bets)) return record.bets as PaperBet[];
+    if (Array.isArray(record.data)) return record.data as PaperBet[];
+    if (Array.isArray(record.results)) return record.results as PaperBet[];
+  }
+  return [];
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function pnlColor(value: number | null): string {
@@ -131,7 +142,7 @@ export function PaperBetsDashboard() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (!cancelled) {
-          setBets(data.bets ?? data ?? []);
+          setBets(normalizeBetsPayload(data));
         }
       } catch (err) {
         if (!cancelled) {
@@ -169,7 +180,7 @@ export function PaperBetsDashboard() {
           b.venue?.toLowerCase().includes(q)
       );
     }
-    return list.sort((a, b) => {
+    return [...list].sort((a, b) => {
       const av = a[sortField];
       const bv = b[sortField];
       if (av === null && bv === null) return 0;
@@ -228,7 +239,7 @@ export function PaperBetsDashboard() {
   const winRate = settledBets.length > 0 ? winCount / settledBets.length : 0;
   const totalPnl = bets.reduce((sum, b) => sum + (b.pnl ?? 0), 0);
   const avgBrier = bets.length > 0
-    ? bets.reduce((sum, b) => sum + (b.brierScore ?? 0), 0) / bets.filter((b) => b.brierScore !== null).length || 0
+    ? bets.reduce((sum, b) => sum + (b.brierScore ?? 0), 0) / Math.max(1, bets.filter((b) => b.brierScore !== null).length)
     : 0;
   const positiveEdgeCount = bets.filter((b) => b.edge > 0).length;
 

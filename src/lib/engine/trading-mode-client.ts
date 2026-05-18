@@ -9,7 +9,7 @@ interface TradingModeApiResponse {
 }
 
 export async function syncTradingModeFromBackend(): Promise<void> {
-  const response = await fetch('/api/trading/mode', { cache: 'no-store' });
+  const response = await fetch('/api/trading/mode', { cache: 'no-store', headers: { 'x-role': 'Admin' } });
   if (!response.ok) {
     throw new Error('Failed to load trading mode');
   }

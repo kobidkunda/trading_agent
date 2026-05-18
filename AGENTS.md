@@ -1,7 +1,7 @@
 # AGENTS.md — Trading Command Center (Trusted PAPER Mode v1)
 
 > Quick-reference guide for coding agents. Read this first before making any changes.
-> Updated: 2026-05-17 | 30 models · 26 SPA pages · 36+ API routes · 66 engine modules
+> Updated: 2026-05-18 | 36 models · 26 SPA pages · 50+ API routes · 66 engine modules
 
 ---
 

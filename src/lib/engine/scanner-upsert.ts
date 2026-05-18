@@ -78,9 +78,22 @@ export async function upsertScannedMarket(params: {
   });
   const scoreAction = classifyCandidateScore(scoreBreakdown.totalScore);
 
-  const existing = await db.market.findFirst({
+  let existing = await db.market.findFirst({
     where: { externalId: market.externalId, venue: market.venue },
   });
+
+  // Fallback: Polymarket may return different externalIds for same market across scans.
+  // Check by title hash then normalized title to prevent duplicate markets.
+  if (!existing && titleHash) {
+    existing = await db.market.findFirst({
+      where: { titleHash, venue: market.venue },
+    });
+  }
+  if (!existing && normalizedTitle) {
+    existing = await db.market.findFirst({
+      where: { normalizedTitle, venue: market.venue },
+    });
+  }
 
   if (!existing) {
     const created = await db.market.create({

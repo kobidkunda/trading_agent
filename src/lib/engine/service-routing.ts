@@ -77,15 +77,28 @@ export async function resolveResearchProvider(): Promise<ResearchProvider> {
       return 'deerflow';
     }
 
-    console.log('[ServiceRouting] DeerFlow is DOWN, checking fallback...');
+    console.log('[ServiceRouting] DeerFlow is DOWN, checking fallbacks...');
 
-    if (fallbackProvider === 'firecrawl') {
-      const firecrawlHealth = await checkServiceHealth('firecrawl');
-      if (firecrawlHealth.status === 'UP') {
-        console.log('[ServiceRouting] Routing research to Firecrawl (fallback)');
-        return 'firecrawl';
+    const fallbackCandidates: ResearchProvider[] = [];
+    const normalizedFallback = fallbackProvider?.trim().toLowerCase().replace(/[-\s]+/g, '_');
+    if (normalizedFallback === 'firecrawl') fallbackCandidates.push('firecrawl');
+    if (normalizedFallback === 'tradingagents') fallbackCandidates.push('tradingagents');
+    if (normalizedFallback === 'agent_reach' || normalizedFallback === 'agentreach') {
+      fallbackCandidates.push('agent_reach');
+    }
+
+    for (const candidate of ['tradingagents', 'agent_reach', 'firecrawl'] as ResearchProvider[]) {
+      if (!fallbackCandidates.includes(candidate)) {
+        fallbackCandidates.push(candidate);
       }
-      console.log('[ServiceRouting] Firecrawl fallback is also DOWN');
+    }
+
+    for (const candidate of fallbackCandidates) {
+      const health = await checkServiceHealth(candidate);
+      if (health.status === 'UP') {
+        console.log(`[ServiceRouting] Routing research to ${candidate} fallback`);
+        return candidate;
+      }
     }
 
     console.log('[ServiceRouting] All research providers unavailable, defaulting to deerflow');

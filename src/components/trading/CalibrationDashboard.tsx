@@ -31,31 +31,88 @@ interface CalibrationBucket {
   label: string;
   range: [number, number];
   count: number;
-  meanPrediction: number;
-  meanOutcome: number;
-  brierScore: number;
+  meanPrediction: number | null;
+  meanOutcome: number | null;
+  brierScore: number | null;
 }
 
 interface CategoryBrier {
   category: string;
-  brierScore: number;
+  brierScore: number | null;
   count: number;
 }
 
 interface CalibrationData {
-  currentBrier: number;
-  rollingBrier50: number;
-  rollingBrier100: number;
+  currentBrier: number | null;
+  rollingBrier50: number | null;
+  rollingBrier100: number | null;
   totalPredictions: number;
   buckets: CalibrationBucket[];
   categoryBreakdown: CategoryBrier[];
 }
 
-function brierColor(score: number): string {
+function brierColor(score: number | null | undefined): string {
+  if (score === null || score === undefined || Number.isNaN(score)) return 'text-gray-500';
   if (score <= 0.05) return 'text-emerald-400';
   if (score <= 0.10) return 'text-cyan-400';
   if (score <= 0.20) return 'text-amber-400';
   return 'text-red-400';
+}
+
+function formatBrier(score: number | null | undefined): string {
+  if (score === null || score === undefined || Number.isNaN(score)) return '—';
+  return score.toFixed(4);
+}
+
+function formatDecimal(value: number | null | undefined, digits = 2): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  return value.toFixed(digits);
+}
+
+function normalizeCalibrationPayload(payload: unknown): CalibrationData | null {
+  if (!payload || typeof payload !== 'object') return null;
+
+  const record = payload as {
+    currentBrier?: unknown;
+    rollingBrier50?: unknown;
+    rollingBrier100?: unknown;
+    totalPredictions?: unknown;
+    buckets?: unknown;
+    categoryBreakdown?: unknown;
+    byCategory?: unknown;
+    sampleSufficiency?: { settledCount?: unknown } | null;
+  };
+
+  const buckets = Array.isArray(record.buckets) ? (record.buckets as CalibrationBucket[]) : [];
+  const categoryBreakdown = Array.isArray(record.categoryBreakdown)
+    ? (record.categoryBreakdown as CategoryBrier[])
+    : Array.isArray(record.byCategory)
+      ? (record.byCategory as CategoryBrier[])
+      : [];
+
+  const settledCount =
+    typeof record.sampleSufficiency?.settledCount === 'number'
+      ? record.sampleSufficiency.settledCount
+      : 0;
+
+  const currentBrierCandidate =
+    typeof record.currentBrier === 'number'
+      ? record.currentBrier
+      : typeof record.rollingBrier100 === 'number'
+        ? record.rollingBrier100
+        : typeof record.rollingBrier50 === 'number'
+          ? record.rollingBrier50
+          : null;
+
+  return {
+    currentBrier: currentBrierCandidate,
+    rollingBrier50: typeof record.rollingBrier50 === 'number' ? record.rollingBrier50 : null,
+    rollingBrier100: typeof record.rollingBrier100 === 'number' ? record.rollingBrier100 : null,
+    totalPredictions:
+      typeof record.totalPredictions === 'number' ? record.totalPredictions : settledCount,
+    buckets,
+    categoryBreakdown,
+  };
 }
 
 export function CalibrationDashboard() {
@@ -70,7 +127,7 @@ export function CalibrationDashboard() {
         const res = await fetch('/api/calibration');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
-        if (!cancelled) setData(json);
+        if (!cancelled) setData(normalizeCalibrationPayload(json));
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load calibration');
@@ -149,7 +206,7 @@ export function CalibrationDashboard() {
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Brier Score (All)</p>
             <p className={cn('mt-1 text-2xl font-bold tabular-nums', brierColor(data.currentBrier))}>
-              {data.currentBrier.toFixed(4)}
+              {formatBrier(data.currentBrier)}
             </p>
           </CardContent>
         </Card>
@@ -157,7 +214,7 @@ export function CalibrationDashboard() {
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Rolling 50</p>
             <p className={cn('mt-1 text-2xl font-bold tabular-nums', brierColor(data.rollingBrier50))}>
-              {data.rollingBrier50.toFixed(4)}
+              {formatBrier(data.rollingBrier50)}
             </p>
           </CardContent>
         </Card>
@@ -165,7 +222,7 @@ export function CalibrationDashboard() {
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Rolling 100</p>
             <p className={cn('mt-1 text-2xl font-bold tabular-nums', brierColor(data.rollingBrier100))}>
-              {data.rollingBrier100.toFixed(4)}
+              {formatBrier(data.rollingBrier100)}
             </p>
           </CardContent>
         </Card>
@@ -201,7 +258,7 @@ export function CalibrationDashboard() {
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-medium text-gray-400">{bucket.label}</span>
                     <span className="text-xs tabular-nums text-gray-500">
-                      n={bucket.count} · Mean pred {bucket.meanPrediction.toFixed(2)} · Outcome {bucket.meanOutcome.toFixed(2)}
+                      n={bucket.count} · Mean pred {formatDecimal(bucket.meanPrediction, 2)} · Outcome {formatDecimal(bucket.meanOutcome, 2)}
                     </span>
                   </div>
                   <div className="flex items-center gap-3">
@@ -209,7 +266,7 @@ export function CalibrationDashboard() {
                       <Progress value={barPct} className="h-2 bg-gray-800 [&>div]:bg-emerald-500" />
                     </div>
                     <span className={cn('w-16 text-right text-xs font-bold tabular-nums', brierColor(bucket.brierScore))}>
-                      {bucket.brierScore.toFixed(4)}
+                      {formatBrier(bucket.brierScore)}
                     </span>
                   </div>
                 </div>
@@ -255,10 +312,18 @@ export function CalibrationDashboard() {
                       </TableCell>
                       <TableCell className="text-right">
                         <span className={cn('text-xs font-bold tabular-nums', brierColor(cat.brierScore))}>
-                          {cat.brierScore.toFixed(4)}
+                          {formatBrier(cat.brierScore)}
                         </span>
                       </TableCell>
                       <TableCell className="text-right">
+                        {cat.brierScore === null || cat.brierScore === undefined ? (
+                          <Badge
+                            variant="outline"
+                            className="border-gray-700 bg-gray-800/50 text-[10px] text-gray-400"
+                          >
+                            No data
+                          </Badge>
+                        ) : (
                         <Badge variant="outline" className={cn(
                           'text-[10px]',
                           cat.brierScore <= 0.10
@@ -269,6 +334,7 @@ export function CalibrationDashboard() {
                         )}>
                           {cat.brierScore <= 0.10 ? 'Good' : cat.brierScore <= 0.20 ? 'Fair' : 'Poor'}
                         </Badge>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))}

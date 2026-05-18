@@ -116,7 +116,25 @@ export function OrderbookDashboard() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (!cancelled) {
-          setMarkets(data.markets ?? data ?? []);
+            const raw = data.markets ?? data.snapshots ?? data;
+            const list = Array.isArray(raw) ? raw : [];
+            setMarkets(list.map((s: Record<string, unknown>) => ({
+              id: String(s.id ?? ''),
+              marketId: String(s.marketId ?? ''),
+              marketTitle: String(s.marketTitle ?? s.market?.title ?? s.title ?? ''),
+              venue: String(s.venue ?? s.market?.venue ?? ''),
+              bestBid: Number(s.bestBid ?? 0),
+              bestAsk: Number(s.bestAsk ?? 0),
+              spread: Number(s.spread ?? 0),
+              bidDepth: Number(s.bidDepth ?? 0),
+              askDepth: Number(s.askDepth ?? 0),
+              depthImbalance: Number(s.depthImbalance ?? 0),
+              largeBidWall: s.largeBidWall != null ? Number(s.largeBidWall) : null,
+              largeAskWall: s.largeAskWall != null ? Number(s.largeAskWall) : null,
+              fillProbability: s.fillProbability != null ? Number(s.fillProbability) : null,
+              thinBookWarning: Boolean(s.thinBookWarning ?? s.thinBookDanger ?? false),
+              lastUpdated: String(s.lastUpdated ?? s.capturedAt ?? ''),
+            })));
         }
       } catch (err) {
         if (!cancelled) {

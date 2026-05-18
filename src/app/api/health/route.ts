@@ -3,6 +3,7 @@ import { db } from '@/lib/db';
 import { SystemHealth } from '@/lib/types';
 import { isEncrypted, decrypt } from '@/lib/engine/crypto';
 import { resolveResearchProvider } from '@/lib/engine/service-routing';
+import { checkServiceHealth } from '@/lib/engine/health-check';
 
 export async function GET() {
   try {
@@ -136,6 +137,24 @@ export async function GET() {
       } catch {
         apiHealth[displayName] = 'DOWN' as const;
       }
+    }
+
+    // Always include the core research/runtime stack, even when credentials come from env fallbacks.
+    const requiredServices = [
+      'deerflow',
+      'tradingagents',
+      'agent_reach',
+      'searxng',
+      'qdrant',
+      'openai',
+      'ollama',
+      'firecrawl',
+    ] as const;
+
+    const serviceChecks = await Promise.all(requiredServices.map((service) => checkServiceHealth(service)));
+    for (const service of serviceChecks) {
+      if (service.status === 'UNKNOWN') continue;
+      apiHealth[service.name] = service.status;
     }
 
     const vectorStatus = apiHealth['Qdrant'] || ('DOWN' as const);

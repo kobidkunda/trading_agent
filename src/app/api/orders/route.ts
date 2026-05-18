@@ -11,14 +11,13 @@ export async function GET(request: NextRequest) {
     const where: Prisma.OrderWhereInput | undefined =
       status === 'open'
         ? {
-            OR: [
-              { lifecycleStatus: { in: [OrderLifecycle.PLANNED, OrderLifecycle.SUBMITTED, OrderLifecycle.PARTIALLY_FILLED] } },
-              { status: { in: ['PENDING', 'SUBMITTED', 'PARTIAL'] } },
-            ],
+            lifecycleStatus: { in: [OrderLifecycle.PLANNED, OrderLifecycle.SUBMITTED, OrderLifecycle.PARTIALLY_FILLED, OrderLifecycle.FILLED] },
           }
-        : undefined;
+        : status
+          ? { lifecycleStatus: status as OrderLifecycle }
+          : undefined;
 
-    let orders = await db.order.findMany({
+    const orders = await db.order.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       take: limit,
@@ -26,10 +25,6 @@ export async function GET(request: NextRequest) {
         market: { select: { id: true, title: true, venue: true, category: true } },
       },
     });
-
-    if (status === 'open') {
-      orders = orders.filter((order) => order.status !== 'WATCH');
-    }
 
     return NextResponse.json({ orders });
   } catch (error) {

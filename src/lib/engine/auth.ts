@@ -10,8 +10,19 @@ function normalizeRole(value: string | null | undefined): UserRole | null {
   return null;
 }
 
+function isLocalDevelopmentRequest(request: Request): boolean {
+  const host = request.headers.get('host')?.toLowerCase() ?? '';
+  return (
+    process.env.NODE_ENV !== 'production' &&
+    (host.includes('localhost') || host.startsWith('127.0.0.1') || host.startsWith('[::1]'))
+  );
+}
+
 export function getRoleFromRequest(request: Request): UserRole | null {
   if (process.env.LOCAL_DEV_AUTH_BYPASS === 'true') {
+    return normalizeRole(request?.headers?.get?.('x-role')) ?? 'Admin';
+  }
+  if (isLocalDevelopmentRequest(request)) {
     return normalizeRole(request?.headers?.get?.('x-role')) ?? 'Admin';
   }
   return null;
