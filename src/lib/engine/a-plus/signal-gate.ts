@@ -17,6 +17,7 @@ export interface APlusGateInput {
   dataSource: 'REAL' | 'MOCK';
   spreadSource: 'REAL_ORDERBOOK' | 'ESTIMATED';
   oracleCheckPresent?: boolean;
+  orderbookAgeSeconds?: number;
 }
 
 export interface APlusGateResult {
@@ -77,6 +78,14 @@ export function evaluateAPlusSignalGate(
   if (input.spreadSource !== 'REAL_ORDERBOOK') {
     reasons.push(`spreadSource ${input.spreadSource} is not REAL_ORDERBOOK`);
   }
+  const maxAge = input.orderbookAgeSeconds != null
+    ? (config.maxOrderbookAgeSeconds ?? 300)
+    : undefined;
+  if (maxAge != null && input.orderbookAgeSeconds != null && input.orderbookAgeSeconds > maxAge) {
+    reasons.push(
+      `orderbookAge ${input.orderbookAgeSeconds.toFixed(0)}s > ${maxAge}s threshold`,
+    );
+  }
 
   return {
     passed: reasons.length === 0,
@@ -85,7 +94,8 @@ export function evaluateAPlusSignalGate(
       reason.includes('spreadSource') ||
       reason.includes('dataSource') ||
       reason.includes('modelDisagreement') ||
-      reason.includes('oracleRiskScore'),
+      reason.includes('oracleRiskScore') ||
+      reason.includes('orderbookAge'),
     ),
   };
 }

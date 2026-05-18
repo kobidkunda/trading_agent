@@ -1300,6 +1300,9 @@ export async function runPipelineForMarket(
       where: { marketId },
       orderBy: { capturedAt: 'desc' },
     });
+    const orderbookAgeSeconds = latestOrderbook?.capturedAt
+      ? Math.max(0, (Date.now() - new Date(latestOrderbook.capturedAt).getTime()) / 1000)
+      : undefined;
     const oracleCheckPresent = market.oracleCheck != null;
     const oracleRiskScore =
       oracleCheckPresent && candidate?.oracleRiskPenalty != null
@@ -1365,6 +1368,7 @@ export async function runPipelineForMarket(
       dataSource: market.dataSource,
       spreadSource: latestOrderbook ? 'REAL_ORDERBOOK' : 'ESTIMATED',
       oracleCheckPresent,
+      orderbookAgeSeconds,
     });
     const aPlusGateReasons = [...aPlusGate.reasons];
     if (candidate?.walletSignalScore != null && candidate.walletSignalScore > 0 && !walletTrustContext.hasTrustedEligibleWalletSignal) {
@@ -1448,6 +1452,19 @@ export async function runPipelineForMarket(
       const catPriority = ['crypto', 'economics'].includes(market.category) ? 3 : ['technology', 'politics'].includes(market.category) ? 2 : 0;
       const vol24h = snapshot?.volume24h ?? 0;
 
+      // Compute edgeDirection: which side the edge favors.
+      // Negative edge on YES means market price > our estimate → edge is on NO.
+      // Negative edge on NO means market price > our NO estimate → edge is on YES.
+      const edgeDirection: string = (() => {
+        const s = gatedRiskResult.side;
+        const e = gatedRiskResult.edge;
+        if (s === 'YES' && e > 0) return 'YES_EDGE';
+        if (s === 'YES' && e < 0) return 'NO_EDGE';
+        if (s === 'NO' && e > 0) return 'NO_EDGE';
+        if (s === 'NO' && e < 0) return 'YES_EDGE';
+        return 'UNKNOWN';
+      })();
+
       const enrichedScore = computeCandidateScore({
         liquidity,
         spread: snapshot?.spread ?? 0.05,
@@ -1467,6 +1484,7 @@ export async function runPipelineForMarket(
           stage: 'DECIDED',
           candidateScore: enrichedScore.totalScore,
           adjustedEdge: gatedRiskResult.edge,
+          edgeDirection,
           lastDecisionAt: new Date(),
           nextEligibleAt: computeNextEligibleAt(new Date(), 24),
         },

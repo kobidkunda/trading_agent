@@ -452,6 +452,7 @@ export interface APlusSignalConfig {
   maxTailRisk: number;
   maxOracleRisk: number;
   maxCorrelationExposure: number;
+  maxOrderbookAgeSeconds?: number;
 }
 
 export type UserRole = 'Admin' | 'ResearchOperator' | 'RiskReviewer' | 'ExecutionReviewer' | 'ReadOnlyViewer';

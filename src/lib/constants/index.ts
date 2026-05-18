@@ -219,6 +219,7 @@ export const DEFAULT_APLUS_CONFIG: APlusSignalConfig = {
   maxTailRisk: 0.1,
   maxOracleRisk: 0.2,
   maxCorrelationExposure: 0.3,
+  maxOrderbookAgeSeconds: 300,
 };
 
 export const DEFAULT_SCAN_CONFIG = {

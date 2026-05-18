@@ -199,6 +199,7 @@ model TradeCandidate {
   candidateScore Float?
   adjustedEdge        Float?
   rawEdge             Float?
+  edgeDirection       String?  // YES_EDGE | NO_EDGE | UNKNOWN — which side the edge favors
   biasAdjustedProb    Float?
   walletSignalScore   Float?
   relatedMarketSignal Float?
@@ -760,6 +761,8 @@ model OrderbookSnapshot {
   bestBid       Float?
   bestAsk       Float?
   spread        Float?
+  spreadSource  String?
+  orderbookSource String?
   bidDepth       Float?
   askDepth       Float?
   depthImbalance Float?

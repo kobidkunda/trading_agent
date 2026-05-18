@@ -97,6 +97,8 @@ export function computeCandidateScore(input: CandidateScoreInput): CandidateScor
 
   // ── Signal scores (T3-T7 feeds) ──
   const adjustedEdge = input.adjustedEdge ?? input.rawEdge ?? 0;
+  // Math.abs scores edge magnitude — negative edge (market > our estimate) gets same score.
+  // Correct: scoring measures signal strength, not direction. The A+ gate handles direction.
   const edgeScore = clamp(Math.abs(adjustedEdge) * 250, 0, 15);
   const confidenceScore = clamp((input.confidence ?? 0) * 15, 0, 15);
   const sourceQualityScore = clamp((input.sourceQuality ?? 0) * 0.1, 0, 10);

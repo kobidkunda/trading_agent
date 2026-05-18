@@ -157,6 +157,8 @@ export async function upsertScannedMarket(params: {
           bestBid: market.bestBid ?? null,
           bestAsk: market.bestAsk ?? null,
           spread: market.spread,
+          spreadSource: market.spreadSource ?? null,
+          orderbookSource: market.venue ?? null,
           bidDepth: market.bidDepth ?? null,
           askDepth: market.askDepth ?? null,
           priceImpact: market.priceImpact ?? null,
