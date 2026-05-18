@@ -6,7 +6,7 @@ import { runDebateArena } from '@/lib/engine/debate-arena';
 import { searchSearXNG } from '@/lib/engine/research/search';
 import { extractContent } from '@/lib/engine/research/extract';
 import { runDeerFlowResearch } from '@/lib/engine/research/deerflow';
-import { runTradingAgentsSimple } from '@/lib/engine/research/tradingagents-api';
+import { runTradingAgentsSimple, runTradingAgentsNative, isNativeAnalysisCandidate } from '@/lib/engine/research/tradingagents-api';
 import { runFullResearch } from '@/lib/engine/research/full-research';
 import { synthesizeFindings, formatAgentReachAsSource, formatDeerFlowAsSource, formatSearchAsSource, formatTradingAgentsAsSource, formatRedditAsSource, formatXAsSource } from '@/lib/engine/research/synthesis';
 import { writeResearchToQdrant, retrieveSimilarMarkets } from '@/lib/engine/memory/qdrant';
@@ -660,6 +660,7 @@ export async function runResearchStage(
       marketId,
       marketTitle: market.title,
       marketDescription: market.description || '',
+      marketCategory: market.category,
       impliedProbability: impliedProb,
       routing,
       agentReachTargetSourceCount: 300,
@@ -810,6 +811,38 @@ export async function runResearchStage(
             output: JSON.stringify(taResult.xReport),
             rawOutput: JSON.stringify(taResult.xReport),
             summary: `Persisted X/Twitter posts: ${savedCount}`,
+          },
+        });
+      }
+
+      const nativeResult = fullResearchResult.tradingagentsNative;
+      if (nativeResult && nativeResult.status !== 'failed') {
+        console.log('[Pipeline] Storing native graph AgentOutput');
+        await db.agentOutput.create({
+          data: {
+            researchRunId: researchRun.id,
+            role: 'TRADINGAGENTS_NATIVE',
+            stage: 'TRADINGAGENTS',
+            serviceName: 'tradingagents-native',
+            provider: 'tradingagents',
+            modelUsed: 'tradingagents-native',
+            output: JSON.stringify({
+              finalProbability: nativeResult.probability,
+              finalConfidence: nativeResult.confidence,
+              status: nativeResult.status,
+              fundamentals: nativeResult.fundamentals,
+              sentiment: nativeResult.sentiment,
+              news: nativeResult.news,
+              technical: nativeResult.technical,
+              bullResearcher: nativeResult.bullResearcher,
+              bearResearcher: nativeResult.bearResearcher,
+              trader: nativeResult.trader,
+              riskManager: nativeResult.riskManager,
+              portfolioManager: nativeResult.portfolioManager,
+              fullReport: nativeResult.fullReport,
+            }),
+            rawOutput: JSON.stringify(nativeResult),
+            summary: `Native graph analysis: confidence=${nativeResult.confidence}, probability=${nativeResult.probability}`,
           },
         });
       }
@@ -1086,6 +1119,50 @@ export async function runResearchStage(
                 summary: null,
               },
             });
+          }
+        }
+
+        // Native graph analysis for financial markets (QUICK/DEEP path)
+        if (isNativeAnalysisCandidate(market.category) && taResult?.status === 'completed') {
+          try {
+            const nativeResult = await runTradingAgentsNative(
+              market.title, taDate,
+              routing.analystDeepThinkLlm,
+              routing.analystQuickThinkLlm,
+              routing.analystLlmProvider,
+            );
+            if (nativeResult && nativeResult.status !== 'failed') {
+              console.log('[Pipeline] Storing native graph AgentOutput (QUICK/DEEP path)');
+              await db.agentOutput.create({
+                data: {
+                  researchRunId: researchRun.id,
+                  role: 'TRADINGAGENTS_NATIVE',
+                  stage: 'TRADINGAGENTS',
+                  serviceName: 'tradingagents-native',
+                  provider: 'tradingagents',
+                  modelUsed: 'tradingagents-native',
+                  output: JSON.stringify({
+                    finalProbability: nativeResult.probability,
+                    finalConfidence: nativeResult.confidence,
+                    status: nativeResult.status,
+                    fundamentals: nativeResult.fundamentals,
+                    sentiment: nativeResult.sentiment,
+                    news: nativeResult.news,
+                    technical: nativeResult.technical,
+                    bullResearcher: nativeResult.bullResearcher,
+                    bearResearcher: nativeResult.bearResearcher,
+                    trader: nativeResult.trader,
+                    riskManager: nativeResult.riskManager,
+                    portfolioManager: nativeResult.portfolioManager,
+                    fullReport: nativeResult.fullReport,
+                  }),
+                  rawOutput: JSON.stringify(nativeResult),
+                  summary: `Native graph analysis: confidence=${nativeResult.confidence}, probability=${nativeResult.probability}`,
+                },
+              });
+            }
+          } catch (nativeErr) {
+            console.warn('[Pipeline] Native analysis (QUICK/DEEP) threw, continuing:', String(nativeErr));
           }
         }
       } else if (taResult) {

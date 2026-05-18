@@ -273,6 +273,7 @@ export async function verifyAllSources(): Promise<AggregateResult> {
       marketId: 'test-market-001',
       marketTitle: TEST_QUERY,
       marketDescription: 'Test market for source verification',
+      marketCategory: 'crypto',
       impliedProbability: 0.5,
       routing,
     });

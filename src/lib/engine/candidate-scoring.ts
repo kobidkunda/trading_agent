@@ -15,6 +15,7 @@ export interface CandidateScoreInput {
   // ── Signal scores (T3-T7 feeds, all optional → default 0) ──
   rawEdge?: number;
   adjustedEdge?: number;
+  edgeDirection?: string;          // 'YES_EDGE' | 'NO_EDGE' | 'UNKNOWN'
   biasAdjustedProb?: number;
   confidence?: number;
   sourceQuality?: number;
@@ -98,9 +99,13 @@ export function computeCandidateScore(input: CandidateScoreInput): CandidateScor
 
   // ── Signal scores (T3-T7 feeds) ──
   const adjustedEdge = input.adjustedEdge ?? input.rawEdge ?? 0;
-  // Math.abs scores edge magnitude — negative edge (market > our estimate) gets same score.
-  // Correct: scoring measures signal strength, not direction. The A+ gate handles direction.
-  const edgeScore = clamp(Math.abs(adjustedEdge) * 250, 0, 15);
+  const edgeDirection = input.edgeDirection ?? (adjustedEdge >= 0 ? 'YES_EDGE' : 'NO_EDGE');
+  // Score edge magnitude with side-awareness: positive edge scores fully; negative edge
+  // (market > estimate) only scores if NO side is executable.
+  const effectiveEdge = edgeDirection === 'NO_EDGE'
+    ? Math.abs(adjustedEdge) * 0.7  // NO-side edge discounted (harder to execute)
+    : Math.abs(adjustedEdge);
+  const edgeScore = clamp(effectiveEdge * 250, 0, 15);
   const confidenceScore = clamp((input.confidence ?? 0) * 15, 0, 15);
   const sourceQualityScore = clamp((input.sourceQuality ?? 0) * 0.1, 0, 10);
   const resolutionClarityScore = clamp((input.resolutionClarity ?? 0) * 0.1, 0, 8);

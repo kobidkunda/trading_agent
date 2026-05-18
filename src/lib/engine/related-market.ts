@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { db } from '@/lib/db';
 
 // ────────────────────────────────────────────
@@ -617,10 +618,6 @@ export async function computeRelatedMarketSignal(
   };
 }
 
-// ────────────────────────────────────────────
-// Main Scanner Entry Point
-// ────────────────────────────────────────────
-
 /** Check freshness: returns signalSource based on lastSeenAt age */
 function freshnessToSignalSource(lastSeenAt: Date | null, latestPrice: number | null): RelationSignalSource {
   if (latestPrice == null) return 'MISSING_PRICE';
@@ -630,12 +627,72 @@ function freshnessToSignalSource(lastSeenAt: Date | null, latestPrice: number | 
   return 'FRESH_PRICE';
 }
 
+// ────────────────────────────────────────────
+// Entity-Based Filter Builder
+// ────────────────────────────────────────────
+
+/** Minimum number of entity-filtered candidates before fallback kicks in */
+const MIN_ENTITY_CANDIDATES = 20;
+/** Max entities used when building Prisma OR filter (excess entities truncated) */
+const MAX_ENTITY_FILTER_TERMS = 30;
+
+/**
+ * Build a Prisma where clause that matches markets sharing entities with the
+ * extracted entity set. Uses `contains` so partial title matches work.
+ */
+function buildEntityFilter(entities: ExtractedEntities, _excludeId: string): Prisma.MarketWhereInput[] {
+  const ors: Prisma.MarketWhereInput[] = [];
+
+  for (const ticker of entities.tickers.slice(0, MAX_ENTITY_FILTER_TERMS)) {
+    ors.push({ title: { contains: `$${ticker}` } });
+  }
+
+  for (const name of entities.names.slice(0, MAX_ENTITY_FILTER_TERMS)) {
+    ors.push({ title: { contains: name } });
+  }
+
+  for (const t of entities.thresholds.slice(0, MAX_ENTITY_FILTER_TERMS)) {
+    const valStr = String(t.value);
+    if (valStr.length >= 2) {
+      ors.push({ title: { contains: valStr } });
+    }
+  }
+
+  for (const date of entities.dates.slice(0, MAX_ENTITY_FILTER_TERMS)) {
+    const yearMatch = date.match(/(20\d{2})/);
+    const needle = yearMatch ? yearMatch[1] : date;
+    ors.push({ title: { contains: needle } });
+  }
+
+  for (const outcome of entities.outcomes.slice(0, MAX_ENTITY_FILTER_TERMS)) {
+    ors.push({ title: { contains: outcome } });
+  }
+
+  return ors;
+}
+
+// ────────────────────────────────────────────
+// Scan Counter
+// ────────────────────────────────────────────
+
+let relationScanRunCounter = 0;
+
+/** Return current scan counter value for observability */
+export function getRelationScanRunCounter(): number {
+  return relationScanRunCounter;
+}
+
+// ────────────────────────────────────────────
+// Main Scanner Entry Point
+// ────────────────────────────────────────────
+
 export async function scanRelatedMarkets(marketId: string): Promise<number> {
   const market = await db.market.findUnique({
     where: { id: marketId },
     select: {
       id: true,
       title: true,
+      category: true,
       latestPrice: true,
       lastSeenAt: true,
     },
@@ -643,29 +700,162 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
 
   if (!market) return 0;
 
-  // Get recently active markets (last 100, excluding self)
-  const recentMarkets = await db.market.findMany({
-    where: {
-      id: { not: marketId },
-      isActive: true,
-    },
-    orderBy: { lastSeenAt: 'desc' },
-    take: 100,
-    select: {
-      id: true,
-      title: true,
-      latestPrice: true,
-      lastSeenAt: true,
-    },
-  });
-
-  if (recentMarkets.length === 0) return 0;
+  relationScanRunCounter++;
 
   const entitiesA = extractEntities(market.title);
+
+  // ── Phase 1: Entity-filtered markets (up to 200) ──
+  const entityOrs = buildEntityFilter(entitiesA, marketId);
+
+  let entityMarkets: { id: string; title: string; category: string; latestPrice: number | null; lastSeenAt: Date }[] = [];
+
+  if (entityOrs.length > 0) {
+    entityMarkets = await db.market.findMany({
+      where: {
+        id: { not: marketId },
+        isActive: true,
+        OR: entityOrs,
+      },
+      orderBy: { lastSeenAt: 'desc' },
+      take: 200,
+      select: {
+        id: true,
+        title: true,
+        category: true,
+        latestPrice: true,
+        lastSeenAt: true,
+      },
+    });
+  }
+
+  // ── Phase 2: Fallback — recent-active (last 100) if entity filter yields too few ──
+  let recentMarkets: { id: string; title: string; category: string; latestPrice: number | null; lastSeenAt: Date }[] = [];
+
+  if (entityMarkets.length < MIN_ENTITY_CANDIDATES) {
+    recentMarkets = await db.market.findMany({
+      where: {
+        id: { not: marketId },
+        isActive: true,
+      },
+      orderBy: { lastSeenAt: 'desc' },
+      take: 100,
+      select: {
+        id: true,
+        title: true,
+        category: true,
+        latestPrice: true,
+        lastSeenAt: true,
+      },
+    });
+  }
+
+  // ── Phase 3: Combine & deduplicate by id ──
+  const seen = new Set<string>();
+  const combined: { id: string; title: string; category: string; latestPrice: number | null; lastSeenAt: Date }[] = [];
+
+  for (const m of entityMarkets) {
+    if (!seen.has(m.id)) {
+      seen.add(m.id);
+      combined.push(m);
+    }
+  }
+  for (const m of recentMarkets) {
+    if (!seen.has(m.id)) {
+      seen.add(m.id);
+      combined.push(m);
+    }
+  }
+
+  if (combined.length === 0) return 0;
+
+  // ── Phase 4: Also include same-category markets for better coverage ──
+  if (market.category) {
+    const sameCategoryMarkets = await db.market.findMany({
+      where: {
+        id: { not: marketId },
+        isActive: true,
+        category: market.category,
+      },
+      orderBy: { lastSeenAt: 'desc' },
+      take: 100,
+      select: {
+        id: true,
+        title: true,
+        category: true,
+        latestPrice: true,
+        lastSeenAt: true,
+      },
+    });
+
+    for (const m of sameCategoryMarkets) {
+      if (!seen.has(m.id)) {
+        seen.add(m.id);
+        combined.push(m);
+      }
+    }
+  }
+
+  // ── Phase 5: Stale relation cleanup — warn for records untouched > 7 days ──
+  const staleThreshold = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const staleRelations = await db.relatedMarket.findMany({
+    where: {
+      OR: [{ marketIdA: marketId }, { marketIdB: marketId }],
+      updatedAt: { lt: staleThreshold },
+    },
+    select: { id: true, updatedAt: true, relationshipType: true },
+  });
+
+  if (staleRelations.length > 0) {
+    const staleIds = staleRelations.map(r => r.id).slice(0, 10);
+    const oldest = staleRelations.reduce(
+      (min, r) => (r.updatedAt < min ? r.updatedAt : min),
+      staleRelations[0].updatedAt,
+    );
+    console.warn(
+      `[related-market] scanRun=${relationScanRunCounter} market=${marketId} ` +
+      `staleRelationWarning: ${staleRelations.length} records not updated in 7+ days ` +
+      `(oldest=${oldest.toISOString().slice(0, 10)}, samples=${staleIds.join(',')})`,
+    );
+    const veryStale = await db.relatedMarket.findMany({
+      where: {
+        OR: [{ marketIdA: marketId }, { marketIdB: marketId }],
+        updatedAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+      },
+      select: { id: true, marketIdA: true, marketIdB: true },
+    });
+
+    if (veryStale.length > 0) {
+      const staleIdsToCheck = veryStale.map(r => [r.marketIdA, r.marketIdB]).flat();
+      const stalePairMarkets = await db.market.findMany({
+        where: {
+          id: { in: [...new Set(staleIdsToCheck)] },
+          isActive: false,
+        },
+        select: { id: true },
+      });
+      const inactiveIds = new Set(stalePairMarkets.map(m => m.id));
+
+      const toDelete = veryStale.filter(
+        r => inactiveIds.has(r.marketIdA) || inactiveIds.has(r.marketIdB),
+      );
+
+      if (toDelete.length > 0) {
+        await db.relatedMarket.deleteMany({
+          where: { id: { in: toDelete.map(r => r.id) } },
+        });
+        console.warn(
+          `[related-market] scanRun=${relationScanRunCounter} ` +
+          `cleaned ${toDelete.length} very-stale relations for inactive markets`,
+        );
+      }
+    }
+  }
+
+  // ── Phase 6: Scan all combined candidates ──
   const sigSrcA = freshnessToSignalSource(market.lastSeenAt, market.latestPrice);
   let pairCount = 0;
 
-  for (const other of recentMarkets) {
+  for (const other of combined) {
     const entitiesB = extractEntities(other.title);
     const relationship = classifyRelationship(
       market.title,

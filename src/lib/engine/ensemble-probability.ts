@@ -533,6 +533,8 @@ export async function collectPredictionsFromAgentOutputs(
               : output.modelUsed;
     } else if (output.role === 'DEBATE_ARBITER' || output.role === 'JUDGE') {
       source = 'LLM';
+    } else if (output.role === 'TRADINGAGENTS_NATIVE') {
+      source = 'TRADINGAGENTS_NATIVE';
     } else if (output.provider === 'tradingagents') {
       source = 'TRADINGAGENTS';
     } else if (output.provider === 'deerflow') {
@@ -550,7 +552,12 @@ export async function collectPredictionsFromAgentOutputs(
       weight = registryWeights[source];
     }
     if (weight == null) {
-      weight = 1.0;
+      // Native graph analysis: lower weight since it's read-only supplementary signal
+      if (source === 'TRADINGAGENTS_NATIVE') {
+        weight = 0.15;
+      } else {
+        weight = 1.0;
+      }
     }
 
     // Parse probability from output JSON

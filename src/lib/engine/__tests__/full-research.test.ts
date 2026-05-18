@@ -82,6 +82,7 @@ describe('full research orchestrator', () => {
       marketId: 'm1',
       marketTitle: 'Will BTC hit 100k?',
       marketDescription: 'Test market',
+      marketCategory: 'crypto',
       impliedProbability: 0.42,
       routing: {
         researchDepth: 'FULL',
@@ -130,6 +131,7 @@ describe('full research orchestrator', () => {
       marketId: 'm1',
       marketTitle: 'Will BTC hit 100k?',
       marketDescription: 'Test market',
+      marketCategory: 'crypto',
       impliedProbability: 0.42,
       routing: {
         researchDepth: 'FULL',

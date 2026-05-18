@@ -1,6 +1,11 @@
 import { runAgentReachResearch } from './agent-reach';
 import { runDeerFlowResearch } from './deerflow';
-import { runTradingAgentsSimple } from './tradingagents-api';
+import {
+  runTradingAgentsSimple,
+  runTradingAgentsNative,
+  isNativeAnalysisCandidate,
+} from './tradingagents-api';
+import type { TradingAgentsNativeResult } from './tradingagents-api';
 import { canRunStage, isServiceReachable } from '@/lib/engine/health-check';
 import type { StageServiceMapping } from '@/lib/types';
 
@@ -8,6 +13,7 @@ export interface FullResearchInput {
   marketId: string;
   marketTitle: string;
   marketDescription: string;
+  marketCategory: string;
   impliedProbability: number;
   routing: StageServiceMapping;
   agentReachTargetSourceCount?: number;
@@ -20,6 +26,7 @@ export interface FullResearchResult {
   tradingagents: Awaited<ReturnType<typeof runTradingAgentsSimple>> | null;
   agentReach: Awaited<ReturnType<typeof runAgentReachResearch>> | null;
   skippedProviders: Array<{ provider: string; reason: string }>;
+  tradingagentsNative: TradingAgentsNativeResult | null;
 }
 
 export async function runFullResearch(input: FullResearchInput): Promise<FullResearchResult> {
@@ -87,6 +94,7 @@ export async function runFullResearch(input: FullResearchInput): Promise<FullRes
       tradingagents: null,
       agentReach: null,
       skippedProviders,
+      tradingagentsNative: null,
     };
   }
 
@@ -139,6 +147,32 @@ export async function runFullResearch(input: FullResearchInput): Promise<FullRes
     agentReach: agentReach.status === 'fulfilled' ? agentReach.value : null,
   };
 
+  // Native graph analysis for financial/crypto markets
+  let tradingagentsNative: TradingAgentsNativeResult | null = null;
+  if (isNativeAnalysisCandidate(input.marketCategory)) {
+    console.log(`[FullResearch] Market category "${input.marketCategory}" qualifies for native graph analysis`);
+    try {
+      tradingagentsNative = await runTradingAgentsNative(
+        input.marketTitle,
+        new Date().toISOString().split('T')[0],
+        input.routing.analystDeepThinkLlm,
+        input.routing.analystQuickThinkLlm,
+        input.routing.analystLlmProvider,
+      );
+      if (tradingagentsNative && tradingagentsNative.status !== 'failed') {
+        console.log(`[FullResearch] Native analysis completed: confidence=${tradingagentsNative.confidence}, probability=${tradingagentsNative.probability}`);
+      } else {
+        console.warn('[FullResearch] Native analysis returned null or failed, proceeding without native data');
+        tradingagentsNative = null;
+      }
+    } catch (nativeErr) {
+      console.warn('[FullResearch] Native analysis threw, proceeding without native data:', String(nativeErr));
+      tradingagentsNative = null;
+    }
+  } else {
+    console.log(`[FullResearch] Market category "${input.marketCategory}" not a financial category, skipping native graph analysis`);
+  }
+
   const successStates = [
     Boolean(resolved.deerflow),
     resolved.tradingagents?.status === 'completed',
@@ -152,5 +186,6 @@ export async function runFullResearch(input: FullResearchInput): Promise<FullRes
     providers,
     ...resolved,
     skippedProviders,
+    tradingagentsNative,
   };
 }

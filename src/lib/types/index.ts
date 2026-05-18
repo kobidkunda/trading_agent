@@ -37,7 +37,7 @@ export type RiskReasonCode =
   | 'MANUAL_REVIEW_REQUIRED';
 
 // Agent roles
-export type AgentRole = 'TRIAGE' | 'BULL' | 'BEAR' | 'CONTRADICTION' | 'JUDGE' | 'DEERFLOW' | 'NEWS_ANALYST' | 'SENTIMENT_ANALYST' | 'TECHNICAL_ANALYST' | 'REDDIT_ANALYST' | 'X_ANALYST';
+export type AgentRole = 'TRIAGE' | 'BULL' | 'BEAR' | 'CONTRADICTION' | 'JUDGE' | 'DEERFLOW' | 'NEWS_ANALYST' | 'SENTIMENT_ANALYST' | 'TECHNICAL_ANALYST' | 'REDDIT_ANALYST' | 'X_ANALYST' | 'TRADINGAGENTS_NATIVE';
 
 // Research status
 export type ResearchStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
