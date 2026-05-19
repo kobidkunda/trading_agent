@@ -50,11 +50,17 @@ function buildStageAwareJobs(
   }
 
   if (action === 'TRIAGE_AND_RESEARCH') {
-    return [{ type: 'STANDARD_RESEARCH', priority: 8, payload: basePayload }];
+    return [
+      { type: 'TRIAGE_MARKET', priority: 7, payload: basePayload },
+      { type: 'STANDARD_RESEARCH', priority: 8, payload: basePayload },
+    ];
   }
 
   if (action === 'FULL_RESEARCH') {
-    return [{ type: 'DEEP_RESEARCH', priority: 10, payload: basePayload }];
+    return [
+      { type: 'TRIAGE_MARKET', priority: 7, payload: basePayload },
+      { type: 'DEEP_RESEARCH', priority: 10, payload: basePayload },
+    ];
   }
 
   return buildCandidateJobs(action, {

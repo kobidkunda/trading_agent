@@ -7,6 +7,8 @@ export interface LLMCallOptions {
   temperature?: number;
   maxTokens?: number;
   responseFormat?: 'text' | 'json';
+  timeoutMs?: number;
+  maxRetries?: number;
 }
 
 export interface LLMCallResult {
@@ -39,6 +41,21 @@ function isInvalidApiKey(key: string): boolean {
   ];
   const lowerKey = key.toLowerCase();
   return invalidPatterns.some(pattern => lowerKey.includes(pattern));
+}
+
+function isPrivateOrLocalUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname;
+    return (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname.startsWith('10.') ||
+      hostname.startsWith('192.168.') ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function getProviderConfig(preferredModel?: string): Promise<ProviderConfig> {
@@ -81,8 +98,11 @@ async function getProviderConfig(preferredModel?: string): Promise<ProviderConfi
     } catch {}
   }
 
-  const apiKey = String(parsedData.apiKey || '');
-  if (isInvalidApiKey(apiKey)) {
+  const rawApiKey = String(parsedData.apiKey || '');
+  const allowsNoAuth = isPrivateOrLocalUrl(llmCred.serviceUrl);
+  const apiKey = allowsNoAuth && isInvalidApiKey(rawApiKey) ? '' : rawApiKey;
+
+  if (!allowsNoAuth && isInvalidApiKey(apiKey)) {
     throw new Error('Invalid or placeholder API key in credential. Please update the LLM credential with a valid API key');
   }
 
@@ -114,7 +134,8 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
     body.response_format = { type: 'json_object' };
   }
 
-  const maxRetries = 2;
+  const maxRetries = options.maxRetries ?? 0;
+  const timeoutMs = options.timeoutMs ?? 12_000;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -126,7 +147,7 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
           ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(60000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
 
       if (!response.ok) {

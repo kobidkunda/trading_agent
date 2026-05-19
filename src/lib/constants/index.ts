@@ -226,6 +226,8 @@ export const DEFAULT_SCAN_CONFIG = {
   maxPagesPerVenue: {
     POLYMARKET: 10,
     KALSHI: 5,
+    SX_BET: 5,
+    MANIFOLD: 5,
   },
   scanTimeout: 300000,
   rateLimitDelay: 500,

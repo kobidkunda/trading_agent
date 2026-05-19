@@ -1,19 +1,23 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Gauge,
-  Loader2,
   XCircle,
-  AlertTriangle,
   TrendingUp,
   TrendingDown,
-  BarChart3,
   Anchor,
   ShieldAlert,
   Search,
   ChevronUp,
   ChevronDown,
+  Activity,
+  RefreshCw,
+  Waves,
+  Database,
+  Clock3,
+  ExternalLink,
 } from 'lucide-react';
 import {
   Card,
@@ -32,7 +36,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { usePagination } from '@/hooks/use-pagination';
 import { PaginationBar } from '@/components/trading/PaginationBar';
@@ -56,6 +59,77 @@ interface OrderbookMarket {
   lastUpdated: string;
 }
 
+interface OrderbookLevel {
+  price: number;
+  size: number;
+  side?: 'BID' | 'ASK';
+}
+
+interface OrderbookDetail {
+  market: {
+    id: string;
+    title: string;
+    venue: string;
+    category: string;
+    externalId: string;
+    status: string;
+    latestPrice: number | null;
+    latestSpread: number | null;
+    latestLiquidity: number | null;
+    lastSnapshotAt: string | null;
+  } | null;
+  snapshot: {
+    id: string;
+    marketId: string;
+    orderbookSource: string | null;
+    spreadSource: string | null;
+    bestBid: number | null;
+    bestAsk: number | null;
+    spread: number | null;
+    bidDepth: number | null;
+    askDepth: number | null;
+    depthImbalance: number | null;
+    largeBidWall: number | null;
+    largeAskWall: number | null;
+    thinBookDanger: boolean;
+    priceImpact: number | null;
+    fillProbability: number | null;
+    recentMovement: number | null;
+    depthDecay: number | null;
+    capturedAt: string;
+  };
+  recentSnapshots: Array<{
+    id: string;
+    capturedAt: string;
+    bestBid: number | null;
+    bestAsk: number | null;
+    spread: number | null;
+    bidDepth: number | null;
+    askDepth: number | null;
+    depthImbalance: number | null;
+    thinBookDanger: boolean;
+    largeBidWall: number | null;
+    largeAskWall: number | null;
+    fillProbability: number | null;
+    recentMovement: number | null;
+    depthDecay: number | null;
+  }>;
+  analysis: {
+    depthImbalance?: { imbalance?: number | null } | null;
+    whaleWalls?: {
+      bidWalls?: Array<{ price: number; size: number }>;
+      askWalls?: Array<{ price: number; size: number }>;
+    } | null;
+    thinBookDanger?: boolean;
+    priceImpact?: number | null;
+    fillProbability?: number | null;
+    recentMovement?: number | null;
+    depthDecay?: number | null;
+    levels?: OrderbookLevel[] | null;
+    orderbookQualityScore?: number | null;
+  };
+}
+
 type SortField = 'spread' | 'bidDepth' | 'askDepth' | 'depthImbalance' | 'fillProbability' | 'capturedAt';
 
 function formatPrice(value: number): string {
@@ -68,6 +142,27 @@ function formatDepth(value: number): string {
 
 function formatPct(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatPctNullable(value: number | null | undefined): string {
+  if (typeof value !== 'number') return '—';
+  return formatPct(value);
+}
+
+function formatPriceNullable(value: number | null | undefined): string {
+  if (typeof value !== 'number') return '—';
+  return formatPrice(value);
+}
+
+function formatDepthNullable(value: number | null | undefined): string {
+  if (typeof value !== 'number') return '—';
+  return formatDepth(value);
+}
+
+function formatSignedPct(value: number | null | undefined): string {
+  if (typeof value !== 'number') return '—';
+  const pct = value * 100;
+  return `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
 }
 
 function spreadColor(spread: number): string {
@@ -107,7 +202,12 @@ function venueBadge(venue: string) {
 }
 
 export function OrderbookDashboard() {
+  const router = useRouter();
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<OrderbookDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   const {
     data: markets,
@@ -159,9 +259,69 @@ export function OrderbookDashboard() {
     [searchTerm],
   );
 
+  useEffect(() => {
+    if (markets.length === 0) {
+      setSelectedMarketId(null);
+      setDetail(null);
+      return;
+    }
+
+    if (!selectedMarketId || !markets.some((market) => market.marketId === selectedMarketId)) {
+      setSelectedMarketId(markets[0].marketId);
+    }
+  }, [markets, selectedMarketId]);
+
+  useEffect(() => {
+    if (!selectedMarketId) return;
+    const marketId = selectedMarketId;
+
+    let cancelled = false;
+
+    async function loadDetail(showSpinner: boolean) {
+      if (showSpinner) setDetailLoading(true);
+      setDetailError(null);
+
+      try {
+        const res = await fetch(`/api/orderbook?marketId=${encodeURIComponent(marketId)}`, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json() as OrderbookDetail;
+        if (!cancelled) {
+          setDetail(data);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setDetailError(error instanceof Error ? error.message : 'Failed to load orderbook detail');
+        }
+      } finally {
+        if (!cancelled && showSpinner) {
+          setDetailLoading(false);
+        }
+      }
+    }
+
+    void loadDetail(true);
+    const interval = window.setInterval(() => {
+      void loadDetail(false);
+    }, 15000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [selectedMarketId]);
+
+  const selectedMarket = useMemo(
+    () => markets.find((market) => market.marketId === selectedMarketId) ?? null,
+    [markets, selectedMarketId],
+  );
+
   function handleSort(field: SortField) {
     const dir = sortBy === field && sortOrder === 'desc' ? 'asc' : 'desc';
     setSort(field, dir);
+  }
+
+  function openMarketDetail(marketId: string) {
+    router.push(`/market/${marketId}?tab=orderbook`);
   }
 
   function SortIcon({ field }: { field: SortField }) {
@@ -325,18 +485,28 @@ export function OrderbookDashboard() {
                   <TableBody>
                     {markets.map((m) => {
                       const gauge = fillProbGauge(m.fillProbability);
+                      const isSelected = m.marketId === selectedMarketId;
                       return (
                         <TableRow
                           key={m.id}
                           className={cn(
-                            'border-gray-800 transition-colors hover:bg-gray-800/50',
+                            'cursor-pointer border-gray-800 transition-colors hover:bg-gray-800/50',
+                            isSelected && 'bg-cyan-500/10 ring-1 ring-inset ring-cyan-500/30',
                             m.thinBookWarning && 'bg-red-500/5'
                           )}
+                          onClick={() => setSelectedMarketId(m.marketId)}
                         >
                           <TableCell>
-                            <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
+                            <button
+                              type="button"
+                              className="max-w-[200px] truncate text-left text-xs font-medium text-cyan-300 hover:text-cyan-200 hover:underline"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openMarketDetail(m.marketId);
+                              }}
+                            >
                               {m.marketTitle}
-                            </p>
+                            </button>
                           </TableCell>
                           <TableCell>{venueBadge(m.venue)}</TableCell>
                           <TableCell className="text-right">
@@ -407,6 +577,227 @@ export function OrderbookDashboard() {
               </div>
             </>
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-gray-800 bg-gray-900">
+        <CardHeader className="pb-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-sm text-white">
+                <Activity className="h-4 w-4 text-emerald-400" />
+                Exchange Orderbook Detail
+              </CardTitle>
+              <p className="mt-1 text-xs text-gray-500">
+                Live detail panel for selected market. Auto-refresh every 15s.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-gray-700 bg-transparent text-gray-300 hover:bg-gray-800"
+              onClick={() => {
+                const marketId = selectedMarketId;
+                if (!marketId) return;
+                setDetailLoading(true);
+                fetch(`/api/orderbook?marketId=${encodeURIComponent(marketId)}`, { cache: 'no-store' })
+                  .then(async (res) => {
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    return res.json() as Promise<OrderbookDetail>;
+                  })
+                  .then((data) => {
+                    setDetail(data);
+                    setDetailError(null);
+                  })
+                  .catch((error: unknown) => {
+                    setDetailError(error instanceof Error ? error.message : 'Failed to load orderbook detail');
+                  })
+                  .finally(() => {
+                    setDetailLoading(false);
+                  });
+              }}
+            >
+              <RefreshCw className={cn('mr-2 h-3.5 w-3.5', detailLoading && 'animate-spin')} />
+              Refresh
+            </Button>
+            {selectedMarketId && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-cyan-500/30 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20"
+                onClick={() => openMarketDetail(selectedMarketId)}
+              >
+                <ExternalLink className="mr-2 h-3.5 w-3.5" />
+                Open Detail Page
+              </Button>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {!selectedMarketId || !selectedMarket ? (
+            <div className="rounded-xl border border-dashed border-gray-800 bg-gray-950/60 p-8 text-center text-sm text-gray-500">
+              Select market from table to inspect exchange orderbook details.
+            </div>
+          ) : detailError ? (
+            <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4 text-sm text-red-300">
+              {detailError}
+            </div>
+          ) : detailLoading && !detail ? (
+            <div className="rounded-xl border border-gray-800 bg-gray-950/60 p-8 text-center text-sm text-gray-500">
+              Loading live orderbook detail...
+            </div>
+          ) : detail ? (
+            <>
+              <div className="grid gap-4 lg:grid-cols-[1.7fr_1fr]">
+                <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {venueBadge(detail.market?.venue ?? selectedMarket.venue)}
+                        <Badge variant="outline" className="border-gray-700 text-[10px] text-gray-400">
+                          {detail.market?.category ?? 'uncategorized'}
+                        </Badge>
+                        <Badge variant="outline" className="border-gray-700 text-[10px] text-gray-400">
+                          {detail.snapshot.orderbookSource ?? 'unknown source'}
+                        </Badge>
+                      </div>
+                      <h3 className="max-w-3xl text-lg font-semibold text-white">
+                        {detail.market?.title ?? selectedMarket.marketTitle}
+                      </h3>
+                      <div className="flex flex-wrap gap-4 text-xs text-gray-500">
+                        <span className="inline-flex items-center gap-1">
+                          <Database className="h-3.5 w-3.5" />
+                          External ID: {detail.market?.externalId ?? '—'}
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <Clock3 className="h-3.5 w-3.5" />
+                          Snapshot: {new Date(detail.snapshot.capturedAt).toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-4 py-3 text-right">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-cyan-300/70">Orderbook Quality</p>
+                      <p className="mt-1 text-3xl font-semibold text-cyan-300">
+                        {typeof detail.analysis.orderbookQualityScore === 'number'
+                          ? detail.analysis.orderbookQualityScore.toFixed(1)
+                          : '—'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-emerald-300/70">Best Bid</p>
+                      <p className="mt-2 text-2xl font-semibold text-emerald-300">{formatPriceNullable(detail.snapshot.bestBid)}</p>
+                      <p className="mt-1 text-xs text-emerald-200/60">Depth {formatDepthNullable(detail.snapshot.bidDepth)}</p>
+                    </div>
+                    <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-4">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-red-300/70">Best Ask</p>
+                      <p className="mt-2 text-2xl font-semibold text-red-300">{formatPriceNullable(detail.snapshot.bestAsk)}</p>
+                      <p className="mt-1 text-xs text-red-200/60">Depth {formatDepthNullable(detail.snapshot.askDepth)}</p>
+                    </div>
+                    <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-amber-300/70">Spread</p>
+                      <p className={cn('mt-2 text-2xl font-semibold', spreadColor(detail.snapshot.spread ?? 0))}>
+                        {formatPctNullable(detail.snapshot.spread)}
+                      </p>
+                      <p className="mt-1 text-xs text-amber-200/60">{detail.snapshot.spreadSource ?? 'spread source unknown'}</p>
+                    </div>
+                    <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-cyan-300/70">Fill Probability</p>
+                      <p className="mt-2 text-2xl font-semibold text-cyan-300">{formatPctNullable(detail.snapshot.fillProbability)}</p>
+                      <p className="mt-1 text-xs text-cyan-200/60">Impact {formatPctNullable(detail.snapshot.priceImpact)}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
+                  <h4 className="text-sm font-semibold text-white">Live Signal State</h4>
+                  <div className="mt-4 space-y-3 text-sm">
+                    <div className="flex items-center justify-between rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2">
+                      <span className="text-gray-400">Depth imbalance</span>
+                      <span className={cn('font-medium', imbalanceColor(detail.snapshot.depthImbalance ?? 0))}>
+                        {formatSignedPct(detail.snapshot.depthImbalance)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2">
+                      <span className="text-gray-400">Recent movement</span>
+                      <span className={cn('font-medium', Math.abs(detail.snapshot.recentMovement ?? 0) > 0.03 ? 'text-amber-300' : 'text-gray-200')}>
+                        {formatSignedPct(detail.snapshot.recentMovement)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2">
+                      <span className="text-gray-400">Depth decay</span>
+                      <span className="font-medium text-gray-200">{formatPctNullable(detail.snapshot.depthDecay)}</span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2">
+                      <span className="text-gray-400">Latest market price</span>
+                      <span className="font-medium text-gray-200">{formatPriceNullable(detail.market?.latestPrice)}</span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2">
+                      <span className="text-gray-400">Market liquidity</span>
+                      <span className="font-medium text-gray-200">{formatDepthNullable(detail.market?.latestLiquidity)}</span>
+                    </div>
+                    <div className="flex items-center justify-between rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2">
+                      <span className="text-gray-400">Book health</span>
+                      <span className={cn('font-medium', detail.snapshot.thinBookDanger ? 'text-red-300' : 'text-emerald-300')}>
+                        {detail.snapshot.thinBookDanger ? 'Thin book warning' : 'Healthy'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+                <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
+                  <div className="flex items-center gap-2">
+                    <Waves className="h-4 w-4 text-cyan-400" />
+                    <h4 className="text-sm font-semibold text-white">Recent Snapshot Feed</h4>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {detail.recentSnapshots.length === 0 ? (
+                      <p className="text-sm text-gray-500">No recent snapshots.</p>
+                    ) : (
+                      detail.recentSnapshots.map((item) => (
+                        <div key={item.id} className="grid grid-cols-[1.2fr_repeat(5,minmax(0,1fr))] gap-2 rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2 text-xs">
+                          <div className="text-gray-400">{new Date(item.capturedAt).toLocaleTimeString()}</div>
+                          <div className="text-emerald-300">{formatPriceNullable(item.bestBid)}</div>
+                          <div className="text-red-300">{formatPriceNullable(item.bestAsk)}</div>
+                          <div className={spreadColor(item.spread ?? 0)}>{formatPctNullable(item.spread)}</div>
+                          <div className={cn((item.depthImbalance ?? 0) > 0 ? 'text-emerald-300' : 'text-red-300')}>
+                            {formatSignedPct(item.depthImbalance)}
+                          </div>
+                          <div className="text-cyan-300">{formatPctNullable(item.fillProbability)}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-5">
+                  <h4 className="text-sm font-semibold text-white">Raw Book Levels</h4>
+                  <div className="mt-4 max-h-[360px] space-y-2 overflow-y-auto">
+                    {(detail.analysis.levels ?? []).length === 0 ? (
+                      <p className="text-sm text-gray-500">No level payload stored for this snapshot.</p>
+                    ) : (
+                      (detail.analysis.levels ?? []).slice(0, 30).map((level, index) => (
+                        <div key={`${level.side ?? 'UNK'}-${level.price}-${index}`} className="grid grid-cols-[72px_1fr_1fr] gap-3 rounded-xl border border-gray-800 bg-gray-900/70 px-3 py-2 text-xs">
+                          <div className={cn(
+                            'font-medium',
+                            level.side === 'BID' ? 'text-emerald-300' : level.side === 'ASK' ? 'text-red-300' : 'text-gray-400',
+                          )}>
+                            {level.side ?? 'LEVEL'}
+                          </div>
+                          <div className="text-gray-200">{formatPrice(level.price)}</div>
+                          <div className="text-gray-400">{formatDepth(level.size)}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : null}
         </CardContent>
       </Card>
 

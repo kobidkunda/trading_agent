@@ -50,12 +50,12 @@ export async function runTriageAgent(
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error(`[Triage] Failed for ${marketId}:`, errorMsg);
 
-    // Return AMBIGUOUS on error so pipeline can continue gracefully
+    // Fallback: assume RELEVANT when LLM unavailable so pipeline can continue
     return {
-      status: 'AMBIGUOUS',
-      reason: `Triage failed: ${errorMsg}`,
-      worthResearch: false,
-      score: 0,
+      status: 'RELEVANT',
+      reason: `Triage LLM unavailable, defaulting to RELEVANT: ${errorMsg}`,
+      worthResearch: true,
+      score: 50,
     };
   }
 }

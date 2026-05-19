@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   Activity,
   ArrowLeft,
@@ -18,6 +18,9 @@ import {
   Target,
   TrendingDown,
   TrendingUp,
+  Gauge,
+  Waves,
+  CircleAlert,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -39,6 +42,23 @@ interface MarketDetailData {
     liquidity: number;
     resolutionTime: string | null;
     category: string;
+  };
+  candidate: {
+    id: string;
+    stage: string;
+    candidateScore: number | null;
+    triageStatus: string | null;
+    researchQueued: boolean;
+    skipReason: string | null;
+    lastProcessedAt: string | null;
+    updatedAt: string | null;
+  } | null;
+  counts: {
+    researchRuns: number;
+    decisions: number;
+    outcomes: number;
+    postmortems: number;
+    orderbookSnapshots: number;
   };
   pipeline: {
     stages: Array<{
@@ -107,6 +127,61 @@ interface LiveProgressData {
   }>;
 }
 
+interface OrderbookDetailData {
+  market: {
+    id: string;
+    title: string;
+    venue: string;
+    category: string;
+    externalId: string;
+    status: string;
+    latestPrice: number | null;
+    latestSpread: number | null;
+    latestLiquidity: number | null;
+    lastSnapshotAt: string | null;
+  } | null;
+  snapshot: {
+    id: string;
+    marketId: string;
+    orderbookSource: string | null;
+    spreadSource: string | null;
+    bestBid: number | null;
+    bestAsk: number | null;
+    spread: number | null;
+    bidDepth: number | null;
+    askDepth: number | null;
+    depthImbalance: number | null;
+    largeBidWall: number | null;
+    largeAskWall: number | null;
+    thinBookDanger: boolean;
+    priceImpact: number | null;
+    fillProbability: number | null;
+    recentMovement: number | null;
+    depthDecay: number | null;
+    capturedAt: string;
+  };
+  recentSnapshots: Array<{
+    id: string;
+    capturedAt: string;
+    bestBid: number | null;
+    bestAsk: number | null;
+    spread: number | null;
+    bidDepth: number | null;
+    askDepth: number | null;
+    depthImbalance: number | null;
+    thinBookDanger: boolean;
+    largeBidWall: number | null;
+    largeAskWall: number | null;
+    fillProbability: number | null;
+    recentMovement: number | null;
+    depthDecay: number | null;
+  }>;
+  analysis: {
+    orderbookQualityScore?: number | null;
+    levels?: Array<{ price: number; size: number; side?: 'BID' | 'ASK' }> | null;
+  };
+}
+
 function formatDateTime(value: string | null): string {
   if (!value) return '—';
   return new Date(value).toLocaleString('en-US', {
@@ -139,6 +214,12 @@ function formatCurrency(value: number | null | undefined): string {
 function formatPercent(value: number | null | undefined): string {
   if (value == null) return '—';
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatSignedPercent(value: number | null | undefined): string {
+  if (value == null) return '—';
+  const pct = value * 100;
+  return `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
 }
 
 function toneForResult(result: string): string {
@@ -187,9 +268,13 @@ function SourceList({
 export default function MarketDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const marketId = params.id as string;
+  const activeTab = searchParams.get('tab');
+  const isOrderbookTab = activeTab === 'orderbook';
 
   const [detail, setDetail] = useState<MarketDetailData | null>(null);
+  const [orderbookDetail, setOrderbookDetail] = useState<OrderbookDetailData | null>(null);
   const [operatorMarket, setOperatorMarket] = useState<OperatorMarketItem | null>(null);
   const [operatorMode, setOperatorMode] = useState<'DEMO' | 'PAPER' | 'LIVE'>('PAPER');
   const [live, setLive] = useState<LiveProgressData | null>(null);
@@ -201,10 +286,13 @@ export default function MarketDetailPage() {
 
     const fetchPage = async () => {
       try {
-        const [detailRes, operatorRes, liveRes] = await Promise.all([
+        const [detailRes, operatorRes, liveRes, orderbookRes] = await Promise.all([
           fetch(`/api/market/${marketId}/detail`, { cache: 'no-store' }),
           fetch(`/api/trading/operator?marketId=${marketId}`, { cache: 'no-store' }),
           fetch(`/api/market/${marketId}/live`, { cache: 'no-store' }),
+          isOrderbookTab
+            ? fetch(`/api/orderbook?marketId=${marketId}`, { cache: 'no-store' })
+            : Promise.resolve(null),
         ]);
 
         if (!detailRes.ok) throw new Error(`Market detail failed with ${detailRes.status}`);
@@ -213,9 +301,14 @@ export default function MarketDetailPage() {
         const detailPayload = (await detailRes.json()) as MarketDetailData;
         const operatorPayload = (await operatorRes.json()) as OperatorDashboardPayload;
         const livePayload = liveRes.ok ? ((await liveRes.json()) as LiveProgressData) : null;
+        const orderbookPayload =
+          orderbookRes && orderbookRes.ok
+            ? ((await orderbookRes.json()) as OrderbookDetailData)
+            : null;
 
         if (cancelled) return;
         setDetail(detailPayload);
+        setOrderbookDetail(orderbookPayload);
         setOperatorMarket(operatorPayload.markets[0] ?? null);
         setOperatorMode(operatorPayload.mode);
         setLive(livePayload);
@@ -238,7 +331,7 @@ export default function MarketDetailPage() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [marketId]);
+  }, [isOrderbookTab, marketId]);
 
   if (loading) {
     return (
@@ -284,6 +377,9 @@ export default function MarketDetailPage() {
                   <Badge className={cn('text-[10px]', toneForMode(operatorMode))}>{operatorMode}</Badge>
                   <Badge className="border-gray-700 bg-gray-800 text-[10px] text-gray-200">{detail.market.venue}</Badge>
                   <Badge className="border-gray-700 bg-gray-800 text-[10px] text-gray-200">{detail.market.status}</Badge>
+                  {isOrderbookTab && (
+                    <Badge className="border-cyan-500/30 bg-cyan-500/10 text-[10px] text-cyan-300">ORDERBOOK DETAIL</Badge>
+                  )}
                   {live?.isLive && (
                     <Badge className="border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-300">LIVE PROCESSING</Badge>
                   )}
@@ -310,6 +406,138 @@ export default function MarketDetailPage() {
       </div>
 
       <div className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6">
+        {isOrderbookTab && (
+          <>
+            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+              {[
+                { label: 'Best bid', value: formatPercent(orderbookDetail?.snapshot.bestBid), icon: TrendingUp },
+                { label: 'Best ask', value: formatPercent(orderbookDetail?.snapshot.bestAsk), icon: TrendingDown },
+                { label: 'Spread', value: formatPercent(orderbookDetail?.snapshot.spread), icon: Gauge },
+                { label: 'Fill prob', value: formatPercent(orderbookDetail?.snapshot.fillProbability), icon: Activity },
+                { label: 'Book quality', value: orderbookDetail?.analysis.orderbookQualityScore?.toFixed(1) ?? '—', icon: Waves },
+                { label: 'Liquidity', value: formatCurrency(orderbookDetail?.market?.latestLiquidity ?? detail.market.liquidity), icon: Landmark },
+              ].map((card) => (
+                <Card key={card.label} className="border-gray-800 bg-gray-900/85">
+                  <CardContent className="p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">{card.label}</p>
+                        <p className="mt-2 text-lg font-semibold text-white">{card.value}</p>
+                      </div>
+                      <card.icon className="h-4 w-4 text-cyan-300" />
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </section>
+
+            <section className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+              <Card className="border-gray-800 bg-gray-900/90">
+                <CardHeader className="pb-4">
+                  <CardTitle className="text-white">Exchange Snapshot</CardTitle>
+                  <CardDescription className="text-gray-500">
+                    Latest captured orderbook state for this market.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {orderbookDetail ? (
+                    <>
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                        <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-emerald-300/70">Bid depth</p>
+                          <p className="mt-2 text-2xl font-semibold text-emerald-300">{formatCurrency(orderbookDetail.snapshot.bidDepth)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-red-300/70">Ask depth</p>
+                          <p className="mt-2 text-2xl font-semibold text-red-300">{formatCurrency(orderbookDetail.snapshot.askDepth)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-amber-300/70">Imbalance</p>
+                          <p className="mt-2 text-2xl font-semibold text-amber-300">{formatSignedPercent(orderbookDetail.snapshot.depthImbalance)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-4">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-cyan-300/70">Price impact</p>
+                          <p className="mt-2 text-2xl font-semibold text-cyan-300">{formatPercent(orderbookDetail.snapshot.priceImpact)}</p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-4 text-sm text-gray-300">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <p>Orderbook source: <span className="text-white">{orderbookDetail.snapshot.orderbookSource ?? 'unknown'}</span></p>
+                          <p>Spread source: <span className="text-white">{orderbookDetail.snapshot.spreadSource ?? 'unknown'}</span></p>
+                          <p>Captured at: <span className="text-white">{formatDateTime(orderbookDetail.snapshot.capturedAt)}</span></p>
+                          <p>Recent movement: <span className="text-white">{formatSignedPercent(orderbookDetail.snapshot.recentMovement)}</span></p>
+                          <p>Depth decay: <span className="text-white">{formatPercent(orderbookDetail.snapshot.depthDecay)}</span></p>
+                          <p>Thin book: <span className={orderbookDetail.snapshot.thinBookDanger ? 'text-red-300' : 'text-emerald-300'}>{orderbookDetail.snapshot.thinBookDanger ? 'Warning' : 'No'}</span></p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        <p className="text-sm font-medium text-white">Recent Snapshot Feed</p>
+                        {orderbookDetail.recentSnapshots.length > 0 ? (
+                          orderbookDetail.recentSnapshots.slice(0, 10).map((snapshot) => (
+                            <div key={snapshot.id} className="grid grid-cols-[1.4fr_repeat(5,minmax(0,1fr))] gap-2 rounded-2xl border border-gray-800 bg-gray-950/75 px-3 py-2 text-xs">
+                              <div className="text-gray-500">{formatDateTime(snapshot.capturedAt)}</div>
+                              <div className="text-emerald-300">{formatPercent(snapshot.bestBid)}</div>
+                              <div className="text-red-300">{formatPercent(snapshot.bestAsk)}</div>
+                              <div className="text-cyan-300">{formatPercent(snapshot.spread)}</div>
+                              <div className="text-gray-300">{formatCurrency(snapshot.bidDepth)}</div>
+                              <div className="text-gray-300">{formatCurrency(snapshot.askDepth)}</div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-4 text-sm text-gray-500">
+                            No recent orderbook snapshots stored for this market.
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-200">
+                      No detailed orderbook snapshot stored for this market yet.
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="border-gray-800 bg-gray-900/90">
+                <CardHeader className="pb-4">
+                  <CardTitle className="text-white">Book Levels</CardTitle>
+                  <CardDescription className="text-gray-500">
+                    Raw stored levels from exchange capture.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {orderbookDetail?.analysis.levels?.length ? (
+                    orderbookDetail.analysis.levels.slice(0, 30).map((level, index) => (
+                      <div key={`${level.side ?? 'UNK'}-${level.price}-${index}`} className="grid grid-cols-[80px_1fr_1fr] gap-3 rounded-2xl border border-gray-800 bg-gray-950/75 px-3 py-2 text-xs">
+                        <div className={level.side === 'BID' ? 'text-emerald-300' : level.side === 'ASK' ? 'text-red-300' : 'text-gray-400'}>
+                          {level.side ?? 'LEVEL'}
+                        </div>
+                        <div className="text-gray-200">{formatPercent(level.price)}</div>
+                        <div className="text-gray-400">{formatCurrency(level.size)}</div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-4 text-sm text-gray-500">
+                      No raw level payload stored for this market.
+                    </div>
+                  )}
+
+                  {orderbookDetail?.snapshot.thinBookDanger && (
+                    <div className="rounded-2xl border border-red-500/30 bg-red-500/5 p-4 text-sm text-red-300">
+                      <div className="flex items-center gap-2">
+                        <CircleAlert className="h-4 w-4" />
+                        Thin book warning active for this market.
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </section>
+          </>
+        )}
+
         <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
           {[
             { label: 'Current status', value: operatorMarket?.latestAttemptStatus || live?.status || '—', icon: Activity },
@@ -332,6 +560,77 @@ export default function MarketDetailPage() {
             </Card>
           ))}
         </section>
+
+        {isOrderbookTab && (
+          <section className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+            <Card className="border-gray-800 bg-gray-900/90">
+              <CardHeader className="pb-4">
+                <CardTitle className="text-white">Pipeline Readiness</CardTitle>
+                <CardDescription className="text-gray-500">
+                  Why research / decision / order sections may still be empty for this market.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">Candidate stage</p>
+                    <p className="mt-1 text-sm text-gray-200">{detail.candidate?.stage || 'NO_CANDIDATE'}</p>
+                  </div>
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">Candidate score</p>
+                    <p className="mt-1 text-sm text-gray-200">{detail.candidate?.candidateScore != null ? detail.candidate.candidateScore.toFixed(1) : '—'}</p>
+                  </div>
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">Research runs</p>
+                    <p className="mt-1 text-sm text-gray-200">{detail.counts.researchRuns}</p>
+                  </div>
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">Decisions</p>
+                    <p className="mt-1 text-sm text-gray-200">{detail.counts.decisions}</p>
+                  </div>
+                </div>
+
+                {detail.candidate?.stage === 'SCANNED' && detail.counts.researchRuns === 0 && (
+                  <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-200">
+                    This market has orderbook snapshots, but pipeline has not advanced beyond <span className="font-medium text-amber-100">SCANNED</span>. That is why research, bull/bear, judge, decision, and audit sections are still empty.
+                  </div>
+                )}
+
+                {detail.candidate?.skipReason && (
+                  <div className="rounded-2xl border border-red-500/30 bg-red-500/5 p-4 text-sm text-red-200">
+                    Skip reason: {detail.candidate.skipReason}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="border-gray-800 bg-gray-900/90">
+              <CardHeader className="pb-4">
+                <CardTitle className="text-white">Data Coverage</CardTitle>
+                <CardDescription className="text-gray-500">
+                  Stored artifacts available for this market right now.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {[
+                  ['Orderbook snapshots', String(detail.counts.orderbookSnapshots)],
+                  ['Research runs', String(detail.counts.researchRuns)],
+                  ['Decisions', String(detail.counts.decisions)],
+                  ['Outcomes', String(detail.counts.outcomes)],
+                  ['Postmortems', String(detail.counts.postmortems)],
+                  ['Triage status', detail.candidate?.triageStatus || '—'],
+                  ['Research queued', detail.candidate ? (detail.candidate.researchQueued ? 'Yes' : 'No') : '—'],
+                  ['Last processed', detail.candidate?.lastProcessedAt ? formatDateTime(detail.candidate.lastProcessedAt) : '—'],
+                ].map(([label, value]) => (
+                  <div key={label} className="flex items-center justify-between rounded-2xl border border-gray-800 bg-gray-950/75 px-3 py-2 text-sm">
+                    <span className="text-gray-400">{label}</span>
+                    <span className="text-gray-200">{value}</span>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          </section>
+        )}
 
         <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
           <Card className="border-gray-800 bg-gray-900/90">

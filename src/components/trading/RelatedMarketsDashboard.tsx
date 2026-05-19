@@ -133,6 +133,7 @@ export function RelatedMarketsDashboard() {
   };
 
   const SortIcon = sortOrder === 'desc' ? ChevronDown : ChevronUp;
+  const safePairs = Array.isArray(pairs) ? pairs : [];
 
   const startIndex = total === 0 ? 0 : (page - 1) * limit + 1;
   const endIndex = Math.min(page * limit, total);
@@ -160,7 +161,7 @@ export function RelatedMarketsDashboard() {
     );
   }
 
-  if (loading && pairs.length === 0) {
+  if (loading && safePairs.length === 0) {
     return (
       <div className="space-y-6">
         <div className="h-8 w-56 animate-pulse rounded bg-gray-800" />
@@ -195,8 +196,8 @@ export function RelatedMarketsDashboard() {
         <Card className="border-amber-500/20 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Contradictory</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-amber-400">
-              {pairs.filter((p) => p.relationshipType === 'CONTRADICTORY' || p.relationshipType === 'NEGATED').length}
+              <p className="mt-1 text-2xl font-bold tabular-nums text-amber-400">
+              {safePairs.filter((p) => p.relationshipType === 'CONTRADICTORY' || p.relationshipType === 'NEGATED').length}
             </p>
           </CardContent>
         </Card>
@@ -204,7 +205,7 @@ export function RelatedMarketsDashboard() {
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">High Contradiction</p>
             <p className="mt-1 text-2xl font-bold tabular-nums text-red-400">
-              {pairs.filter((p) => (p.contradictionScore ?? 0) >= 0.5).length}
+              {safePairs.filter((p) => (p.contradictionScore ?? 0) >= 0.5).length}
             </p>
           </CardContent>
         </Card>
@@ -212,7 +213,7 @@ export function RelatedMarketsDashboard() {
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Arbitrageable</p>
             <p className="mt-1 text-2xl font-bold tabular-nums text-emerald-400">
-              {pairs.filter((p) => p.relationshipType === 'ARBITRAGEABLE').length}
+              {safePairs.filter((p) => p.relationshipType === 'ARBITRAGEABLE').length}
             </p>
           </CardContent>
         </Card>
@@ -257,7 +258,7 @@ export function RelatedMarketsDashboard() {
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          {pairs.length === 0 ? (
+          {safePairs.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-gray-800">
                 <GitCompare className="h-6 w-6 text-gray-500" />
@@ -298,7 +299,7 @@ export function RelatedMarketsDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {pairs.map((p) => {
+                    {safePairs.map((p) => {
                       const cl = contradictionLevel(p.contradictionScore);
                       const isContradiction = p.relationshipType === 'CONTRADICTORY' || p.relationshipType === 'NEGATED';
                       return (

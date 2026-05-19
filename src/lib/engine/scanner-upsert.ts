@@ -90,6 +90,8 @@ export async function upsertScannedMarket(params: {
     duplicatePenalty: 0,
     stalePenalty: 0,
     alreadyProcessedPenalty: 0,
+    orderbookPenaltyMode: 'STRICT',
+    missingOrderbookPenalty: 15,
   });
   const scoreAction = classifyCandidateScore(scoreBreakdown.totalScore);
 
@@ -111,8 +113,32 @@ export async function upsertScannedMarket(params: {
   }
 
   if (!existing) {
-    const created = await db.market.create({
-      data: {
+    const created = await db.market.upsert({
+      where: {
+        venue_externalId: {
+          venue: market.venue,
+          externalId: market.externalId,
+        },
+      },
+      update: {
+        title: market.title,
+        normalizedTitle,
+        titleHash,
+        description: market.description || '',
+        category: market.category,
+        status: market.status,
+        dataSource: dataSource as any,
+        resolutionTime,
+        lastSeenAt: new Date(),
+        lastSnapshotAt: snapshotCapturedAt,
+        latestPrice: market.impliedProb,
+        latestSpread: market.spread,
+        latestLiquidity: market.liquidity,
+        isActive: market.status === 'ACTIVE',
+        isClosed: market.status !== 'ACTIVE',
+        isResolved: market.status === 'RESOLVED',
+      },
+      create: {
         externalId: market.externalId,
         venue: market.venue,
         title: market.title,
@@ -135,107 +161,127 @@ export async function upsertScannedMarket(params: {
       },
     });
 
-    await db.marketSnapshot.create({
-      data: {
-        marketId: created.id,
-        venue: market.venue,
-        tokenId: market.tokenId ?? null,
-        noTokenId: market.noTokenId ?? null,
-        price: market.impliedProb,
-        impliedProb: market.impliedProb,
-        impliedProbability: market.impliedProb,
-        liquidity: market.liquidity,
-        spread: market.spread,
-        spreadSource: market.spreadSource ?? null,
-        volume24h: market.volume24h || 0,
-        bestBid: snapshotPricing.bestBid,
-        bestAsk: snapshotPricing.bestAsk,
-        bidDepth: market.bidDepth ?? null,
-        askDepth: market.askDepth ?? null,
-        noBestBid: snapshotPricing.noBestBid,
-        noBestAsk: snapshotPricing.noBestAsk,
-        noBidDepth: snapshotPricing.noBidDepth,
-        noAskDepth: snapshotPricing.noAskDepth,
-        priceImpact: market.priceImpact ?? null,
-        fillProbability: market.fillProbability ?? null,
-        yesPrice: snapshotPricing.yesPrice,
-        noPrice: snapshotPricing.noPrice,
-        rawJson: market.rawOrderbookJson ?? null,
-        capturedAt: snapshotCapturedAt,
-      },
+    const existingCandidateForCreated = await db.tradeCandidate.findUnique({
+      where: { marketId: created.id },
+      select: { id: true },
     });
 
-    if (
-      market.bestBid != null ||
-      market.bestAsk != null ||
-      market.spread != null ||
-      market.spreadSource != null ||
-      market.bidDepth != null ||
-      market.askDepth != null ||
-      market.priceImpact != null ||
-      market.fillProbability != null ||
-      market.noBestBid != null ||
-      market.noBestAsk != null ||
-      market.noBidDepth != null ||
-      market.noAskDepth != null
-    ) {
-      await db.orderbookSnapshot.create({
+    if (!existingCandidateForCreated) {
+
+      await db.marketSnapshot.create({
         data: {
           marketId: created.id,
-          bestBid: market.bestBid ?? null,
-          bestAsk: market.bestAsk ?? null,
+          venue: market.venue,
+          tokenId: market.tokenId ?? null,
+          noTokenId: market.noTokenId ?? null,
+          price: market.impliedProb,
+          impliedProb: market.impliedProb,
+          impliedProbability: market.impliedProb,
+          liquidity: market.liquidity,
           spread: market.spread,
           spreadSource: market.spreadSource ?? null,
-          orderbookSource: market.venue ?? null,
+          volume24h: market.volume24h || 0,
+          bestBid: snapshotPricing.bestBid,
+          bestAsk: snapshotPricing.bestAsk,
           bidDepth: market.bidDepth ?? null,
           askDepth: market.askDepth ?? null,
-          noBestBid: market.noBestBid ?? null,
-          noBestAsk: market.noBestAsk ?? null,
-          noBidDepth: market.noBidDepth ?? null,
-          noAskDepth: market.noAskDepth ?? null,
+          noBestBid: snapshotPricing.noBestBid,
+          noBestAsk: snapshotPricing.noBestAsk,
+          noBidDepth: snapshotPricing.noBidDepth,
+          noAskDepth: snapshotPricing.noAskDepth,
           priceImpact: market.priceImpact ?? null,
           fillProbability: market.fillProbability ?? null,
+          yesPrice: snapshotPricing.yesPrice,
+          noPrice: snapshotPricing.noPrice,
           rawJson: market.rawOrderbookJson ?? null,
+          capturedAt: snapshotCapturedAt,
         },
       });
+
+      if (
+        market.bestBid != null ||
+        market.bestAsk != null ||
+        market.spread != null ||
+        market.spreadSource != null ||
+        market.bidDepth != null ||
+        market.askDepth != null ||
+        market.priceImpact != null ||
+        market.fillProbability != null ||
+        market.noBestBid != null ||
+        market.noBestAsk != null ||
+        market.noBidDepth != null ||
+        market.noAskDepth != null
+      ) {
+        await db.orderbookSnapshot.create({
+          data: {
+            marketId: created.id,
+            bestBid: market.bestBid ?? null,
+            bestAsk: market.bestAsk ?? null,
+            spread: market.spread,
+            spreadSource: market.spreadSource ?? null,
+            orderbookSource: market.venue ?? null,
+            bidDepth: market.bidDepth ?? null,
+            askDepth: market.askDepth ?? null,
+            noBestBid: market.noBestBid ?? null,
+            noBestAsk: market.noBestAsk ?? null,
+            noBidDepth: market.noBidDepth ?? null,
+            noAskDepth: market.noAskDepth ?? null,
+            priceImpact: market.priceImpact ?? null,
+            fillProbability: market.fillProbability ?? null,
+            rawJson: market.rawOrderbookJson ?? null,
+          },
+        });
+      }
+
+      await db.historicalSnapshot.create({
+        data: {
+          marketId: created.id,
+          price: market.impliedProb,
+          impliedProb: market.impliedProb,
+          liquidity: market.liquidity,
+          spread: market.spread,
+          volume24h: market.volume24h || 0,
+          bestBid: snapshotPricing.bestBid,
+          bestAsk: snapshotPricing.bestAsk,
+          snapshotTime: snapshotCapturedAt,
+        },
+      });
+
+      try {
+        await db.tradeCandidate.upsert({
+          where: { marketId: created.id },
+          update: {},
+          create: {
+            marketId: created.id,
+            stage: 'SCANNED',
+            sourceScanRunId: scanRunId,
+          },
+        });
+      } catch (err: any) {
+        // Race condition: another scan already created the candidate
+        if (!err?.code || !['P2002', 'Unique constraint failed'].some(p => String(err).includes(p) || err.code === p)) {
+          throw err;
+        }
+        console.warn(`[Scanner] TradeCandidate race condition for market ${created.id}, skipping`);
+      }
+
+      scanRelatedMarkets(created.id).catch(err =>
+        console.error('Related market scan failed for', created.id, err),
+      );
+      correlationClusterManager.clusterAndLink({
+        id: created.id,
+        title: created.title,
+        category: created.category,
+        resolutionTime: created.resolutionTime,
+        venue: created.venue,
+      }).catch((err) =>
+        console.error('Correlation cluster linking failed for', created.id, err),
+      );
+
+      return { created: true, updated: false, scoreAction, score: scoreBreakdown.totalScore };
     }
 
-    await db.historicalSnapshot.create({
-      data: {
-        marketId: created.id,
-        price: market.impliedProb,
-        impliedProb: market.impliedProb,
-        liquidity: market.liquidity,
-        spread: market.spread,
-        volume24h: market.volume24h || 0,
-        bestBid: snapshotPricing.bestBid,
-        bestAsk: snapshotPricing.bestAsk,
-        snapshotTime: snapshotCapturedAt,
-      },
-    });
-
-    await db.tradeCandidate.create({
-      data: {
-        marketId: created.id,
-        stage: 'SCANNED',
-        sourceScanRunId: scanRunId,
-      },
-    });
-
-    scanRelatedMarkets(created.id).catch(err =>
-      console.error('Related market scan failed for', created.id, err),
-    );
-    correlationClusterManager.clusterAndLink({
-      id: created.id,
-      title: created.title,
-      category: created.category,
-      resolutionTime: created.resolutionTime,
-      venue: created.venue,
-    }).catch((err) =>
-      console.error('Correlation cluster linking failed for', created.id, err),
-    );
-
-    return { created: true, updated: false, scoreAction, score: scoreBreakdown.totalScore };
+    existing = created;
   }
 
   await db.market.update({

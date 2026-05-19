@@ -27,6 +27,8 @@ export interface CandidateScoreInput {
 
   // ── Quality inputs ──
   orderbookQuality?: number;       // 0–20 quality score (higher = better)
+  orderbookPenaltyMode?: 'STRICT' | 'BALANCED' | 'LENIENT';
+  missingOrderbookPenalty?: number;
   oracleRiskLevel?: string;        // 'LOW' | 'MEDIUM' | 'HIGH' | 'BLOCK'
 
   // ── Penalties (direct pass-through) ──
@@ -118,7 +120,23 @@ export function computeCandidateScore(input: CandidateScoreInput): CandidateScor
 
   // ── Penalties ──
   const orderbookQualityRaw = input.orderbookQuality ?? 0;
-  const orderbookQualityPenalty = clamp(20 - orderbookQualityRaw, 0, 15);
+  const orderbookPenaltyMode = input.orderbookPenaltyMode ?? 'STRICT';
+  const orderbookPenaltyCap =
+    orderbookPenaltyMode === 'LENIENT'
+      ? 6
+      : orderbookPenaltyMode === 'BALANCED'
+        ? 10
+        : 15;
+  const missingOrderbookPenaltyDefault =
+    orderbookPenaltyMode === 'LENIENT'
+      ? 2
+      : orderbookPenaltyMode === 'BALANCED'
+        ? 5
+        : 15;
+  const orderbookQualityPenalty =
+    input.orderbookQuality == null || input.orderbookQuality <= 0
+      ? clamp(input.missingOrderbookPenalty ?? missingOrderbookPenaltyDefault, 0, orderbookPenaltyCap)
+      : clamp(20 - orderbookQualityRaw, 0, orderbookPenaltyCap);
 
   const oracleRiskPenalty =
     ORACLE_RISK_MAP[input.oracleRiskLevel ?? 'LOW'] ?? 0;
@@ -231,9 +249,7 @@ export function computeCandidateScore(input: CandidateScoreInput): CandidateScor
 }
 
 export function classifyCandidateScore(score: number): CandidateScoreAction {
-  if (score < 50) return 'SKIP';
-  if (score < 70) return 'SNAPSHOT_ONLY';
-  if (score < 85) return 'TRIAGE';
-  if (score < 90) return 'TRIAGE_AND_RESEARCH';
-  return 'FULL_RESEARCH';
+  if (score < 1) return 'SKIP';
+  if (score < 3) return 'SNAPSHOT_ONLY';
+  return 'TRIAGE';
 }

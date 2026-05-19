@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   ScrollText,
   Filter,
@@ -8,6 +9,8 @@ import {
   ChevronUp,
   ChevronDown,
   XCircle,
+  RefreshCw,
+  ExternalLink,
 } from 'lucide-react';
 import {
   Card,
@@ -67,6 +70,13 @@ interface OrderRecord {
   } | null;
 }
 
+interface OrdersResponse extends PaginatedResponse<OrderRecord> {
+  meta?: {
+    includeTest?: boolean;
+    hiddenTestCount?: number;
+  };
+}
+
 const ORDER_LIFECYCLE_STATUSES: LifecycleStatus[] = ['PLANNED', 'SUBMITTED', 'PARTIALLY_FILLED', 'FILLED', 'CANCELLED', 'FAILED', 'EXPIRED'];
 
 function lifecycleBadge(status: LifecycleStatus) {
@@ -117,8 +127,11 @@ function formatPnl(val: number | null): string {
 }
 
 export function PaperOrdersDashboard() {
+  const router = useRouter();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [includeTestOrders, setIncludeTestOrders] = useState(false);
+  const [hiddenTestCount, setHiddenTestCount] = useState(0);
 
   const {
     data: orders,
@@ -143,11 +156,14 @@ export function PaperOrdersDashboard() {
       });
       if (search.trim()) query.set('search', search.trim());
       if (statusFilter !== 'ALL') query.set('status', statusFilter);
+      if (includeTestOrders) query.set('includeTest', 'true');
       const res = await fetch(`/api/orders?${query}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
+      const json = await res.json() as OrdersResponse;
+      setHiddenTestCount(json.meta?.hiddenTestCount ?? 0);
+      return json;
     },
-    [search, statusFilter],
+    [search, statusFilter, includeTestOrders],
     { defaultSortBy: 'createdAt', defaultSortOrder: 'desc' },
   );
 
@@ -257,6 +273,18 @@ export function PaperOrdersDashboard() {
             ))}
           </SelectContent>
         </Select>
+        <Button
+          variant="outline"
+          size="sm"
+          className={cn(
+            'border-gray-800 text-xs',
+            includeTestOrders ? 'bg-amber-500/10 text-amber-300 hover:bg-amber-500/20' : 'bg-gray-900 text-gray-300 hover:bg-gray-800',
+          )}
+          onClick={() => setIncludeTestOrders((current) => !current)}
+        >
+          <RefreshCw className="mr-2 h-3.5 w-3.5" />
+          {includeTestOrders ? 'Hide Test Orders' : 'Show Test Orders'}
+        </Button>
       </div>
 
       <Card className="border-gray-800 bg-gray-900">
@@ -279,8 +307,20 @@ export function PaperOrdersDashboard() {
               <p className="mt-1 text-[11px] text-gray-600">
                 {search || statusFilter !== 'ALL'
                   ? 'Try adjusting your search or filters.'
-                  : 'Orders will appear as trades are placed.'}
+                  : hiddenTestCount > 0 && !includeTestOrders
+                    ? `No live paper orders yet. ${hiddenTestCount} test orders hidden.`
+                    : 'Orders will appear as trades are placed.'}
               </p>
+              {hiddenTestCount > 0 && !includeTestOrders && !search && statusFilter === 'ALL' && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-4 border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
+                  onClick={() => setIncludeTestOrders(true)}
+                >
+                  Show {hiddenTestCount} Test Orders
+                </Button>
+              )}
             </div>
           ) : (
             <>
@@ -312,14 +352,15 @@ export function PaperOrdersDashboard() {
                           Created {sortBy === 'createdAt' && <SortIcon className="h-3 w-3" />}
                         </span>
                       </TableHead>
+                      <TableHead className="text-right text-gray-500">Detail</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {orders.map((o) => (
                       <TableRow key={o.id} className={cn(
-                        'border-gray-800 transition-colors hover:bg-gray-800/50',
+                        'cursor-pointer border-gray-800 transition-colors hover:bg-gray-800/50',
                         o.lifecycleStatus === 'FAILED' && 'bg-red-500/5'
-                      )}>
+                      )} onClick={() => router.push(`/paper-orders/${o.id}`)}>
                         <TableCell>
                           <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
                             {o.market?.title ?? '—'}
@@ -352,6 +393,17 @@ export function PaperOrdersDashboard() {
                             {new Date(o.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                           </span>
                         </TableCell>
+                        <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 gap-1 text-[10px] text-gray-500 hover:text-cyan-300 hover:bg-cyan-500/10"
+                            onClick={() => router.push(`/paper-orders/${o.id}`)}
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            View
+                          </Button>
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -364,6 +416,7 @@ export function PaperOrdersDashboard() {
           )}
         </CardContent>
       </Card>
+
     </div>
   );
 }

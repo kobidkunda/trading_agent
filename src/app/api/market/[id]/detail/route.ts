@@ -73,6 +73,7 @@ export async function GET(
 
     const marketAny = market as typeof market & Record<string, any>;
     const latestSnapshot = marketAny.snapshots[0];
+    const latestCandidate = marketAny.tradeCandidates[0] as Record<string, any> | undefined;
     const latestResearch = marketAny.researchRuns[0] as (Record<string, any> & {
       sources?: LegacySource[];
       agentOutputs?: LegacyAgentOutput[];
@@ -399,6 +400,25 @@ export async function GET(
         resolutionTime: market.resolutionTime?.toISOString() || null,
         resolutionCriteria: marketAny.resolutionCriteria || '',
         category: market.category,
+      },
+      candidate: latestCandidate
+        ? {
+            id: latestCandidate.id,
+            stage: latestCandidate.stage || 'SCANNED',
+            candidateScore: latestCandidate.candidateScore ?? null,
+            triageStatus: latestCandidate.triageStatus ?? null,
+            researchQueued: Boolean(latestCandidate.researchQueued),
+            skipReason: latestCandidate.skipReason ?? null,
+            lastProcessedAt: latestCandidate.lastProcessedAt?.toISOString() || null,
+            updatedAt: latestCandidate.updatedAt?.toISOString() || null,
+          }
+        : null,
+      counts: {
+        researchRuns: marketAny.researchRuns.length,
+        decisions: marketAny.decisions.length,
+        outcomes: marketAny.outcomes.length,
+        postmortems: marketAny.postmortems.length,
+        orderbookSnapshots: await db.orderbookSnapshot.count({ where: { marketId: id } }),
       },
       pipeline,
       sources: {

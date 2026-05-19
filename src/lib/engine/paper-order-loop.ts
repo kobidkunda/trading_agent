@@ -35,6 +35,7 @@ const state: PaperLoopState = {
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 const PROCESSING_LOCK = new Set<string>();
 const IDLE_CYCLE_THRESHOLD = 5;
+const ALLOW_SYNTHETIC_TEST_ORDERS = process.env.ALLOW_SYNTHETIC_PAPER_TEST_ORDERS === 'true';
 
 // True when paper loop should own order filling (worker ORDER_TRACK backs off)
 let _paperLoopActive = false;
@@ -489,7 +490,7 @@ export async function runPaperLoopCycle(): Promise<PaperLoopCycleResult> {
 
     if (orders.length === 0) {
       _idleCycleCount++;
-      if (_idleCycleCount >= IDLE_CYCLE_THRESHOLD) {
+      if (ALLOW_SYNTHETIC_TEST_ORDERS && _idleCycleCount >= IDLE_CYCLE_THRESHOLD) {
         const newOrderId = await generateTestOrder();
         if (newOrderId) {
           _idleCycleCount = 0;

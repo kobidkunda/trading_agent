@@ -3,6 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   buildPaperOrderRecord,
   buildPaperPositionRecord,
+  resolvePaperFill,
   resolvePaperExecutionSize,
 } from '../paper-execution';
 
@@ -60,5 +61,22 @@ describe('paper execution helpers', () => {
     expect(resolvePaperExecutionSize({ adjustedSize: 0, maxSize: 0, fallbackSize: 25 })).toBeNull();
     expect(resolvePaperExecutionSize({ adjustedSize: null, maxSize: undefined, fallbackSize: 25 })).toBe(25);
     expect(resolvePaperExecutionSize({ adjustedSize: 10, maxSize: 20, fallbackSize: 30 })).toBe(10);
+  });
+
+  it('keeps no-fill PAPER limit orders submitted instead of falsely failing', () => {
+    const fill = resolvePaperFill({
+      size: 10,
+      price: 0.08,
+      fillModel: 'CONSERVATIVE_PAPER',
+      liquidity: 1000,
+      fillProbability: 0.05,
+      spread: 0.01,
+      bidDepth: 100,
+      askDepth: 100,
+    });
+
+    expect(fill.filledSize).toBe(0);
+    expect(fill.remainingSize).toBe(10);
+    expect(fill.lifecycleStatus).toBe('SUBMITTED');
   });
 });

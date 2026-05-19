@@ -280,7 +280,7 @@ export async function saveFailureCheckpoint(
  */
 export async function deleteCheckpoint(jobId: string): Promise<void> {
   try {
-    await db.researchCheckpoint.delete({ where: { jobId } });
+    await db.researchCheckpoint.deleteMany({ where: { jobId } });
   } catch {
     // May not exist – fine
   }

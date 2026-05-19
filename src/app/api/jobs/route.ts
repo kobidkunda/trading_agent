@@ -106,12 +106,8 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
     }
 
-    if (!body.status) {
-      return NextResponse.json({ error: 'status is required' }, { status: 400 });
-    }
-
     const validStatuses = ['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'RETRYING'];
-    if (!validStatuses.includes(body.status)) {
+    if (body.status && !validStatuses.includes(body.status)) {
       return NextResponse.json(
         { error: `status must be one of: ${validStatuses.join(', ')}` },
         { status: 400 },
@@ -123,7 +119,10 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Job not found' }, { status: 404 });
     }
 
-    const updateData: Prisma.JobUpdateInput = { status: body.status };
+    const updateData: Prisma.JobUpdateInput = {};
+    if (body.status) {
+      updateData.status = body.status;
+    }
 
     // Auto-set timestamps based on status transitions
     if (body.status === 'RUNNING' && !existingJob.startedAt) {
@@ -157,7 +156,7 @@ export async function PUT(request: NextRequest) {
         action: 'UPDATE_JOB_STATUS',
         entityType: 'Job',
         entityId: job.id,
-        details: `Job ${job.id} status changed from ${existingJob.status} to ${job.status}`,
+        details: `Job ${job.id} updated from status=${existingJob.status}, priority=${existingJob.priority} to status=${job.status}, priority=${job.priority}`,
       },
     });
 

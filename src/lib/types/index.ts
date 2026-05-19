@@ -229,6 +229,8 @@ export interface StrategySettings {
   scanRateLimitMs?: number;
   scanTimeoutMs?: number;
   orderExpiryMinutes?: number;
+  orderbookPenaltyMode?: 'STRICT' | 'BALANCED' | 'LENIENT';
+  missingOrderbookPenalty?: number;
 }
 
 // Risk engine input
@@ -249,6 +251,12 @@ export interface RiskEngineInput {
   maxCategoryExposure?: number;
   minLiquidity?: number;
   maxSpread?: number;
+  bidEdgeThreshold?: number;
+  watchEdgeThreshold?: number;
+  bidConfidenceThreshold?: number;
+  watchConfidenceThreshold?: number;
+  maxUncertaintyThreshold?: number;
+  ignoreTailRiskWarnings?: boolean;
   remainingMarketCapacity?: number;
   remainingDailyCapacity?: number;
   remainingCategoryCapacity?: number;
@@ -500,14 +508,19 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
       '/api/llm/models',
       '/api/market/[id]/detail',
       '/api/market/[id]/live',
+      '/api/logs',
+      '/api/market-loop',
       '/api/markets',
       '/api/mirofish/models',
+      '/api/mode',
       '/api/models',
+      '/api/operator',
       '/api/orderbook',
       '/api/orders',
       '/api/oracle',
       '/api/outcomes',
       '/api/paper-bets',
+      '/api/positions',
       '/api/prompts',
       '/api/qdrant/collections',
       '/api/qdrant/collections/[name]',
@@ -546,6 +559,7 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
       '/api/ensemble',
       '/api/jobs',
       '/api/jobs/worker',
+      '/api/market-loop',
       '/api/markets/sync',
       '/api/models',
       '/api/orderbook',
@@ -597,6 +611,7 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
       '/api/research',
       '/api/strategy',
       '/api/settings',
+      '/api/mode',
       '/api/trading/mode',
       '/api/prompts',
     ],
@@ -627,6 +642,12 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
   ...expandPermissions(
     ['/api/credentials'],
     ['GET', 'PUT', 'DELETE'],
+    ADMIN_ONLY_ROLES,
+    'dangerous',
+  ),
+  ...expandPermissions(
+    ['/api/dbtest'],
+    ['GET'],
     ADMIN_ONLY_ROLES,
     'dangerous',
   ),

@@ -57,6 +57,22 @@ export async function GET(request: NextRequest) {
     const snapshot = await db.orderbookSnapshot.findFirst({
       where: { marketId },
       orderBy: { capturedAt: 'desc' },
+      include: {
+        market: {
+          select: {
+            id: true,
+            title: true,
+            venue: true,
+            category: true,
+            externalId: true,
+            status: true,
+            latestPrice: true,
+            latestSpread: true,
+            latestLiquidity: true,
+            lastSnapshotAt: true,
+          },
+        },
+      },
     });
 
     if (!snapshot) {
@@ -65,6 +81,12 @@ export async function GET(request: NextRequest) {
         { status: 404 },
       );
     }
+
+    const recentSnapshots = await db.orderbookSnapshot.findMany({
+      where: { marketId },
+      orderBy: { capturedAt: 'desc' },
+      take: 12,
+    });
 
     const levels: PriceLevel[] = snapshot.rawJson
       ? (() => {
@@ -96,9 +118,12 @@ export async function GET(request: NextRequest) {
     });
 
     return NextResponse.json({
+      market: snapshot.market,
       snapshot: {
         id: snapshot.id,
         marketId: snapshot.marketId,
+        orderbookSource: snapshot.orderbookSource,
+        spreadSource: snapshot.spreadSource,
         bestBid: snapshot.bestBid,
         bestAsk: snapshot.bestAsk,
         spread: snapshot.spread,
@@ -114,6 +139,22 @@ export async function GET(request: NextRequest) {
         depthDecay: snapshot.depthDecay,
         capturedAt: snapshot.capturedAt,
       },
+      recentSnapshots: recentSnapshots.map((item) => ({
+        id: item.id,
+        capturedAt: item.capturedAt,
+        bestBid: item.bestBid,
+        bestAsk: item.bestAsk,
+        spread: item.spread,
+        bidDepth: item.bidDepth,
+        askDepth: item.askDepth,
+        depthImbalance: item.depthImbalance,
+        thinBookDanger: item.thinBookDanger,
+        largeBidWall: item.largeBidWall,
+        largeAskWall: item.largeAskWall,
+        fillProbability: item.fillProbability,
+        recentMovement: item.recentMovement,
+        depthDecay: item.depthDecay,
+      })),
       analysis,
     });
   } catch (error) {

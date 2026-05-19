@@ -49,6 +49,7 @@ const state: WorkerState = {
 
 let intervalHandle: ReturnType<typeof setTimeout> | null = null;
 let loopIntervalMs: number = 5000;
+let tickInFlight = false;
 
 export function getWorkerState(): WorkerState {
   return { ...state };
@@ -74,6 +75,7 @@ export function stopWorker(): WorkerState {
     intervalHandle = null;
   }
   state.currentJobType = null;
+  tickInFlight = false;
   state.lastActivity = new Date().toISOString();
   return state;
 }
@@ -369,6 +371,8 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
 }
 
 async function tick() {
+  if (state.status !== 'RUNNING' || tickInFlight) return;
+  tickInFlight = true;
   try {
     // Phase 1: cleanup stale locks before processing
     await cleanupStaleLocks();
@@ -409,6 +413,8 @@ async function tick() {
     state.currentJobType = null;
   } catch (err) {
     state.error = err instanceof Error ? err.message : 'Worker tick error';
+  } finally {
+    tickInFlight = false;
   }
 }
 
@@ -546,15 +552,49 @@ function resolveDepthFromType(jobType: string): ResearchDepth {
   return 'STANDARD';
 }
 
+function resolveJudgeParamsFromPayload(data: Record<string, unknown>): {
+  judgeProbability: number;
+  judgeConfidence: number;
+  judgeUncertainty: number;
+  ensembleUncertaintyBoost: number;
+  modelDisagreement: number;
+  disagreementLevel: 'LOW' | 'MODERATE' | 'HIGH';
+} | null {
+  if (
+    typeof data.judgeProbability !== 'number' ||
+    typeof data.judgeConfidence !== 'number' ||
+    typeof data.judgeUncertainty !== 'number'
+  ) {
+    return null;
+  }
+
+  const disagreementLevel =
+    data.disagreementLevel === 'MODERATE' || data.disagreementLevel === 'HIGH' || data.disagreementLevel === 'LOW'
+      ? data.disagreementLevel
+      : 'LOW';
+
+  return {
+    judgeProbability: data.judgeProbability,
+    judgeConfidence: data.judgeConfidence,
+    judgeUncertainty: data.judgeUncertainty,
+    ensembleUncertaintyBoost: typeof data.ensembleUncertaintyBoost === 'number' ? data.ensembleUncertaintyBoost : 0,
+    modelDisagreement: typeof data.modelDisagreement === 'number' ? data.modelDisagreement : 0,
+    disagreementLevel,
+  };
+}
+
 // ── processJob ───────────────────────────────────────────────────────
 
 async function processJob(jobType: string, payload: string | null, jobId?: string): Promise<Record<string, unknown>> {
-  const data: Record<string, unknown> = payload ? JSON.parse(payload) : {};
+  const data: Record<string, unknown> = (payload && payload.trim()) ? JSON.parse(payload) : {};
 
   switch (jobType) {
     case 'SCAN_VENUE':
-    case 'SCAN':
-      return await runScanner(data.venues as string[], data.categories as string[]);
+    case 'SCAN': {
+      const scanResult = await runScanner(data.venues as string[], data.categories as string[]);
+      const loopResult = await runMarketLoopOnce();
+      return { ...loopResult, scanResult };
+    }
 
     case 'SCORE_CANDIDATES':
       return { status: 'SCORED', scanRunId: data.scanRunId ?? null };
@@ -662,10 +702,10 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       // Chain: judge complete → enqueue RISK
       if (!result.skipped) {
         await db.job.create({
-          data: {
-            type: 'RISK_CHECK',
-            status: 'PENDING',
-            priority: 8,
+            data: {
+              type: 'RISK_CHECK',
+              status: 'PENDING',
+              priority: 9,
             payload: JSON.stringify({
               marketId,
               judgeProbability: result.judgeProbability as number ?? 0.5,
@@ -687,7 +727,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       if (!(await validateMarket(marketId))) {
         return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
       }
-      const judge = await lookupJudgeParams(marketId);
+      const judge = resolveJudgeParamsFromPayload(data) ?? await lookupJudgeParams(marketId);
       if (!judge) {
         return { status: 'NO_JUDGE_PARAMS', marketId, skipped: true, message: 'No judge/decision data found for market' };
       }
@@ -716,7 +756,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
           data: {
             type: 'PAPER_EXECUTE',
             status: 'PENDING',
-            priority: 7,
+            priority: 10,
             payload: JSON.stringify({
               marketId,
               decisionId: result.decisionId as string,

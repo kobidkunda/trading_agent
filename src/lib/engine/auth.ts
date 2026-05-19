@@ -10,7 +10,7 @@ function normalizeRole(value: string | null | undefined): UserRole | null {
 }
 
 function isLocalhost(request: Request): boolean {
-  const host = request.headers.get('host')?.toLowerCase() ?? '';
+  const host = (request.headers.get('host') || new URL(request.url).host).toLowerCase();
   // Allow localhost, loopback, and LAN IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
   const isPrivate =
     host.includes('localhost') ||
@@ -25,11 +25,11 @@ function isLocalhost(request: Request): boolean {
 /**
  * x-role header is a development convenience ONLY.
  * It must NEVER be usable in production.
- * Set LOCAL_DEV_AUTH_BYPASS=true in .env.local for local development only.
+ * Local development can use either NODE_ENV=development or LOCAL_DEV_AUTH_BYPASS=true.
  *
  * Conditions to grant a role via x-role header (ALL must be true):
- *   1. LOCAL_DEV_AUTH_BYPASS env var explicitly set to 'true'
- *   2. Request hostname is localhost / 127.0.0.1 / [::1]
+ *   1. The app is running in development mode or LOCAL_DEV_AUTH_BYPASS=true
+ *   2. Request hostname is localhost, loopback, or a private LAN host
  * In ALL other cases, returns null (blocked).
  */
 export function getRoleFromRequest(request: Request): UserRole | null {
@@ -38,7 +38,8 @@ export function getRoleFromRequest(request: Request): UserRole | null {
     return normalizeRole(request.headers.get('x-role')) ?? 'Admin';
   }
 
-  if (process.env.LOCAL_DEV_AUTH_BYPASS === 'true' && isLocalhost(request)) {
+  const localDevelopmentBypass = process.env.NODE_ENV === 'development' || process.env.LOCAL_DEV_AUTH_BYPASS === 'true';
+  if (localDevelopmentBypass && isLocalhost(request)) {
     return normalizeRole(request.headers.get('x-role')) ?? 'Admin';
   }
   return null;

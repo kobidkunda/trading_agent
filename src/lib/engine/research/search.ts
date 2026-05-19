@@ -22,6 +22,11 @@ const normalizedServiceKey = serviceKey.trim().toLowerCase().replace(/[\s\-]+/g,
      deerflow: ['deerflow', 'DeerFlow Research', 'DeerFlow', 'DEERFLOW'],
      tradingagents: ['tradingagents', 'TradingAgents', 'TRADINGAGENTS', 'Trading Agents'],
      agent_reach: ['agent-reach', 'agent_reach', 'Agent Reach', 'Agent-Reach', 'AGENT_REACH', 'agentreach'],
+     proxy: ['proxy', 'Proxy App', 'prediction_proxy', 'prediction-market-proxy'],
+     polymarket_proxy: ['polymarket_proxy', 'Polymarket Proxy', 'polymarket-proxy', 'proxy_polymarket'],
+     kalshi_proxy: ['kalshi_proxy', 'Kalshi Proxy', 'kalshi-proxy', 'proxy_kalshi'],
+     sxbet_proxy: ['sxbet_proxy', 'SX Bet Proxy', 'sxbet-proxy', 'sx_bet_proxy', 'proxy_sxbet'],
+     manifold_proxy: ['manifold_proxy', 'Manifold Proxy', 'manifold-proxy', 'proxy_manifold'],
    };
   const variants = variantMap[normalizedServiceKey] || variantMap[serviceKey] || [serviceKey];
 

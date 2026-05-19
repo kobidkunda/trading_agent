@@ -307,6 +307,21 @@ async function saveAgentReachSources(
 // Loads market data, fresh venue snapshot, bias correction, config, routing.
 // Used by all stage functions and the compatibility wrapper.
 
+async function withVenueFetchTimeout<T>(label: string, fetcher: () => Promise<T>, timeoutMs = 2_500): Promise<T | null> {
+  try {
+    return await Promise.race([
+      fetcher(),
+      new Promise<null>((resolve) => setTimeout(() => {
+        console.warn(`[Pipeline] ${label} fetch timed out after ${timeoutMs}ms; using cached market data`);
+        resolve(null);
+      }, timeoutMs)),
+    ]);
+  } catch (error) {
+    console.warn(`[Pipeline] ${label} fetch failed; using cached market data:`, error);
+    return null;
+  }
+}
+
 export async function resolvePipelineContext(marketId: string): Promise<PipelineContext> {
   const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
     db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
@@ -329,12 +344,14 @@ export async function resolvePipelineContext(marketId: string): Promise<Pipeline
   if (!market) throw new Error(`Market ${marketId} not found`);
 
   const snapshot = market.snapshots[0];
-  let impliedProb = snapshot?.impliedProb ?? 0.5;
-  let liquidity = snapshot?.liquidity ?? 0;
+  let impliedProb = snapshot?.impliedProb ?? market.latestPrice ?? 0.5;
+  // Guard: ?? only catches null/undefined, not 0. Force sane default.
+  if (!impliedProb || impliedProb <= 0 || impliedProb > 1) impliedProb = 0.5;
+  let liquidity = snapshot?.liquidity ?? market.latestLiquidity ?? 0;
 
   if (market.venue === 'POLYMARKET') {
-    try {
-      const polymarketResult = await getPolymarketMarkets({ limit: 100 });
+    const polymarketResult = await withVenueFetchTimeout('Fresh Polymarket', () => getPolymarketMarkets({ limit: 100 }));
+    if (polymarketResult) {
       const fresh = polymarketResult.markets.find((m: { externalId: string }) => m.externalId === market.externalId);
       if (fresh) {
         impliedProb = fresh.impliedProb;
@@ -343,10 +360,10 @@ export async function resolvePipelineContext(marketId: string): Promise<Pipeline
           data: { marketId, impliedProb, liquidity, spread: fresh.spread, volume24h: fresh.volume24h || 0, bestBid: fresh.bestBid ?? impliedProb - 0.01, bestAsk: fresh.bestAsk ?? impliedProb + 0.01 },
         });
       }
-    } catch (e) { console.warn('[Pipeline] Fresh Polymarket fetch failed, using cached snapshot:', e); }
+    }
   } else if (market.venue === 'KALSHI') {
-    try {
-      const kalshiResult = await getKalshiMarkets();
+    const kalshiResult = await withVenueFetchTimeout('Fresh Kalshi', () => getKalshiMarkets());
+    if (kalshiResult) {
       const freshList = kalshiResult.markets;
       const fresh = freshList.find((m: { ticker: string }) => m.ticker === market.externalId);
       if (fresh) {
@@ -356,7 +373,7 @@ export async function resolvePipelineContext(marketId: string): Promise<Pipeline
           data: { marketId, impliedProb, liquidity, spread: Math.max(0.01, (fresh.yes_ask - fresh.yes_bid) / 100), volume24h: fresh.volume, bestBid: fresh.yes_bid / 100, bestAsk: fresh.yes_ask / 100 },
         });
       }
-    } catch (e) { console.warn('[Pipeline] Fresh Kalshi fetch failed, using cached snapshot:', e); }
+    }
   }
 
   // Bias correction via Wang transform
@@ -1557,6 +1574,8 @@ export async function runRiskStage(
   const strategyPositionLimit = typeof strategy.maxExposurePerMarket === 'number' ? strategy.maxExposurePerMarket : 5000;
   const strategyMinLiquidity = typeof strategy.minLiquidity === 'number' ? strategy.minLiquidity : 1000;
   const strategyMaxSpread = typeof strategy.maxSpread === 'number' ? strategy.maxSpread : 0.05;
+  const strategyFees = typeof strategy.fees === 'number' ? strategy.fees : 0.02;
+  const strategySlippage = typeof strategy.slippage === 'number' ? strategy.slippage : 0.01;
 
   const openPositions = await db.position.findMany({
     where: { status: 'OPEN' },
@@ -1596,8 +1615,8 @@ export async function runRiskStage(
     judgeProbability,
     confidence: judgeConfidence,
     uncertainty: judgeUncertainty,
-    fees: 0.02,
-    slippage: 0.01,
+    fees: strategyFees,
+    slippage: strategySlippage,
     venue: market.venue as 'POLYMARKET' | 'KALSHI' | 'SX_BET' | 'MANIFOLD',
     category: market.category,
     dailyExposure: dailyExposureBlocked ? strategyDailyLimit : actualDailyExposure,
@@ -1608,6 +1627,12 @@ export async function runRiskStage(
     maxCategoryExposure: strategyCategoryLimit,
     minLiquidity: strategyMinLiquidity,
     maxSpread: strategyMaxSpread,
+    bidEdgeThreshold: typeof strategy.bidEdgeThreshold === 'number' ? strategy.bidEdgeThreshold : undefined,
+    watchEdgeThreshold: typeof strategy.watchEdgeThreshold === 'number' ? strategy.watchEdgeThreshold : undefined,
+    bidConfidenceThreshold: typeof strategy.bidConfidenceThreshold === 'number' ? strategy.bidConfidenceThreshold : undefined,
+    watchConfidenceThreshold: typeof strategy.watchConfidenceThreshold === 'number' ? strategy.watchConfidenceThreshold : undefined,
+    maxUncertaintyThreshold: typeof strategy.maxUncertaintyThreshold === 'number' ? strategy.maxUncertaintyThreshold : undefined,
+    ignoreTailRiskWarnings: strategy.ignoreTailRiskWarnings === true,
     remainingMarketCapacity: Math.max(0, strategyPositionLimit),
     remainingDailyCapacity: Math.max(0, strategyDailyLimit - actualDailyExposure),
     remainingCategoryCapacity: Math.max(0, strategyCategoryLimit - actualCategoryExposure),
@@ -1914,6 +1939,16 @@ export async function runExecuteStage(
       });
     } else {
       const orderPrice = gatedRiskResult.side === 'YES' ? impliedProb : 1 - impliedProb;
+      // Guard: never create orders with zero or nonsensical prices
+      if (orderPrice <= 0 || orderPrice > 1) {
+        await emitStage({
+          stage: 'DECISION',
+          type: 'skipped' as const,
+          message: `Invalid order price ${orderPrice} (impliedProb=${impliedProb}, side=${gatedRiskResult.side})`,
+          provider: 'system',
+          serviceName: 'paper-execution',
+        });
+      } else {
       const prefix = 'PAPER';
       const now = new Date();
       venueOrderId = `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1980,6 +2015,7 @@ export async function runExecuteStage(
             lastExecutionAt: new Date(), // NOTE: EXECUTION_PENDING — not terminal. Will become EXECUTED after fill via order-tracker.
           },
         });
+      }
       }
     }
   }

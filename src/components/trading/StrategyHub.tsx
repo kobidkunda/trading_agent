@@ -91,6 +91,12 @@ const RESEARCH_DEPTH_OPTIONS: { value: ResearchDepth; label: string; desc: strin
   { value: 'FULL', label: 'Full', desc: 'All sources parallel + merge & compare synthesis' },
 ];
 
+const ORDERBOOK_PENALTY_OPTIONS = [
+  { value: 'STRICT', label: 'Strict', desc: 'Missing or weak book data strongly penalized' },
+  { value: 'BALANCED', label: 'Balanced', desc: 'Missing book data penalized, but less harshly' },
+  { value: 'LENIENT', label: 'Lenient', desc: 'Missing book data mostly neutral; let triage decide' },
+] as const;
+
 function getTradingAgentsSourceLabel(source: TradingAgentsMetadataResponse['source'] | null): string {
   switch (source) {
     case 'tradingagents':
@@ -542,6 +548,7 @@ export function StrategyHub() {
             {/* Min Liquidity */}
             <RiskSliderRow
               label="Min Liquidity"
+              help="Minimum market depth required before bot considers trade. Higher means safer but fewer trades."
               value={settings.minLiquidity}
               min={100}
               max={50000}
@@ -553,6 +560,7 @@ export function StrategyHub() {
             {/* Target Edge */}
             <RiskSliderRow
               label="Target Edge"
+              help="Minimum advantage bot wants over market price. Higher means only stronger setups pass."
               value={settings.targetEdge}
               min={0.01}
               max={0.30}
@@ -564,6 +572,7 @@ export function StrategyHub() {
             {/* Max Spread */}
             <RiskSliderRow
               label="Max Spread"
+              help="Widest bid/ask gap bot will tolerate. Lower means better execution quality."
               value={settings.maxSpread}
               min={0.005}
               max={0.15}
@@ -577,6 +586,7 @@ export function StrategyHub() {
             {/* Exposure Limits */}
             <RiskSliderRow
               label="Max Exposure / Market"
+              help="Largest amount bot can risk on one single market."
               value={settings.maxExposurePerMarket}
               min={100}
               max={25000}
@@ -587,6 +597,7 @@ export function StrategyHub() {
 
             <RiskSliderRow
               label="Max Daily Exposure"
+              help="Total amount bot can put at risk across all trades in one day."
               value={settings.maxDailyExposure}
               min={1000}
               max={200000}
@@ -597,12 +608,59 @@ export function StrategyHub() {
 
             <RiskSliderRow
               label="Max Category Exposure"
+              help="Maximum total risk allowed in one category like sports or politics."
               value={settings.maxCategoryExposure}
               min={500}
               max={50000}
               step={500}
               format={(v) => formatDollar(v)}
               onChange={(v) => updateNumber('maxCategoryExposure', v)}
+            />
+
+            <Separator className="bg-gray-800" />
+
+            <div className="space-y-3">
+              <div>
+                <Label className="text-sm text-gray-300">Orderbook Penalty Mode</Label>
+                <p className="mt-1 text-xs text-gray-500">
+                  Controls how hard missing or low-quality orderbook data hurts candidate score.
+                </p>
+                <p className="mt-1 text-xs text-gray-600">
+                  Strict = block more weak markets. Balanced = softer penalty. Lenient = let more markets reach triage even if book data is incomplete.
+                </p>
+              </div>
+              <div className="grid gap-2">
+                {ORDERBOOK_PENALTY_OPTIONS.map((option) => {
+                  const active = (settings.orderbookPenaltyMode || 'STRICT') === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setSettings((s) => ({ ...s, orderbookPenaltyMode: option.value }))}
+                      className={cn(
+                        'rounded-lg border px-3 py-3 text-left transition-colors',
+                        active
+                          ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200'
+                          : 'border-gray-800 bg-gray-800/40 text-gray-400 hover:border-gray-700',
+                      )}
+                    >
+                      <div className="text-sm font-medium">{option.label}</div>
+                      <div className="mt-1 text-xs text-gray-500">{option.desc}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <RiskSliderRow
+              label="Missing Orderbook Penalty"
+              help="Exact score penalty used when orderbook data is missing. Lower means more markets reach triage."
+              value={settings.missingOrderbookPenalty ?? 15}
+              min={0}
+              max={15}
+              step={1}
+              format={(v) => `${v.toFixed(0)} pts`}
+              onChange={(v) => updateNumber('missingOrderbookPenalty', v)}
             />
           </CardContent>
         </Card>
@@ -1375,6 +1433,7 @@ export function StrategyHub() {
 
 function RiskSliderRow({
   label,
+  help,
   value,
   min,
   max,
@@ -1383,6 +1442,7 @@ function RiskSliderRow({
   onChange,
 }: {
   label: string;
+  help?: string;
   value: number;
   min: number;
   max: number;
@@ -1404,6 +1464,7 @@ function RiskSliderRow({
           className="h-7 w-28 border-gray-700 bg-gray-800 text-right text-xs text-white"
         />
       </div>
+      {help && <p className="text-xs leading-5 text-gray-500">{help}</p>}
       <Slider
         value={[value]}
         min={min}

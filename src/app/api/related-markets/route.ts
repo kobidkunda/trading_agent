@@ -2,15 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { Prisma } from '@prisma/client';
 import { scanRelatedMarkets, computeRelatedMarketSignal } from '@/lib/engine/related-market';
+import { buildPaginatedResponse, parsePaginationParams } from '@/lib/types';
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
+    const pagination = parsePaginationParams(searchParams);
     const marketId = searchParams.get('marketId');
-    const type = searchParams.get('type');
+    const type = searchParams.get('relationshipType') || searchParams.get('type');
     const hasContradiction = searchParams.get('hasContradiction');
-    const limit = parseInt(searchParams.get('limit') || '50');
-    const offset = parseInt(searchParams.get('offset') || '0');
+    const search = pagination.search;
 
     const where: Prisma.RelatedMarketWhereInput = {};
 
@@ -25,6 +26,34 @@ export async function GET(request: NextRequest) {
     }
     if (hasContradiction === 'true') {
       where.contradictionScore = { gt: 0 };
+    }
+    if (search) {
+      where.AND = [
+        {
+          OR: [
+            { marketA: { title: { contains: search } } },
+            { marketA: { venue: { contains: search } } },
+            { marketA: { category: { contains: search } } },
+            { marketB: { title: { contains: search } } },
+            { marketB: { venue: { contains: search } } },
+            { marketB: { category: { contains: search } } },
+          ],
+        },
+      ];
+    }
+
+    const sortBy = pagination.sortBy || 'contradictionScore';
+    const sortOrder = pagination.sortOrder || 'desc';
+    let orderBy: Prisma.RelatedMarketOrderByWithRelationInput;
+
+    if (sortBy === 'detectedAt' || sortBy === 'createdAt') {
+      orderBy = { createdAt: sortOrder };
+    } else if (sortBy === 'priceInconsistency') {
+      orderBy = { priceInconsistency: sortOrder };
+    } else if (sortBy === 'relationshipType') {
+      orderBy = { relationshipType: sortOrder };
+    } else {
+      orderBy = { contradictionScore: sortOrder };
     }
 
     const [pairs, total] = await Promise.all([
@@ -52,14 +81,14 @@ export async function GET(request: NextRequest) {
             },
           },
         },
-        orderBy: { contradictionScore: 'desc' },
-        take: limit,
-        skip: offset,
+        orderBy,
+        take: pagination.limit,
+        skip: (pagination.page - 1) * pagination.limit,
       }),
       db.relatedMarket.count({ where }),
     ]);
 
-    return NextResponse.json({ pairs, total, limit, offset });
+    return NextResponse.json(buildPaginatedResponse(pairs, total, pagination));
   } catch (error) {
     console.error('Failed to fetch related markets:', error);
     return NextResponse.json({ error: 'Failed to fetch related markets' }, { status: 500 });

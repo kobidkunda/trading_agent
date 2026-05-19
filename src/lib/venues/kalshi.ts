@@ -1,13 +1,16 @@
 'use server'
 
 import { db } from '@/lib/db';
+import { getCredentialForService } from '@/lib/engine/research/search';
 
 const KALSHI_DIRECT_URL = 'https://external-api.kalshi.com/trade-api/v2';
 
 async function getKalshiBaseUrl(): Promise<string> {
   try {
+    const proxyCredential = await getCredentialForService('kalshi_proxy') ?? await getCredentialForService('proxy');
+    if (proxyCredential?.baseUrl) return proxyCredential.baseUrl.replace(/\/$/, '');
     const setting = await db.settings.findUnique({ where: { key: 'kalshi_proxy_url' } });
-    if (setting?.value) return setting.value;
+    if (setting?.value) return setting.value.replace(/\/$/, '');
     return KALSHI_DIRECT_URL;
   } catch {
     return KALSHI_DIRECT_URL;

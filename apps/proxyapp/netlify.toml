@@ -1,0 +1,26 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/api/health"
+  to = "/.netlify/functions/proxy/health"
+  status = 200
+
+[[redirects]]
+  from = "/api/proxy/*"
+  to = "/.netlify/functions/proxy/proxy/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/api/:provider/*"
+  to = "/.netlify/functions/proxy/:provider/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/api/:provider"
+  to = "/.netlify/functions/proxy/:provider"
+  status = 200

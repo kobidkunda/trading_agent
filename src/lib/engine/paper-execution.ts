@@ -136,7 +136,7 @@ export function resolvePaperFill(params: {
         avgFillPrice: 0,
         remainingSize: params.size,
         isFullyFilled: false,
-        lifecycleStatus: 'FAILED',
+        lifecycleStatus: 'SUBMITTED',
       };
     }
 
@@ -166,7 +166,7 @@ export function resolvePaperFill(params: {
         avgFillPrice: 0,
         remainingSize: params.size,
         isFullyFilled: false,
-        lifecycleStatus: 'FAILED',
+        lifecycleStatus: 'SUBMITTED',
       };
     }
 
@@ -180,7 +180,7 @@ export function resolvePaperFill(params: {
       avgFillPrice,
       remainingSize: Math.max(0, params.size - filledSize),
       isFullyFilled,
-      lifecycleStatus: filledSize <= 0 ? 'FAILED' : isFullyFilled ? 'FILLED' : 'PARTIALLY_FILLED',
+      lifecycleStatus: filledSize <= 0 ? 'SUBMITTED' : isFullyFilled ? 'FILLED' : 'PARTIALLY_FILLED',
     };
   }
 
@@ -196,7 +196,7 @@ export function resolvePaperFill(params: {
         avgFillPrice: 0,
         remainingSize: params.size,
         isFullyFilled: false,
-        lifecycleStatus: 'FAILED',
+        lifecycleStatus: 'SUBMITTED',
       };
     }
 
@@ -212,7 +212,7 @@ export function resolvePaperFill(params: {
       avgFillPrice: Math.max(0, avgFillPrice),
       remainingSize: Math.max(0, params.size - filledSize),
       isFullyFilled,
-      lifecycleStatus: filledSize <= 0 ? 'FAILED' : isFullyFilled ? 'FILLED' : 'PARTIALLY_FILLED',
+      lifecycleStatus: filledSize <= 0 ? 'SUBMITTED' : isFullyFilled ? 'FILLED' : 'PARTIALLY_FILLED',
     };
   }
 

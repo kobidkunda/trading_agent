@@ -37,6 +37,11 @@ export function computeRisk(
   const maxDailyExposure = input.maxDailyExposure ?? MAX_DAILY_EXPOSURE;
   const maxCategoryExposure = input.maxCategoryExposure ?? MAX_CATEGORY_EXPOSURE;
   const maxPositionSize = input.maxPositionSize ?? MAX_POSITION_SIZE;
+  const bidEdgeThreshold = input.bidEdgeThreshold ?? BID_EDGE_THRESHOLD;
+  const watchEdgeThreshold = input.watchEdgeThreshold ?? WATCH_EDGE_THRESHOLD;
+  const bidConfidenceThreshold = input.bidConfidenceThreshold ?? BID_CONFIDENCE_THRESHOLD;
+  const watchConfidenceThreshold = input.watchConfidenceThreshold ?? WATCH_CONFIDENCE_THRESHOLD;
+  const maxUncertaintyThreshold = input.maxUncertaintyThreshold ?? MAX_UNCERTAINTY_THRESHOLD;
   const edge = Math.abs(input.judgeProbability - input.impliedProbability);
   const effectiveEdge = edge - input.fees - input.slippage;
 
@@ -81,7 +86,7 @@ export function computeRisk(
   }
 
   // ── Phase 10: Tail-risk check ──
-  if (clusterOpts?.tailRiskWarnings?.length) {
+  if (!input.ignoreTailRiskWarnings && clusterOpts?.tailRiskWarnings?.length) {
     const criticalWarnings = clusterOpts.tailRiskWarnings.filter(
       w => w.severity === 'CRITICAL' || w.severity === 'HIGH',
     );
@@ -102,20 +107,20 @@ export function computeRisk(
     return skip('CATALYST_TOO_CLOSE', 'Major catalyst expected within 2 hours, avoiding position', edge, input);
   }
 
-  if (input.uncertainty > MAX_UNCERTAINTY_THRESHOLD) {
-    return watch('HIGH_UNCERTAINTY', `Uncertainty ${(input.uncertainty * 100).toFixed(0)}% exceeds ${(MAX_UNCERTAINTY_THRESHOLD * 100).toFixed(0)}% — monitor for improvement`, edge, input);
+  if (input.uncertainty > maxUncertaintyThreshold) {
+    return watch('HIGH_UNCERTAINTY', `Uncertainty ${(input.uncertainty * 100).toFixed(0)}% exceeds ${(maxUncertaintyThreshold * 100).toFixed(0)}% — monitor for improvement`, edge, input);
   }
 
   if (effectiveEdge < 0) {
     return skip('LOW_EDGE', `Effective edge ${effectiveEdge.toFixed(4)} is negative after fees (${input.fees}) and slippage (${input.slippage})`, edge, input);
   }
 
-  if (input.confidence < WATCH_CONFIDENCE_THRESHOLD) {
+  if (input.confidence < watchConfidenceThreshold) {
     return skip('LOW_CONFIDENCE', `Confidence ${(input.confidence * 100).toFixed(0)}% too low for any position`, edge, input);
   }
 
   // ── BID: Strong edge + high confidence ──
-  if (effectiveEdge >= BID_EDGE_THRESHOLD && input.confidence >= BID_CONFIDENCE_THRESHOLD) {
+  if (effectiveEdge >= bidEdgeThreshold && input.confidence >= bidConfidenceThreshold) {
     const baseSize = computePositionSize(effectiveEdge, input.confidence, input.uncertainty);
     const adjustedSize = Math.min(
       baseSize,
@@ -140,7 +145,7 @@ export function computeRisk(
   }
 
   // ── WATCH: Moderate edge or moderate confidence ──
-  if (effectiveEdge >= WATCH_EDGE_THRESHOLD || (effectiveEdge >= 0 && input.confidence >= WATCH_CONFIDENCE_THRESHOLD && input.confidence < BID_CONFIDENCE_THRESHOLD)) {
+  if (effectiveEdge >= watchEdgeThreshold || (effectiveEdge >= 0 && input.confidence >= watchConfidenceThreshold && input.confidence < bidConfidenceThreshold)) {
     return watch(
       'MODERATE_EDGE',
       `Edge ${(effectiveEdge * 100).toFixed(1)}% with ${(input.confidence * 100).toFixed(0)}% confidence — WATCH for improvement`,
@@ -265,5 +270,7 @@ export const DEFAULT_STRATEGY: StrategySettings = {
   scanRateLimitMs: 500,
   scanTimeoutMs: 15000,
   orderExpiryMinutes: 1440,
+  orderbookPenaltyMode: 'STRICT',
+  missingOrderbookPenalty: 15,
   stageRouting: DEFAULT_STAGE_ROUTING,
 };

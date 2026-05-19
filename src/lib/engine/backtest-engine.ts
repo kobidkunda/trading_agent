@@ -220,6 +220,8 @@ export class BacktestEngine {
       rawEdge,
       adjustedEdge,
       walletSignalScore: first.walletSignalStrength ?? undefined,
+      orderbookPenaltyMode: 'STRICT',
+      missingOrderbookPenalty: 15,
     };
 
     const scoreResult = computeCandidateScore(scoreInput);

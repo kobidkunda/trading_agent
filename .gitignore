@@ -15,6 +15,7 @@ node_modules
 
 # next.js
 /.next/
+**/.next/
 /out/
 
 # production
@@ -78,3 +79,6 @@ ta-service/__pycache__/
 .firecrawl/
 .codex/
 *.pyc
+
+# Local Netlify folder
+.netlify

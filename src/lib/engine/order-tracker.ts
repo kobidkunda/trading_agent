@@ -127,9 +127,8 @@ export async function processPaperOrderFill(params: {
   } else if (incrementalFill > 0) {
     newLifecycleStatus = 'PARTIALLY_FILLED';
   } else if (fillResult.lifecycleStatus === 'SUBMITTED') {
-    // NO_FILL from resolvePaperFill (fillProb < 0.10).
-    // Retry if under maxFillAttempts; otherwise fail.
-    newLifecycleStatus = currentAttempt >= maxAttempts ? 'FAILED' : 'SUBMITTED';
+    // A paper limit order that does not fill should keep resting until expiry.
+    newLifecycleStatus = 'SUBMITTED';
   } else if (fillResult.lifecycleStatus === 'FAILED') {
     newLifecycleStatus = 'FAILED';
   } else {
@@ -149,11 +148,7 @@ export async function processPaperOrderFill(params: {
     filledAt: newLifecycleStatus === 'FILLED' ? fillTimestamp : null,
     lastFillAttemptAt: fillTimestamp,
     fillAttemptCount: { increment: 1 },
-    failureReason: newLifecycleStatus === 'FAILED'
-      ? currentAttempt >= maxAttempts
-        ? `No fill after ${currentAttempt} attempts — max retries exhausted`
-        : 'Paper fill conditions not met'
-      : null,
+    failureReason: newLifecycleStatus === 'FAILED' ? 'Paper order failed during fill simulation' : null,
     status:
       newLifecycleStatus === 'FAILED'
         ? 'FAILED'

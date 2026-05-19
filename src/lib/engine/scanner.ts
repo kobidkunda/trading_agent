@@ -1,11 +1,15 @@
 import { db } from '@/lib/db';
 import { getAllPolymarketMarkets, loadPolymarketCursor, savePolymarketCursor } from '@/lib/venues/polymarket';
 import { getAllKalshiMarkets, loadKalshiCursor, saveKalshiCursor } from '@/lib/venues/kalshi';
+import { getAllManifoldMarkets, loadManifoldCursor, saveManifoldCursor } from '@/lib/venues/manifold';
+import { getAllSxBetMarkets, loadSxBetCursor, saveSxBetCursor } from '@/lib/venues/sx-bet';
 import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
 import { upsertScannedMarket } from '@/lib/engine/scanner-upsert';
 import { createTitleHash } from '@/lib/engine/candidate-dedupe';
 import { normalizeTradingMode } from '@/lib/engine/mode';
 import type { ScanMode } from '@/lib/types';
+
+const SUPPORTED_SCAN_VENUES = new Set(['POLYMARKET', 'KALSHI', 'SX_BET', 'MANIFOLD']);
 
 /**
  * Scans prediction markets across enabled venues.
@@ -72,6 +76,31 @@ export async function runScanner(
     });
 
     try {
+      if (!SUPPORTED_SCAN_VENUES.has(venue)) {
+        const message = `${venue} scanning is not implemented yet`;
+        await db.scanRun.update({
+          where: { id: scanRun.id },
+          data: {
+            status: 'SKIPPED',
+            finishedAt: new Date(),
+            errorMessage: message,
+            metadataJson: JSON.stringify({
+              supportedVenues: [...SUPPORTED_SCAN_VENUES],
+              requestedVenue: venue,
+            }),
+          },
+        });
+        await db.auditLog.create({
+          data: {
+            action: `SCAN_${venue}_SKIPPED`,
+            entityType: 'ScanRun',
+            entityId: scanRun.id,
+            details: message,
+          },
+        });
+        continue;
+      }
+
       let markets: Array<{
         externalId: string;
         title: string;
@@ -166,6 +195,42 @@ export async function runScanner(
         });
         // Filter out non-active and past-date markets before upsert
         markets = markets.filter(m => m.status === 'ACTIVE');
+      } else if (venue === 'SX_BET') {
+        cursorStart =
+          scanMode === 'RESUME_FROM_CURSOR' || scanMode === 'INCREMENTAL_SCAN'
+            ? await loadSxBetCursor()
+            : null;
+        const result = await getAllSxBetMarkets({
+          maxPages: maxPagesPerVenue,
+          startCursor: cursorStart,
+          scanUntilNoCursor: scanUntilNoCursor || scanMode === 'FULL_SCAN',
+          rateLimitMs: scanRateLimitMs,
+          timeoutMs: scanTimeoutMs,
+        });
+        markets = result.markets;
+        nextCursor = result.nextCursor;
+        hasMore = result.hasMore;
+        pagesScanned = result.pagesScanned;
+        pageFingerprints = result.pageFingerprints;
+        await saveSxBetCursor(nextCursor, hasMore);
+      } else if (venue === 'MANIFOLD') {
+        cursorStart =
+          scanMode === 'RESUME_FROM_CURSOR' || scanMode === 'INCREMENTAL_SCAN'
+            ? await loadManifoldCursor()
+            : null;
+        const result = await getAllManifoldMarkets({
+          maxPages: maxPagesPerVenue,
+          startCursor: cursorStart,
+          scanUntilNoCursor: scanUntilNoCursor || scanMode === 'FULL_SCAN',
+          rateLimitMs: scanRateLimitMs,
+          timeoutMs: scanTimeoutMs,
+        });
+        markets = result.markets;
+        nextCursor = result.nextCursor;
+        hasMore = result.hasMore;
+        pagesScanned = result.pagesScanned;
+        pageFingerprints = result.pageFingerprints;
+        await saveManifoldCursor(nextCursor, hasMore);
       } else {
         continue;
       }

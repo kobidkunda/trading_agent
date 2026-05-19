@@ -113,7 +113,7 @@ export async function runDebateArena(
   const bearModel = getModelForStage('bear', effectiveRouting) || 'paper_lite';
   const judgeModel = getModelForStage('judge', effectiveRouting) || 'paper_proglm';
 
-  const maxRounds = effectiveRouting.analystMaxDebateRounds || 3;
+  const maxRounds = Math.max(1, Math.min(effectiveRouting.analystMaxDebateRounds || 3, 1));
   const rounds: DebateRound[] = [];
 
   let bullContext = researchContext;

@@ -40,7 +40,7 @@ export async function GET(): Promise<NextResponse> {
         source: 'llm-fallback',
         error: `LLM fallback failed: HTTP ${res.status}`,
       };
-      return NextResponse.json(fallbackResponse, { status: 503 });
+      return NextResponse.json(fallbackResponse);
     }
 
     const llmData: LlmModelsResponse = await res.json();
@@ -73,6 +73,6 @@ export async function GET(): Promise<NextResponse> {
       source: 'llm-fallback',
       error: `Failed to fetch metadata: ${msg}`,
     };
-    return NextResponse.json(errorResponse, { status: 503 });
+    return NextResponse.json(errorResponse);
   }
 }

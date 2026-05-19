@@ -28,6 +28,19 @@ function buildThresholdSkipReason(score: number, candidateThreshold: number): st
   return `BELOW_CANDIDATE_THRESHOLD:${score.toFixed(2)}<${candidateThreshold}`;
 }
 
+function resolveMarketLoopAction(score: number, candidateThreshold: number) {
+  const classified = classifyCandidateScore(score);
+
+  // Candidate scoring includes post-research signals, so clean PAPER databases
+  // can otherwise never bootstrap the first research job. If the operator lowers
+  // the PAPER threshold, treat threshold-passing snapshot candidates as triageable.
+  if (score >= candidateThreshold && score >= 25 && classified === 'SNAPSHOT_ONLY') {
+    return 'TRIAGE' as const;
+  }
+
+  return classified;
+}
+
 function computeResolutionClarity(market: {
   resolutionTime: Date | null;
   oracleCheck: {
@@ -112,12 +125,17 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         isClosed: false,
         venue: { in: enabledVenues },
         ...(enabledCategories.length > 0 ? { category: { in: enabledCategories } } : {}),
-        AND: [
+        OR: [
           { resolutionTime: null },
           { resolutionTime: { gt: new Date() } },
         ],
       },
-      orderBy: { id: 'desc' },
+      orderBy: [
+        { latestSpread: 'asc' },
+        { latestPrice: 'desc' },
+        { lastSeenAt: 'desc' },
+        { id: 'desc' },
+      ],
       skip: processedMarketCount,
       take: Math.min(marketBatchSize, remaining),
       include: {
@@ -158,6 +176,15 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
 
     // Sort batch by reprocess priority: NEW → MATERIAL_CHANGE → WALLET_SIGNAL → RELATED_CONTRADICTION → APLUS_SCORE → REFRESHED_ONLY → terminal
     recentMarkets.sort((a, b) => {
+      const qualityScore = (market: typeof a) => {
+        const price = market.latestPrice ?? 0;
+        const spread = market.latestSpread ?? 1;
+        const priced = price > 0 && price < 1 ? 100 : 0;
+        return priced + Math.max(0, 1 - spread) * 20 + Math.min(10, (market.latestLiquidity ?? 0) / 1000);
+      };
+      const qualityDelta = qualityScore(b) - qualityScore(a);
+      if (Math.abs(qualityDelta) > 0.001) return qualityDelta;
+
       const aCand = a.tradeCandidates[0] ?? null;
       const bCand = b.tradeCandidates[0] ?? null;
       // Terminal candidates always last
@@ -183,10 +210,10 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
       const previousSnapshot = market.snapshots[1] ?? null;
 
       const latestOrderbook = market.orderbookSnapshots[0] ?? null;
-      const liquidity = latestSnapshot?.liquidity ?? 0;
-      const spread = latestSnapshot?.spread ?? 0.05;
+      const liquidity = latestSnapshot?.liquidity ?? market.latestLiquidity ?? 0;
+      const spread = latestSnapshot?.spread ?? market.latestSpread ?? 0.05;
       const volume24h = latestSnapshot?.volume24h ?? 0;
-      const currentProb = latestSnapshot?.impliedProb ?? 0.5;
+      const currentProb = latestSnapshot?.impliedProb ?? market.latestPrice ?? 0.5;
       const previousProb = previousSnapshot?.impliedProb ?? currentProb;
       const impliedPredictions = market.ensemblePredictions.map((prediction) => prediction.predictedProb);
       const averagePredictedProb =
@@ -368,6 +395,8 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         signalFreshnessHours,
         relatedMarketSignalScore,
         orderbookQuality,
+        orderbookPenaltyMode: config.orderbookPenaltyMode,
+        missingOrderbookPenalty: config.missingOrderbookPenalty,
         oracleRiskLevel: oracleRisk.riskLevel,
         correlationRiskPenalty,
         uncertaintyPenalty,
@@ -375,7 +404,7 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         manipulationRiskPenalty,
       });
 
-      const action = classifyCandidateScore(score.totalScore);
+      const action = resolveMarketLoopAction(score.totalScore, candidateThreshold);
       const thresholdBlocked = score.totalScore < candidateThreshold;
       const refreshOnlyBlock =
         reprocessBlocked && existingCandidate && score.totalScore >= candidateThreshold;
@@ -431,8 +460,10 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
           orderBy: { startedAt: 'desc' },
         });
 
-        const createdCandidate = await db.tradeCandidate.create({
-          data: {
+        const createdCandidate = await db.tradeCandidate.upsert({
+          where: { marketId: market.id },
+          update: candidateData as any,
+          create: {
             marketId: market.id,
             sourceScanRunId: scanRun?.id ?? null,
             ...(candidateData as any),

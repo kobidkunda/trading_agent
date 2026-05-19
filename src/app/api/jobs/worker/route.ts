@@ -7,7 +7,8 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json();
+  const text = await request.text();
+  const body = text ? JSON.parse(text) : {};
   const action = body.action as string;
 
   if (action === 'start') {
