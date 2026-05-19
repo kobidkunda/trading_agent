@@ -137,7 +137,7 @@ export function OrderbookDashboard() {
       const raw = await res.json();
       const rawList = raw.data ?? raw.markets ?? raw.snapshots ?? raw;
       const list = Array.isArray(rawList) ? rawList : [];
-      const mapped = list.map((s: Record<string, unknown>) => ({
+      const mapped = list.map((s: any) => ({
         id: String(s.id ?? ''),
         marketId: String(s.marketId ?? ''),
         marketTitle: String(s.marketTitle ?? s.market?.title ?? s.title ?? ''),

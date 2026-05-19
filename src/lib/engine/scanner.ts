@@ -164,6 +164,8 @@ export async function runScanner(
             resolutionTime: m.close_time || null,
           };
         });
+        // Filter out non-active and past-date markets before upsert
+        markets = markets.filter(m => m.status === 'ACTIVE');
       } else {
         continue;
       }

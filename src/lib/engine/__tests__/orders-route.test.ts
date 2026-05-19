@@ -15,11 +15,13 @@ const findManyMock = mock(async () => ([
     },
   },
 ]));
+const countMock = mock(async () => 1);
 
 mock.module('@/lib/db', () => ({
   db: {
     order: {
       findMany: findManyMock,
+      count: countMock,
     },
   },
 }));
@@ -27,6 +29,7 @@ mock.module('@/lib/db', () => ({
 describe('orders route', () => {
   beforeEach(() => {
     findManyMock.mockClear();
+    countMock.mockClear();
   });
 
   it('returns orders with lifecycle metadata', async () => {
@@ -35,10 +38,10 @@ describe('orders route', () => {
     const res = await GET(new Request('http://localhost/api/orders?limit=10') as never);
     const payload = await res.json();
 
-    expect(payload.orders).toHaveLength(1);
-    expect(payload.orders[0].lifecycleStatus).toBe('FILLED');
-    expect(payload.orders[0].executionMode).toBe('SIMULATED');
-    expect(payload.orders[0].dataSource).toBe('REAL');
+    expect(payload.data).toHaveLength(1);
+    expect(payload.data[0].lifecycleStatus).toBe('FILLED');
+    expect(payload.data[0].executionMode).toBe('SIMULATED');
+    expect(payload.data[0].dataSource).toBe('REAL');
   });
 
   it('excludes legacy WATCH rows from open order results', async () => {
@@ -70,12 +73,38 @@ describe('orders route', () => {
         },
       },
     ]));
+    countMock.mockImplementationOnce(async () => 2);
 
     const { GET } = await import('../../../app/api/orders/route');
     const res = await GET(new Request('http://localhost/api/orders?status=open&limit=10') as never);
     const payload = await res.json();
 
-    expect(payload.orders).toHaveLength(1);
-    expect(payload.orders[0].id).toBe('submitted-order');
+    expect(payload.data).toHaveLength(1);
+    expect(payload.data[0].id).toBe('submitted-order');
+  });
+
+  it('excludes paper-loop test market orders', async () => {
+    findManyMock.mockImplementationOnce(async () => ([
+      {
+        id: 'paper-test-order',
+        status: 'FILLED',
+        lifecycleStatus: 'FILLED',
+        executionMode: 'SIMULATED',
+        dataSource: 'MOCK',
+        market: {
+          id: 'paper-test-market',
+          title: 'Test V2: Paper Orders should work in paper mode',
+          venue: 'PAPER',
+          category: 'test',
+        },
+      },
+    ]));
+    countMock.mockImplementationOnce(async () => 1);
+
+    const { GET } = await import('../../../app/api/orders/route');
+    const res = await GET(new Request('http://localhost/api/orders?limit=10') as never);
+    const payload = await res.json();
+
+    expect(payload.data).toHaveLength(0);
   });
 });

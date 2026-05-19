@@ -52,6 +52,19 @@ describe('trading mode api', () => {
     expect(payload.candidateThreshold).toBe(75);
   });
 
+  it('allows localhost trading mode bootstrap GET even when local bypass is disabled', async () => {
+    process.env.LOCAL_DEV_AUTH_BYPASS = 'false';
+    const { GET } = await import('../../../app/api/trading/mode/route');
+
+    const response = await GET(new Request('http://localhost/api/trading/mode', {
+      headers: { 'x-role': 'Admin' },
+    }) as never);
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.mode).toBe('PAPER');
+  });
+
   it('sanitizes demo mode updates on POST', async () => {
     const { POST } = await import('../../../app/api/trading/mode/route');
 

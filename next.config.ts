@@ -8,6 +8,9 @@ const nextConfig: NextConfig = {
   },
   reactStrictMode: false,
   serverExternalPackages: [],
+  experimental: {
+    instrumentationHook: true,
+  },
 };
 
 export default nextConfig;

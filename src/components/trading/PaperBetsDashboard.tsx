@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   BarChart3,
   Search,
@@ -14,6 +14,11 @@ import {
   XOctagon,
   ChevronUp,
   ChevronDown,
+  Play,
+  Pause,
+  Square,
+  RefreshCw,
+  Activity,
 } from 'lucide-react';
 import {
   Card,
@@ -112,6 +117,29 @@ function typeBadge(type: string) {
 export function PaperBetsDashboard() {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
+  const [loopState, setLoopState] = useState<{
+    status: string;
+    ordersProcessed: number;
+    ordersFilled: number;
+    ordersFailed: number;
+    currentCycle: number;
+    lastCycleAt: string | null;
+    errors: number;
+  } | null>(null);
+  const [loopLoading, setLoopLoading] = useState(false);
+
+  const fetchLoopState = useCallback(async () => {
+    try {
+      const res = await fetch('/api/trading/paper-loop');
+      if (res.ok) setLoopState(await res.json());
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    fetchLoopState();
+    const i = setInterval(fetchLoopState, 5000);
+    return () => clearInterval(i);
+  }, [fetchLoopState]);
 
   const {
     data: bets,
@@ -145,6 +173,20 @@ export function PaperBetsDashboard() {
     },
     [search, typeFilter],
   );
+  const controlLoop = useCallback(async (action: string) => {
+    setLoopLoading(true);
+    try {
+      await fetch('/api/trading/paper-loop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, intervalMs: 3000 }),
+      });
+      await fetchLoopState();
+      if (action === 'fill-all') fetchData();
+    } finally {
+      setLoopLoading(false);
+    }
+  }, [fetchLoopState, fetchData]);
 
   function handleSort(field: SortField) {
     const dir = sortBy === field && sortOrder === 'desc' ? 'asc' : 'desc';
@@ -212,6 +254,86 @@ export function PaperBetsDashboard() {
           Paper trading bet history with probability calibration and P&amp;L tracking
         </p>
       </div>
+
+      {/* Paper Loop Controls */}
+      {loopState && (
+        <Card className="border-gray-800 bg-gray-900">
+          <CardContent className="flex items-center justify-between p-4">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Activity className={cn(
+                  'h-4 w-4',
+                  loopState.status === 'RUNNING' ? 'text-emerald-400' :
+                  loopState.status === 'PAUSED' ? 'text-amber-400' : 'text-gray-600'
+                )} />
+                <span className="text-sm text-gray-300">
+                  Loop: <span className={cn(
+                    'font-medium',
+                    loopState.status === 'RUNNING' ? 'text-emerald-400' :
+                    loopState.status === 'PAUSED' ? 'text-amber-400' : 'text-gray-500'
+                  )}>{loopState.status}</span>
+                </span>
+              </div>
+              <span className="text-xs text-gray-600">
+                Cycle {loopState.currentCycle}
+                {' | '}
+                {loopState.ordersProcessed} processed
+                {' | '}
+                {loopState.ordersFilled} filled
+                {loopState.ordersFailed > 0 && ` | ${loopState.ordersFailed} failed`}
+                {loopState.errors > 0 && ` | ⚠ ${loopState.errors}`}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              {loopState.status !== 'RUNNING' ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs h-8"
+                  onClick={() => controlLoop('start')}
+                  disabled={loopLoading}
+                >
+                  {loopLoading ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <Play className="mr-1 h-3 w-3" />}
+                  Start
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 text-xs h-8"
+                    onClick={() => controlLoop('pause')}
+                    disabled={loopLoading}
+                  >
+                    <Pause className="mr-1 h-3 w-3" />
+                    Pause
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 text-xs h-8"
+                    onClick={() => controlLoop('stop')}
+                    disabled={loopLoading}
+                  >
+                    <Square className="mr-1 h-3 w-3" />
+                    Stop
+                  </Button>
+                </>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-cyan-500/30 bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500/20 text-xs h-8"
+                onClick={() => controlLoop('fill-all')}
+                disabled={loopLoading}
+              >
+                <RefreshCw className={cn('mr-1 h-3 w-3', loopLoading && 'animate-spin')} />
+                Fill All
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Stats cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">

@@ -112,6 +112,10 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         isClosed: false,
         venue: { in: enabledVenues },
         ...(enabledCategories.length > 0 ? { category: { in: enabledCategories } } : {}),
+        AND: [
+          { resolutionTime: null },
+          { resolutionTime: { gt: new Date() } },
+        ],
       },
       orderBy: { id: 'desc' },
       skip: processedMarketCount,
@@ -226,7 +230,7 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         Math.min(20, market.positions.reduce((sum, position) => sum + position.currentSize, 0) / 1000);
       const orderbookQuality =
         latestOrderbook == null
-          ? 0
+          ? 10
           : Math.max(
               0,
               Math.min(

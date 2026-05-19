@@ -114,8 +114,15 @@ export async function getAllKalshiMarkets(
     }
   }
 
+  const now = new Date();
+  const filtered = allMarkets.filter((m) => {
+    if (m.status !== 'active') return false;
+    if (m.close_time && new Date(m.close_time) < now) return false;
+    return true;
+  });
+
   return {
-    markets: allMarkets,
+    markets: filtered,
     nextCursor: cursor ?? null,
     pagesScanned: pageCount,
     hasMore: Boolean(cursor),

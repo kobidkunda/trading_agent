@@ -1,7 +1,8 @@
 import { db } from '@/lib/db';
 import type { PaperBetExecutionStatus } from '@/lib/types';
 
-const EXECUTED_PAPER_BET_STATUSES: PaperBetExecutionStatus[] = ['FILLED', 'PARTIAL'];
+const EXECUTED_PAPER_BET_STATUSES: PaperBetExecutionStatus[] = ['SUBMITTED', 'FILLED', 'PARTIAL'];
+const RESOLVED_PAPER_BET_STATUSES: PaperBetExecutionStatus[] = ['FILLED', 'PARTIAL'];
 
 export interface PaperBetScore {
   betId: string;
@@ -52,7 +53,7 @@ export async function createPaperBet(params: {
 }
 
 export function isExecutedPaperBetStatus(status: string | null | undefined): status is PaperBetExecutionStatus {
-  return EXECUTED_PAPER_BET_STATUSES.includes(status as PaperBetExecutionStatus);
+return RESOLVED_PAPER_BET_STATUSES.includes(status as PaperBetExecutionStatus) || EXECUTED_PAPER_BET_STATUSES.includes(status as PaperBetExecutionStatus);
 }
 
 export function scorePaperBet(
@@ -124,7 +125,7 @@ export async function resolvePaperBet(betId: string, actualOutcome: 'YES' | 'NO'
 
 export async function resolveAllPaperBetsForMarket(marketId: string, actualOutcome: 'YES' | 'NO' | 'CANCELLED', resolvedProb?: number) {
   const bets = await db.paperBet.findMany({
-    where: { marketId, actualOutcome: null, executionStatus: { in: EXECUTED_PAPER_BET_STATUSES } },
+    where: { marketId, actualOutcome: null, executionStatus: { in: RESOLVED_PAPER_BET_STATUSES } },
   });
 
   const results: Array<Awaited<ReturnType<typeof resolvePaperBet>>> = [];
@@ -185,6 +186,11 @@ export interface AccuracyMetrics {
     predictedProb: number;
     predictedSide: string;
     impliedProb: number;
+    edge: number;
+    confidence: number;
+    stake: number;
+    entryPrice: number;
+    executionStatus: string | null;
     actualOutcome: string | null;
     directionCorrect: boolean | null;
     brierScore: number | null;
@@ -274,6 +280,11 @@ export async function getAccuracyMetrics(limit: number = 100): Promise<AccuracyM
       predictedProb: b.predictedProb,
       predictedSide: b.predictedSide,
       impliedProb: b.impliedProb,
+      edge: b.edge,
+      confidence: b.confidence,
+      stake: b.stake,
+      entryPrice: b.entryPrice,
+      executionStatus: b.executionStatus,
       actualOutcome: b.actualOutcome,
       directionCorrect: b.directionCorrect,
       brierScore: b.brierScore,

@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
     const stage = searchParams.get('stage');
     const minScoreParam = searchParams.get('minScore');
     const minScore = minScoreParam ? parseFloat(minScoreParam) : undefined;
+    const aplusOnly = searchParams.get('aplus') === 'true';
     const excludeCooldown = searchParams.get('excludeCooldown') === 'true';
     const excludeExecuted = searchParams.get('excludeExecuted') === 'true';
 
@@ -25,6 +26,9 @@ export async function GET(request: NextRequest) {
     }
     if (excludeCooldown) {
       where.cooldownUntil = { lt: new Date() };
+    }
+    if (aplusOnly) {
+      where.candidateScore = { gte: 90 };
     }
     if (excludeExecuted) {
       where.stage = { notIn: ['EXECUTED', 'EXECUTION_PENDING'] };
@@ -88,6 +92,7 @@ export async function GET(request: NextRequest) {
               venue: true,
               category: true,
               status: true,
+              resolutionTime: true,
             },
           },
         },
@@ -102,10 +107,17 @@ export async function GET(request: NextRequest) {
       tradingConfig.mode,
     ).map(({ externalId: _externalId, ...candidate }) => candidate);
 
+    const enriched = visibleCandidates.map(c => ({
+      ...c,
+      riskFlags: (c.rejectedCriteria ? c.rejectedCriteria.split(';').filter(Boolean) : []) as string[],
+      modelDisagreement: ((c.contradictionPenalty ?? 0) + (c.uncertaintyPenalty ?? 0)) > 0.5 ? 0.4 : 0,
+    }));
+
     return NextResponse.json(
-      buildPaginatedResponse(visibleCandidates, totalCount, pagination),
+      buildPaginatedResponse(enriched, totalCount, pagination),
     );
-  } catch {
-    return NextResponse.json({ error: 'Failed to fetch candidates' }, { status: 500 });
+  } catch (error) {
+    console.error('[Candidates API] Error:', error);
+    return NextResponse.json({ error: 'Failed to fetch candidates', details: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 }

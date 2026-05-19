@@ -257,7 +257,7 @@ export async function getPolymarketMarkets(options: VenueScanOptions = {}): Prom
     const nextCursor = data.next_cursor || data.cursor || null;
     const hasMore = Boolean(nextCursor);
 
-    const resultMarkets = await Promise.all(markets.map(async (m: Record<string, unknown>) => {
+    let resultMarkets = await Promise.all(markets.map(async (m: Record<string, unknown>) => {
       const tokens = (m.tokens || []) as Array<Record<string, unknown>>;
       const yesToken = tokens.find((t) => t.outcome === 'Yes') || tokens[0];
       const noToken = tokens.find((t) => t.outcome === 'No');
@@ -331,6 +331,16 @@ export async function getPolymarketMarkets(options: VenueScanOptions = {}): Prom
               : null,
       };
     })).then((resolved) => resolved.filter((m: { title: string; externalId: string }) => m.title && m.externalId));
+
+    // Filter archived/past markets
+    const now = new Date();
+    resultMarkets = resultMarkets.filter(m => {
+      // Skip markets with archived titles (arch/archWill prefix)
+      if (m.title?.match(/^arch\s*|^archwill/i)) return false;
+      // Skip markets past their end date
+      if (m.resolutionTime && new Date(m.resolutionTime) < now) return false;
+      return true;
+    });
 
     return { markets: resultMarkets, nextCursor, hasMore };
   } catch (error) {

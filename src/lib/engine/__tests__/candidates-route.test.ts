@@ -44,6 +44,7 @@ mock.module('@/lib/db', () => ({
   db: {
     tradeCandidate: {
       findMany: findManyMock,
+      count: mock(async () => 1),
       findUnique: findCandidateMock,
     },
     job: {
@@ -72,9 +73,9 @@ describe('candidates routes', () => {
     const res = await GET(new Request('http://localhost/api/trading/candidates?limit=10') as never);
     const payload = await res.json();
 
-    expect(payload.candidates).toHaveLength(1);
-    expect(payload.candidates[0].candidateScore).toBe(85.9);
-    expect(payload.candidates[0].market.externalId).toBe('poly-1');
+    expect(payload.data).toHaveLength(1);
+    expect(payload.data[0].candidateScore).toBe(85.9);
+    expect(payload.data[0].market.externalId).toBe('poly-1');
   });
 
   it('filters generated demo candidates out of paper mode results', async () => {
@@ -111,8 +112,8 @@ describe('candidates routes', () => {
     const res = await GET(new Request('http://localhost/api/trading/candidates?limit=10') as never);
     const payload = await res.json();
 
-    expect(payload.candidates).toHaveLength(1);
-    expect(payload.candidates[0].id).toBe('candidate-real');
+    expect(payload.data).toHaveLength(1);
+    expect(payload.data[0].id).toBe('candidate-real');
   });
 
   it('queues force-research jobs for an existing candidate', async () => {

@@ -5,6 +5,7 @@ import { walletRanker } from '@/lib/engine/wallet-ranker';
 import { walletClusterDetector } from '@/lib/engine/wallet-cluster';
 import { computeWalletSignalScore } from '@/lib/engine/wallet-signal';
 import { walletIngestion } from '@/lib/engine/wallet-ingestion';
+import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
 import {
   DEFAULT_WALLET_SOURCE_CONFIG,
   ImportWalletSourceAdapter,
@@ -31,12 +32,11 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const showClusters = searchParams.get('clusters') === 'true';
-    const limit = Math.min(200, parseInt(searchParams.get('limit') || '50'));
-    const offset = parseInt(searchParams.get('offset') || '0');
+    const pagination = parsePaginationParams(searchParams);
 
     if (showClusters) {
       const clusters = await walletClusterDetector.detectClusters();
-      const recent = clusters.slice(0, limit);
+      const recent = clusters.slice(0, pagination.limit);
       const walletSourceSetting = await db.settings.findUnique({ where: { key: WALLET_SOURCE_SETTINGS_KEY } });
       const walletSource = walletSourceSetting?.value
         ? normalizeWalletSourceConfig(JSON.parse(walletSourceSetting.value) as Record<string, unknown>)
@@ -45,15 +45,17 @@ export async function GET(request: NextRequest) {
     }
 
     const where = await buildWhereClause(searchParams);
-    const wallets = await db.wallet.findMany({
-      where,
-      orderBy: { rank: 'asc' },
-      take: limit,
-      skip: offset,
-      include: { trades: { orderBy: { tradeTimestamp: 'desc' }, take: 5 } },
-    });
-
-    const total = await db.wallet.count({ where });
+    const [wallets, total, clustersResult] = await Promise.all([
+      db.wallet.findMany({
+        where,
+        orderBy: { rank: 'asc' },
+        take: pagination.limit,
+        skip: (pagination.page - 1) * pagination.limit,
+        include: { trades: { orderBy: { tradeTimestamp: 'desc' }, take: 5 } },
+      }),
+      db.wallet.count({ where }),
+      walletClusterDetector.detectClusters(),
+    ]);
     const walletSourceSetting = await db.settings.findUnique({ where: { key: WALLET_SOURCE_SETTINGS_KEY } });
     const walletSource = walletSourceSetting?.value
       ? normalizeWalletSourceConfig(JSON.parse(walletSourceSetting.value) as Record<string, unknown>)
@@ -64,7 +66,20 @@ export async function GET(request: NextRequest) {
       scoreComputed: w.rank !== null,
     }));
 
-    return NextResponse.json({ wallets: withRankings, total, limit, offset, walletSource });
+    const profitableCount = wallets.filter((w) => w.realizedPnl > 0).length;
+    const avgWinRate = wallets.length > 0
+      ? wallets.reduce((s, w) => s + (w.winRate ?? 0), 0) / wallets.length
+      : 0;
+
+    return NextResponse.json({
+      ...buildPaginatedResponse(withRankings, total, pagination),
+      walletSource,
+      clusters: clustersResult.slice(0, 10),
+      totalWallets: total,
+      profitableCount,
+      avgWinRate,
+      activeClusters: clustersResult.length,
+    });
   } catch (error) {
     return NextResponse.json({ error: 'Failed to fetch wallets' }, { status: 500 });
   }

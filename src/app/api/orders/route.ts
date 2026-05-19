@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { Prisma, OrderLifecycle } from '@prisma/client';
 import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
+import { isPaperLoopTestMarket } from '@/lib/engine/paper-loop-test-market';
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,7 +13,7 @@ export async function GET(request: NextRequest) {
     const where: Prisma.OrderWhereInput = {};
 
     if (status === 'open') {
-      where.lifecycleStatus = { in: [OrderLifecycle.PLANNED, OrderLifecycle.SUBMITTED, OrderLifecycle.PARTIALLY_FILLED, OrderLifecycle.FILLED] };
+      where.lifecycleStatus = { in: [OrderLifecycle.PLANNED, OrderLifecycle.SUBMITTED, OrderLifecycle.PARTIALLY_FILLED] };
     } else if (status) {
       where.lifecycleStatus = status as OrderLifecycle;
     }
@@ -22,7 +23,7 @@ export async function GET(request: NextRequest) {
     }
 
     const sortField = pagination.sortBy || 'createdAt';
-    const [data, total] = await Promise.all([
+    const [rawData, total] = await Promise.all([
       db.order.findMany({
         where,
         orderBy: { [sortField]: pagination.sortOrder || 'desc' },
@@ -34,6 +35,19 @@ export async function GET(request: NextRequest) {
       }),
       db.order.count({ where }),
     ]);
+
+    const data = rawData.filter((order) => {
+      if (status === 'open' && order.status === 'WATCH') {
+        return false;
+      }
+
+      return !isPaperLoopTestMarket({
+        externalId: null,
+        title: order.market.title,
+        venue: order.market.venue,
+        category: order.market.category,
+      });
+    });
 
     return NextResponse.json(buildPaginatedResponse(data, total, pagination));
   } catch (error) {

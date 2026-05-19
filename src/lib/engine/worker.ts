@@ -308,6 +308,14 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
 
     // Save failure checkpoint for post-mortem / retry analysis
     const marketId = extractMarketId(job.payload);
+
+    if (['RESEARCH_MARKET', 'QUICK_RESEARCH', 'STANDARD_RESEARCH', 'DEEP_RESEARCH'].includes(job.type) && marketId) {
+      await db.researchRun.updateMany({
+        where: { marketId, status: 'RUNNING' },
+        data: { status: 'FAILED', completedAt: new Date() },
+      }).catch(() => {});
+    }
+
     await saveFailureCheckpoint(job.id, errorMessage, job.type, {
       marketId: marketId ?? undefined,
       retryCount: currentRetryCount + 1,
@@ -325,6 +333,8 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
         'JUDGE_MARKET',
         'RISK_CHECK',
         'ORACLE_CHECK',
+        'PAPER_EXECUTE',
+        'ORDER_TRACK',
       ].includes(job.type)
     ) {
       try {
@@ -405,13 +415,20 @@ async function tick() {
 // ── Inter-stage data lookups ─────────────────────────────────────────
 // Each stage persists output to DB; subsequent stages look up what they need.
 
-async function lookupResearchRunForMarket(marketId: string): Promise<{
+async function lookupResearchRunForMarket(marketId: string, researchRunId?: string): Promise<{
   researchRunId: string;
   researchContext: string;
   depth: ResearchDepth;
 } | null> {
+  const where: any = { marketId };
+  if (researchRunId) {
+    where.id = researchRunId;
+    where.status = { not: 'FAILED' };
+  } else {
+    where.status = 'COMPLETED';
+  }
   const researchRun = await db.researchRun.findFirst({
-    where: { marketId, status: 'COMPLETED' },
+    where,
     orderBy: { completedAt: 'desc' },
   });
   if (!researchRun) return null;
@@ -557,6 +574,17 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
           jobId,
         }).catch(() => {});
       }
+      // Chain: triage complete with worthResearch → enqueue STANDARD_RESEARCH
+      if (result.worthResearch === true) {
+        const existingResearchJob = await db.job.findFirst({
+          where: { type: { in: ['STANDARD_RESEARCH', 'RESEARCH_MARKET', 'RESEARCH'] }, status: { in: ['PENDING', 'RUNNING', 'RETRYING'] }, payload: { contains: marketId } },
+        });
+        if (!existingResearchJob) {
+          await db.job.create({
+            data: { type: 'STANDARD_RESEARCH', status: 'PENDING', priority: 7, payload: JSON.stringify({ marketId, candidateId: data.candidateId, trigger: 'triage_chain', triageStatus: result.triageStatus }) },
+          }).catch(err => console.error('[Worker] Failed to enqueue STANDARD_RESEARCH from triage:', err));
+        }
+      }
       return result;
     }
 
@@ -617,7 +645,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       if (!(await validateMarket(marketId))) {
         return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
       }
-      const research = await lookupResearchRunForMarket(marketId);
+      const research = await lookupResearchRunForMarket(marketId, data.researchRunId as string | undefined);
       if (!research) {
         return { status: 'NO_RESEARCH_RUN', marketId, skipped: true, message: 'No completed ResearchRun found for market' };
       }
@@ -683,6 +711,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
 
       // Chain: risk passed with BID → enqueue EXECUTE
       if (!result.skipped && result.riskAction === 'BID') {
+        const gatedRisk = result.gatedRiskResult as Record<string, unknown> | undefined;
         await db.job.create({
           data: {
             type: 'PAPER_EXECUTE',
@@ -694,6 +723,17 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
               judgeProbability: judge.judgeProbability,
               judgeConfidence: judge.judgeConfidence,
               judgeUncertainty: judge.judgeUncertainty,
+              aPlusGatePassed: result.aPlusGatePassed as boolean ?? false,
+              gatedAction: gatedRisk?.action ?? 'BID',
+              gatedAdjustedSize: gatedRisk?.adjustedSize ?? 0,
+              gatedMaxSize: gatedRisk?.maxSize ?? 0,
+              gatedEdge: gatedRisk?.edge ?? 0,
+              gatedSide: gatedRisk?.side ?? 'YES',
+              gatedReasonCode: gatedRisk?.reasonCode ?? '',
+              gatedReason: gatedRisk?.reason ?? '',
+              gatedUrgency: gatedRisk?.urgency ?? 'MEDIUM',
+              gatedFees: gatedRisk?.fees ?? 0,
+              gatedSlippage: gatedRisk?.slippage ?? 0,
             }),
           },
         }).catch((err) => console.error('[Worker] Failed to enqueue PAPER_EXECUTE:', err));
@@ -711,6 +751,21 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       let judgeProb = typeof data.judgeProbability === 'number' ? data.judgeProbability : 0.5;
       let judgeConf = typeof data.judgeConfidence === 'number' ? data.judgeConfidence : 0.5;
       let judgeUnc = typeof data.judgeUncertainty === 'number' ? data.judgeUncertainty : 0.3;
+      const aPlusGatePassed = typeof data.aPlusGatePassed === 'boolean' ? data.aPlusGatePassed : false;
+
+      // Reconstruct gatedRiskResult from job payload (passed through RISK_CHECK chain)
+      const gatedRiskResult = {
+        action: (data.gatedAction as 'BID' | 'WATCH' | 'SKIP') || 'BID',
+        side: (data.gatedSide as 'YES' | 'NO') || 'YES',
+        maxSize: Number(data.gatedMaxSize ?? 0),
+        adjustedSize: Number(data.gatedAdjustedSize ?? data.gatedMaxSize ?? 0),
+        urgency: (data.gatedUrgency as string) || 'MEDIUM',
+        reasonCode: String(data.gatedReasonCode ?? ''),
+        reason: String(data.gatedReason ?? ''),
+        edge: Number(data.gatedEdge ?? 0),
+        fees: Number(data.gatedFees ?? 0),
+        slippage: Number(data.gatedSlippage ?? 0),
+      };
 
       if (!decisionId || !data.judgeProbability) {
         const decision = await lookupDecisionForMarket(marketId);
@@ -723,7 +778,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
         judgeUnc = data.judgeUncertainty != null ? judgeUnc : decision.judgeUncertainty;
       }
 
-      const result = await runExecuteStage(marketId, decisionId!, undefined as any, false, judgeProb, judgeConf, judgeUnc) as unknown as Record<string, unknown>;
+      const result = await runExecuteStage(marketId, decisionId!, gatedRiskResult as any, aPlusGatePassed, judgeProb, judgeConf, judgeUnc) as unknown as Record<string, unknown>;
       if (jobId) {
         await logStageTransition(marketId, {
           from: 'DECIDED',

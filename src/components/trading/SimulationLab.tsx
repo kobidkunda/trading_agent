@@ -36,6 +36,7 @@ import { cn } from '@/lib/utils';
 import { useTradingStore } from '@/store/trading-store';
 import { getSimulationAccess } from '@/lib/engine/simulation-access';
 import { syncTradingModeFromBackend } from '@/lib/engine/trading-mode-client';
+import { PaginationBar } from '@/components/trading/PaginationBar';
 import type {
   OperatorAttempt,
   OperatorDashboardPayload,
@@ -215,7 +216,16 @@ export function SimulationLab() {
   const [scanInterval, setScanInterval] = useState(120);
   const [marketsPerScan, setMarketsPerScan] = useState(1);
   const [expandedMarkets, setExpandedMarkets] = useState<string[]>([]);
+  const [ledgerPage, setLedgerPage] = useState(1);
+  const [ledgerLimit, setLedgerLimit] = useState(25);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const totalLedgerMarkets = dashboard?.markets?.length ?? 0;
+  const totalLedgerPages = Math.ceil(totalLedgerMarkets / ledgerLimit);
+  const paginatedMarkets = (dashboard?.markets ?? []).slice(
+    (ledgerPage - 1) * ledgerLimit,
+    ledgerPage * ledgerLimit,
+  );
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -598,12 +608,12 @@ export function SimulationLab() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {dashboard.markets.length === 0 ? (
+            {totalLedgerMarkets === 0 ? (
               <div className="rounded-2xl border border-gray-800 bg-gray-950/70 p-10 text-center text-sm text-gray-400">
                 No markets have been scanned into the operator ledger yet.
               </div>
             ) : (
-              dashboard.markets.map((market: OperatorMarketItem) => {
+              paginatedMarkets.map((market: OperatorMarketItem) => {
                 const expanded = expandedMarkets.includes(market.marketId);
                 return (
                   <div key={market.marketId} className="rounded-[26px] border border-gray-800 bg-gray-950/60">
@@ -713,6 +723,20 @@ export function SimulationLab() {
                   </div>
                 );
               })
+            )}
+            {totalLedgerMarkets > 0 && (
+              <div className="mt-4 flex items-center justify-between border-t border-gray-800 pt-4">
+                <span className="text-xs text-gray-500">
+                  Showing {(ledgerPage - 1) * ledgerLimit + 1}–{Math.min(ledgerPage * ledgerLimit, totalLedgerMarkets)} of {totalLedgerMarkets}
+                </span>
+                <PaginationBar
+                  page={ledgerPage}
+                  totalPages={totalLedgerPages}
+                  limit={ledgerLimit}
+                  onPageChange={setLedgerPage}
+                  onLimitChange={(l) => { setLedgerLimit(l); setLedgerPage(1); }}
+                />
+              </div>
             )}
           </CardContent>
         </Card>

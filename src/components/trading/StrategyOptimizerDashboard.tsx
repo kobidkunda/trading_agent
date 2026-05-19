@@ -272,7 +272,7 @@ export function StrategyOptimizerDashboard() {
         const res = await fetch('/api/strategy-config');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!cancelled) setConfigs(data ?? []);
+        if (!cancelled) setConfigs(Array.isArray(data) ? data : data?.data ?? []);
       } catch (err) {
         if (!cancelled) {
           setConfigsError(err instanceof Error ? err.message : 'Failed to load configs');
@@ -295,7 +295,7 @@ export function StrategyOptimizerDashboard() {
         const res = await fetch('/api/backtests');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!cancelled) setBacktests(Array.isArray(data) ? data : data?.runs ?? []);
+        if (!cancelled) setBacktests(Array.isArray(data) ? data : data?.data ?? []);
       } catch (err) {
         if (!cancelled) {
           setBacktestsError(err instanceof Error ? err.message : 'Failed to load backtests');
@@ -317,12 +317,12 @@ export function StrategyOptimizerDashboard() {
       ]);
       if (cRes.ok) {
         const data = await cRes.json();
-        setConfigs(data ?? []);
+        setConfigs(Array.isArray(data) ? data : data?.data ?? []);
         setConfigsError(null);
       }
       if (bRes.ok) {
         const data = await bRes.json();
-        setBacktests(Array.isArray(data) ? data : data?.runs ?? []);
+        setBacktests(Array.isArray(data) ? data : data?.data ?? []);
         setBacktestsError(null);
       }
     } catch {

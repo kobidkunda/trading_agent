@@ -15,10 +15,43 @@ export async function GET(request: NextRequest) {
           orderBy: { capturedAt: 'desc' },
           skip: (pagination.page - 1) * pagination.limit,
           take: pagination.limit,
+          include: {
+            market: {
+              select: {
+                id: true,
+                title: true,
+                venue: true,
+                category: true,
+              },
+            },
+          },
         }),
         db.orderbookSnapshot.count(),
       ]);
-      return NextResponse.json(buildPaginatedResponse(snapshots, total, pagination));
+      
+      const mapped = snapshots.map(s => ({
+        id: s.id,
+        marketId: s.marketId,
+        marketTitle: s.market?.title ?? '',
+        venue: s.market?.venue ?? '',
+        category: s.market?.category ?? '',
+        bestBid: s.bestBid,
+        bestAsk: s.bestAsk,
+        spread: s.spread,
+        bidDepth: s.bidDepth,
+        askDepth: s.askDepth,
+        depthImbalance: s.depthImbalance,
+        largeBidWall: s.largeBidWall,
+        largeAskWall: s.largeAskWall,
+        thinBookDanger: s.thinBookDanger,
+        thinBookWarning: s.thinBookDanger,
+        priceImpact: s.priceImpact,
+        fillProbability: s.fillProbability,
+        capturedAt: s.capturedAt,
+        lastUpdated: s.capturedAt,
+      }));
+      
+      return NextResponse.json(buildPaginatedResponse(mapped, total, pagination));
     }
 
     const snapshot = await db.orderbookSnapshot.findFirst({
@@ -84,8 +117,9 @@ export async function GET(request: NextRequest) {
       analysis,
     });
   } catch (error) {
+    console.error('[Orderbook API] Error:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch orderbook snapshot' },
+      { error: 'Failed to fetch orderbook snapshot', details: error instanceof Error ? error.message : String(error) },
       { status: 500 },
     );
   }
@@ -162,8 +196,9 @@ export async function POST(request: NextRequest) {
       { status: 201 },
     );
   } catch (error) {
+    console.error('[Orderbook API] Error:', error);
     return NextResponse.json(
-      { error: 'Failed to create orderbook snapshot' },
+      { error: 'Failed to create orderbook snapshot', details: error instanceof Error ? error.message : String(error) },
       { status: 500 },
     );
   }

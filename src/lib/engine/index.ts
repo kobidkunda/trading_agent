@@ -13,6 +13,8 @@ export { runJudgeAgent } from './agents/judge';
 export { searchSearXNG } from './research/search';
 export { extractContent } from './research/extract';
 export { getWorkerState, startWorker, stopWorker } from './worker';
+export { getPaperLoopState, startPaperLoop, stopPaperLoop, pausePaperLoop, resetPaperLoopStats, fillAllPendingPaperOrders, runPaperLoopCycle, fillPaperOrder, ensurePaperLoopRunning, isPaperLoopActive } from './paper-order-loop';
+export type { PaperLoopState, PaperLoopStatus, PaperLoopCycleResult, PaperFillResult } from './paper-order-loop';
 export { runScanner } from './scanner';
 export { runPipelineForMarket, resolvePipelineContext, runTriageStage, runResearchStage, runJudgeStage, runRiskStage, runExecuteStage } from './pipeline';
 export type { PipelineContext, PipelineRunOptions, PipelineResult, PipelineStageEvent, TriageStageResult, ResearchStageResult, JudgeStageResult, RiskStageResult, ExecuteStageResult } from './pipeline';

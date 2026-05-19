@@ -135,6 +135,31 @@ export function WalletsDashboard() {
     activeClusters: number;
   } | null>(null);
 
+  // Fetch clusters and side stats (separate from paginated wallets)
+  useEffect(() => {
+    let cancelled = false;
+    async function loadExtras() {
+      try {
+        const res = await fetch('/api/wallets?limit=5');
+        if (!cancelled && res.ok) {
+          const json = await res.json();
+          setClusters(json.clusters ?? []);
+          setSignals(json.signals ?? []);
+          if (json.totalWallets != null) {
+            setExtraStats({
+              totalWallets: json.totalWallets,
+              profitableCount: json.profitableCount ?? 0,
+              avgWinRate: json.avgWinRate ?? 0,
+              activeClusters: json.activeClusters ?? (json.clusters?.length ?? 0),
+            });
+          }
+        }
+      } catch { /* non-critical */ }
+    }
+    loadExtras();
+    return () => { cancelled = true; };
+  }, []);
+
   // Debounce search to avoid per-keystroke API calls
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -168,21 +193,7 @@ export function WalletsDashboard() {
 
       const res = await fetch(`/api/wallets?${query}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json: WalletsApiResponse = await res.json();
-
-      // Populate side data from the same response
-      setClusters(json.clusters ?? []);
-      setSignals(json.signals ?? []);
-      if (json.totalWallets != null) {
-        setExtraStats({
-          totalWallets: json.totalWallets,
-          profitableCount: json.profitableCount ?? 0,
-          avgWinRate: json.avgWinRate ?? 0,
-          activeClusters: json.activeClusters ?? (json.clusters?.length ?? 0),
-        });
-      }
-
-      return json;
+      return res.json();
     },
     [debouncedSearch, catFilter],
     { defaultSortBy: 'rank', defaultSortOrder: 'asc' },

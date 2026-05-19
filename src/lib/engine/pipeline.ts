@@ -547,6 +547,14 @@ export async function runResearchStage(
             data: { stage: 'RESEARCHING' },
           });
         }
+        // Mark research run as COMPLETED even when research is unavailable
+        try {
+          await db.researchRun.update({
+            where: { id: researchRun.id },
+            data: { status: 'COMPLETED', completedAt: new Date() },
+          });
+        } catch { /* non-fatal */ }
+
         return { researchRunId: researchRun.id, researchContext, depth: actualDepth, stages, candidate };
       }
 
@@ -1185,11 +1193,19 @@ export async function runResearchStage(
   if (candidate) {
     await db.tradeCandidate.update({
       where: { id: candidate.id },
-      data: { stage: 'RESEARCHING' },
+      data: { stage: 'RESEARCHING', lastResearchAt: new Date() },
     });
   }
 
   await retrieveSimilarMarkets(market.title, market.description || '');
+
+  // Mark research run as COMPLETED so queued Judge can find it
+  try {
+    await db.researchRun.update({
+      where: { id: researchRun.id },
+      data: { status: 'COMPLETED', completedAt: new Date() },
+    });
+  } catch { /* non-fatal */ }
 
   return {
     researchRunId: researchRun.id,
@@ -1516,7 +1532,7 @@ export async function runRiskStage(
   stages.push('RISK');
 
   const ctx = await resolvePipelineContext(marketId);
-  const { market, candidate, snapshot, impliedProb, liquidity, biasAdjustedProb, strategySetting } = ctx;
+  const { market, candidate, snapshot, impliedProb, liquidity, biasAdjustedProb, strategySetting, tradingConfig } = ctx;
 
   await emitStage({
     stage: 'RISK',
@@ -1716,6 +1732,9 @@ export async function runRiskStage(
         governance.maxStakePerMarket > 0 &&
         governance.maxDailyLoss > 0;
 
+  const isLiveOrDemo = tradingConfig.mode === 'LIVE' || tradingConfig.mode === 'DEMO';
+  const requiresAPlusForExecution = isLiveOrDemo || governance.liveEnabled;
+
   const gatedRiskResult =
     oracleRiskLevel === 'BLOCK'
       ? {
@@ -1725,7 +1744,8 @@ export async function runRiskStage(
           reason: `Oracle risk level BLOCK forces skip. ${aPlusGateReasons.join('; ')}`,
         }
     :
-    riskResult.action === 'BID' && (!aPlusGatePassed || disagreementLevel === 'HIGH' || !liveGovernanceReady)
+    riskResult.action === 'BID'
+        && (disagreementLevel === 'HIGH' || !liveGovernanceReady || (requiresAPlusForExecution && !aPlusGatePassed))
       ? {
           ...riskResult,
           action: 'WATCH' as const,
@@ -1939,7 +1959,7 @@ export async function runExecuteStage(
         entryPrice: orderPrice,
       });
 
-      orderId = venueOrderId;
+      orderId = order.id;
 
       // Create lifecycle job to track this order
       await db.job.create({
