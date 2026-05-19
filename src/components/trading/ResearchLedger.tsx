@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState, useMemo, Fragment } from 'react';
+import { useEffect, useState, Fragment } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Search,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   TrendingUp,
   TrendingDown,
   BarChart3,
@@ -30,8 +31,6 @@ import {
 import {
   Card,
   CardContent,
-  CardHeader,
-  CardTitle,
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -54,6 +53,9 @@ import {
 import { cn } from '@/lib/utils';
 import type { Venue, TransparencyStageRecord, TransparencySourceRef } from '@/lib/types';
 import { VENUE_OPTIONS, REASON_CODE_DESCRIPTIONS } from '@/lib/constants';
+import { usePagination } from '@/hooks/use-pagination';
+import { PaginationBar } from '@/components/trading/PaginationBar';
+import type { PaginationParams, PaginatedResponse } from '@/lib/types';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -141,6 +143,17 @@ interface ResearchRunData {
   }>;
 }
 
+interface DecisionsApiResponse extends PaginatedResponse<DecisionApiRecord> {
+  summaryStats?: {
+    total: number;
+    bids: number;
+    watches: number;
+    skips: number;
+    avgEdge: number;
+    totalSize: number;
+  };
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function flattenDecision(d: DecisionApiRecord): DecisionRow {
@@ -204,7 +217,6 @@ const ROLE_ICONS: Record<string, React.ElementType> = {
   DEERFLOW: Brain,
 };
 
-// Stage status colors and icons for transparency audit
 const STAGE_STATUS_COLORS: Record<string, string> = {
   running: 'text-blue-400 border-blue-500/30 bg-blue-500/10',
   completed: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10',
@@ -230,66 +242,91 @@ function formatDuration(ms: number | null): string {
 // ── component ────────────────────────────────────────────────────────────────
 
 export function ResearchLedger() {
-  const [decisions, setDecisions] = useState<DecisionRow[]>([]);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [venueFilter, setVenueFilter] = useState<string>('ALL');
   const [actionFilter, setActionFilter] = useState<string>('ALL');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [summaryStats, setSummaryStats] = useState({
+    total: 0,
+    bids: 0,
+    watches: 0,
+    skips: 0,
+    avgEdge: 0,
+    totalSize: 0,
+  });
 
   useEffect(() => {
-    let cancelled = false;
-    async function fetchDecisions() {
-      try {
-        const res = await fetch('/api/decisions');
-        if (res.ok && !cancelled) {
-          const data = await res.json();
-          const raw = data.decisions ?? [];
-          setDecisions(raw.map(flattenDecision));
-        }
-      } catch {
-        // failed to load
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const {
+    data: decisions,
+    page,
+    limit,
+    total,
+    totalPages,
+    sortBy,
+    sortOrder,
+    loading,
+    error,
+    setPage,
+    setLimit: paginationSetLimit,
+    setSort,
+    fetchData,
+  } = usePagination<DecisionRow>(
+    async (params: PaginationParams): Promise<PaginatedResponse<DecisionRow>> => {
+      const query = new URLSearchParams({
+        page: String(params.page),
+        limit: String(params.limit),
+        sortBy: params.sortBy ?? 'createdAt',
+        sortOrder: params.sortOrder ?? 'desc',
+      });
+      if (debouncedSearch.trim()) query.set('search', debouncedSearch.trim());
+      if (venueFilter !== 'ALL') query.set('venue', venueFilter);
+      if (actionFilter !== 'ALL') query.set('action', actionFilter);
+
+      const res = await fetch(`/api/decisions?${query}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json: DecisionsApiResponse = await res.json();
+
+      const raw = json.data ?? [];
+      const rows = raw.map(flattenDecision);
+
+      if (json.summaryStats) {
+        setSummaryStats(json.summaryStats);
+      } else {
+        // Compute summary from current page data as fallback
+        setSummaryStats({
+          total: json.total,
+          bids: rows.filter((d) => d.action === 'BID').length,
+          watches: rows.filter((d) => d.action === 'WATCH').length,
+          skips: rows.filter((d) => d.action === 'SKIP').length,
+          avgEdge: rows.length > 0 ? rows.reduce((s, d) => s + d.edge, 0) / rows.length : 0,
+          totalSize: rows
+            .filter((d) => d.action === 'BID' || d.action === 'WATCH')
+            .reduce((s, d) => s + d.maxSize, 0),
+        });
       }
+
+      return { ...json, data: rows };
+    },
+    [debouncedSearch, venueFilter, actionFilter],
+    { defaultSortBy: 'createdAt', defaultSortOrder: 'desc' },
+  );
+
+  const handleSort = (field: string) => {
+    if (sortBy === field) {
+      setSort(field, sortOrder === 'desc' ? 'asc' : 'desc');
+    } else {
+      setSort(field, 'desc');
     }
-    fetchDecisions();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  };
 
-  const filtered = useMemo(() => {
-    return decisions.filter((d) => {
-      if (
-        search &&
-        !d.marketTitle.toLowerCase().includes(search.toLowerCase())
-      )
-        return false;
-      if (venueFilter !== 'ALL' && d.venue !== venueFilter) return false;
-      if (actionFilter !== 'ALL' && d.action !== actionFilter) return false;
-      return true;
-    });
-  }, [decisions, search, venueFilter, actionFilter]);
+  const SortIcon = sortOrder === 'desc' ? ChevronDown : ChevronUp;
 
-  const summaryStats = useMemo(() => {
-    const total = decisions.length;
-    const bids = decisions.filter((d) => d.action === 'BID').length;
-    const watches = decisions.filter((d) => d.action === 'WATCH').length;
-    const skips = decisions.filter((d) => d.action === 'SKIP').length;
-    const avgEdge =
-      decisions.length > 0
-        ? decisions.reduce((s, d) => s + d.edge, 0) / decisions.length
-        : 0;
-    const totalSize = decisions
-      .filter((d) => d.action === 'BID' || d.action === 'WATCH')
-      .reduce((s, d) => s + d.maxSize, 0);
-    return { total, bids, watches, skips, avgEdge, totalSize };
-  }, [decisions]);
-
-  if (loading) {
+  if (loading && decisions.length === 0) {
     return (
       <div className="space-y-6">
         <h2 className="text-xl font-semibold text-white">Research Ledger</h2>
@@ -298,9 +335,30 @@ export function ResearchLedger() {
     );
   }
 
+  if (error && decisions.length === 0) {
+    return (
+      <div className="space-y-6">
+        <h2 className="text-xl font-semibold text-white">Research Ledger</h2>
+        <Card className="border-red-500/30 bg-gray-900">
+          <CardContent className="flex flex-col items-center justify-center py-16">
+            <XCircle className="mb-3 h-10 w-10 text-red-400" />
+            <p className="text-sm text-red-400">{error}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4 border-gray-700 text-gray-300 hover:bg-gray-800"
+              onClick={() => fetchData()}
+            >
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
         <h2 className="text-xl font-semibold text-white">Research Ledger</h2>
         <p className="mt-1 text-sm text-gray-500">
@@ -308,8 +366,7 @@ export function ResearchLedger() {
         </p>
       </div>
 
-      {/* Empty state when no decisions at all */}
-      {decisions.length === 0 ? (
+      {decisions.length === 0 && total === 0 && !loading ? (
         <Card className="border-gray-800 bg-gray-900">
           <CardContent className="flex flex-col items-center justify-center py-16">
             <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-gray-800">
@@ -435,19 +492,36 @@ export function ResearchLedger() {
                       <TableHead className="w-8" />
                       <TableHead className="text-gray-500">Market</TableHead>
                       <TableHead className="text-gray-500">Venue</TableHead>
-                      <TableHead className="text-right text-gray-500">
-                        Predicted
+                      <TableHead
+                        className="cursor-pointer text-right text-gray-500 hover:text-gray-300 select-none"
+                        onClick={() => handleSort('judgeProbability')}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          Predicted {sortBy === 'judgeProbability' && <SortIcon className="h-3 w-3" />}
+                        </span>
                       </TableHead>
-                      <TableHead className="text-right text-gray-500">
-                        Implied
+                      <TableHead
+                        className="cursor-pointer text-right text-gray-500 hover:text-gray-300 select-none"
+                        onClick={() => handleSort('impliedProb')}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          Implied {sortBy === 'impliedProb' && <SortIcon className="h-3 w-3" />}
+                        </span>
                       </TableHead>
-                      <TableHead className="text-right text-gray-500">Edge</TableHead>
+                      <TableHead
+                        className="cursor-pointer text-right text-gray-500 hover:text-gray-300 select-none"
+                        onClick={() => handleSort('edge')}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          Edge {sortBy === 'edge' && <SortIcon className="h-3 w-3" />}
+                        </span>
+                      </TableHead>
                       <TableHead className="text-gray-500">Action</TableHead>
                       <TableHead className="text-right text-gray-500">Max Size</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filtered.length === 0 ? (
+                    {decisions.length === 0 && !loading ? (
                       <TableRow className="border-gray-800">
                         <TableCell
                           colSpan={8}
@@ -457,7 +531,7 @@ export function ResearchLedger() {
                         </TableCell>
                       </TableRow>
                     ) : (
-                      filtered.map((d) => (
+                      decisions.map((d) => (
                         <Fragment key={d.id}>
                           <TableRow
                             className="cursor-pointer border-gray-800 transition-colors hover:bg-gray-800/50"
@@ -544,6 +618,16 @@ export function ResearchLedger() {
                   </TableBody>
                 </Table>
               </div>
+              {/* Pagination bar */}
+              <div className="flex items-center justify-between border-t border-gray-800 px-4 py-3">
+                <span className="text-xs text-gray-500">
+                  Page {page} of {totalPages || 1} · Showing {(page - 1) * limit + 1}-{Math.min(page * limit, total)} of {total}
+                </span>
+                {loading && (
+                  <Loader2 className="h-4 w-4 animate-spin text-gray-500" />
+                )}
+                <PaginationBar page={page} totalPages={totalPages} limit={limit} onPageChange={setPage} onLimitChange={paginationSetLimit} />
+              </div>
             </CardContent>
           </Card>
         </>
@@ -573,7 +657,7 @@ function InlineDecisionDetail({
         const res = await fetch(`/api/research?marketId=${d.marketId}`);
         if (!cancelled && res.ok) {
           const data = await res.json();
-          setResearch(data.researchRuns ?? []);
+          setResearch(data.data ?? data.researchRuns ?? []);
         }
       } catch {
       } finally {
@@ -745,7 +829,6 @@ function InlineDecisionDetail({
                     </button>
                     {isExpanded && (
                       <div className="border-t border-gray-800 px-3 py-2 space-y-2">
-                        {/* Service and Model Info */}
                         <div className="grid grid-cols-2 gap-2 text-[10px]">
                           <div>
                             <span className="text-gray-500">Service:</span>{' '}
@@ -771,7 +854,6 @@ function InlineDecisionDetail({
                           )}
                         </div>
 
-                        {/* Failure Reason */}
                         {stage.failureReason && (
                           <div className="rounded bg-red-500/10 border border-red-500/20 p-2">
                             <p className="text-[10px] text-red-400 font-medium">Failure Reason</p>
@@ -779,7 +861,6 @@ function InlineDecisionDetail({
                           </div>
                         )}
 
-                        {/* Summary */}
                         {stage.summary && (
                           <div>
                             <p className="text-[10px] text-gray-500 mb-1">Summary</p>
@@ -787,7 +868,6 @@ function InlineDecisionDetail({
                           </div>
                         )}
 
-                        {/* Raw Output (Expandable) */}
                         {stage.rawOutput && (
                           <div>
                             <p className="text-[10px] text-gray-500 mb-1">Raw Output</p>
@@ -795,7 +875,6 @@ function InlineDecisionDetail({
                           </div>
                         )}
 
-                        {/* References with Source Links */}
                         {stage.references?.length > 0 && (
                           <div>
                             <p className="text-[10px] text-gray-500 mb-1">References ({stage.references.length})</p>
@@ -834,7 +913,6 @@ function InlineDecisionDetail({
                           </div>
                         )}
 
-                        {/* Sources */}
                         {stage.sources?.length > 0 && (
                           <div>
                             <p className="text-[10px] text-gray-500 mb-1">Sources ({stage.sources.length})</p>
@@ -924,7 +1002,6 @@ function InlineDecisionDetail({
                     </button>
                     {isExpanded && (
                       <div className="border-t border-gray-800 px-3 py-2 space-y-2">
-                        {/* Service and Model Info */}
                         <div className="grid grid-cols-2 gap-2 text-[10px]">
                           <div>
                             <span className="text-gray-500">Service:</span>{' '}
@@ -950,7 +1027,6 @@ function InlineDecisionDetail({
                           )}
                         </div>
 
-                        {/* Failure Reason */}
                         {stage.failureReason && (
                           <div className="rounded bg-red-500/10 border border-red-500/20 p-2">
                             <p className="text-[10px] text-red-400 font-medium">Failure Reason</p>
@@ -958,7 +1034,6 @@ function InlineDecisionDetail({
                           </div>
                         )}
 
-                        {/* Summary */}
                         {stage.summary && (
                           <div>
                             <p className="text-[10px] text-gray-500 mb-1">Summary</p>
@@ -966,7 +1041,6 @@ function InlineDecisionDetail({
                           </div>
                         )}
 
-                        {/* Raw Output (Expandable) */}
                         {stage.rawOutput && (
                           <div>
                             <p className="text-[10px] text-gray-500 mb-1">Raw Output</p>
@@ -974,7 +1048,6 @@ function InlineDecisionDetail({
                           </div>
                         )}
 
-                        {/* References */}
                         {stage.references?.length > 0 && (
                           <div>
                             <p className="text-[10px] text-gray-500 mb-1">References ({stage.references.length})</p>
@@ -1133,7 +1206,6 @@ function InlineDecisionDetail({
             <p className="mt-1 text-xs text-gray-600">The research pipeline may not have completed for this market</p>
           </div>
         )}
-
         <div className="flex items-center gap-4 text-xs text-gray-600">
           <span className="flex items-center gap-1">
             <Clock className="h-3 w-3" />

@@ -1,6 +1,5 @@
 import { db } from '@/lib/db';
 import { createTitleHash, normalizeMarketTitle } from '@/lib/engine/candidate-dedupe';
-import { serializeCriteria } from '@/lib/engine/candidate-criteria';
 import { classifyCandidateScore, computeCandidateScore } from '@/lib/engine/candidate-scoring';
 import { scanRelatedMarkets } from '@/lib/engine/related-market';
 import { correlationClusterManager } from '@/lib/engine/correlation-risk';
@@ -21,6 +20,12 @@ export interface ScannerMarketInput {
   bestAsk?: number;
   bidDepth?: number;
   askDepth?: number;
+  yesTokenId?: string | null;
+  noTokenId?: string | null;
+  noBestBid?: number;
+  noBestAsk?: number;
+  noBidDepth?: number;
+  noAskDepth?: number;
   priceImpact?: number;
   fillProbability?: number;
   spreadSource?: string;
@@ -43,11 +48,21 @@ function normalizeResolutionTime(value: ScannerMarketInput['resolutionTime']): D
 }
 
 function getSnapshotPricing(market: ScannerMarketInput) {
+  const yesMid = market.bestAsk ?? market.impliedProb;
+  // If we have NO-side orderbook, derive noPrice from NO bestAsk (cost to buy NO)
+  // Otherwise fall back to 1 - yesPrice (complement assumption)
+  const noFromOrderbook = market.noBestAsk ?? null;
+  const noPrice = noFromOrderbook != null ? noFromOrderbook : 1 - yesMid;
+
   return {
     bestBid: market.bestBid ?? null,
     bestAsk: market.bestAsk ?? null,
-    yesPrice: market.bestAsk ?? market.impliedProb,
-    noPrice: 1 - (market.bestAsk ?? market.impliedProb),
+    yesPrice: yesMid,
+    noPrice,
+    noBestBid: market.noBestBid ?? null,
+    noBestAsk: market.noBestAsk ?? null,
+    noBidDepth: market.noBidDepth ?? null,
+    noAskDepth: market.noAskDepth ?? null,
   };
 }
 
@@ -125,6 +140,7 @@ export async function upsertScannedMarket(params: {
         marketId: created.id,
         venue: market.venue,
         tokenId: market.tokenId ?? null,
+        noTokenId: market.noTokenId ?? null,
         price: market.impliedProb,
         impliedProb: market.impliedProb,
         impliedProbability: market.impliedProb,
@@ -136,6 +152,10 @@ export async function upsertScannedMarket(params: {
         bestAsk: snapshotPricing.bestAsk,
         bidDepth: market.bidDepth ?? null,
         askDepth: market.askDepth ?? null,
+        noBestBid: snapshotPricing.noBestBid,
+        noBestAsk: snapshotPricing.noBestAsk,
+        noBidDepth: snapshotPricing.noBidDepth,
+        noAskDepth: snapshotPricing.noAskDepth,
         priceImpact: market.priceImpact ?? null,
         fillProbability: market.fillProbability ?? null,
         yesPrice: snapshotPricing.yesPrice,
@@ -146,10 +166,18 @@ export async function upsertScannedMarket(params: {
     });
 
     if (
+      market.bestBid != null ||
+      market.bestAsk != null ||
+      market.spread != null ||
+      market.spreadSource != null ||
       market.bidDepth != null ||
       market.askDepth != null ||
       market.priceImpact != null ||
-      market.fillProbability != null
+      market.fillProbability != null ||
+      market.noBestBid != null ||
+      market.noBestAsk != null ||
+      market.noBidDepth != null ||
+      market.noAskDepth != null
     ) {
       await db.orderbookSnapshot.create({
         data: {
@@ -161,6 +189,10 @@ export async function upsertScannedMarket(params: {
           orderbookSource: market.venue ?? null,
           bidDepth: market.bidDepth ?? null,
           askDepth: market.askDepth ?? null,
+          noBestBid: market.noBestBid ?? null,
+          noBestAsk: market.noBestAsk ?? null,
+          noBidDepth: market.noBidDepth ?? null,
+          noAskDepth: market.noAskDepth ?? null,
           priceImpact: market.priceImpact ?? null,
           fillProbability: market.fillProbability ?? null,
           rawJson: market.rawOrderbookJson ?? null,
@@ -182,18 +214,11 @@ export async function upsertScannedMarket(params: {
       },
     });
 
-    const acceptedStr = serializeCriteria(scoreBreakdown.acceptedCriteria);
-    const rejectedStr = serializeCriteria(scoreBreakdown.rejectedCriteria);
-
-    const createdCandidate = await db.tradeCandidate.create({
+    await db.tradeCandidate.create({
       data: {
         marketId: created.id,
         stage: 'SCANNED',
         sourceScanRunId: scanRunId,
-        candidateScore: scoreBreakdown.totalScore,
-        acceptedCriteria: acceptedStr,
-        rejectedCriteria: rejectedStr,
-        skipReason: scoreBreakdown.skipReason || null,
       },
     });
 
@@ -240,6 +265,7 @@ export async function upsertScannedMarket(params: {
       marketId: existing.id,
       venue: market.venue,
       tokenId: market.tokenId ?? null,
+      noTokenId: market.noTokenId ?? null,
       price: market.impliedProb,
       impliedProb: market.impliedProb,
       impliedProbability: market.impliedProb,
@@ -251,6 +277,10 @@ export async function upsertScannedMarket(params: {
       bestAsk: snapshotPricing.bestAsk,
       bidDepth: market.bidDepth ?? null,
       askDepth: market.askDepth ?? null,
+      noBestBid: snapshotPricing.noBestBid,
+      noBestAsk: snapshotPricing.noBestAsk,
+      noBidDepth: snapshotPricing.noBidDepth,
+      noAskDepth: snapshotPricing.noAskDepth,
       priceImpact: market.priceImpact ?? null,
       fillProbability: market.fillProbability ?? null,
       yesPrice: snapshotPricing.yesPrice,
@@ -261,10 +291,18 @@ export async function upsertScannedMarket(params: {
   });
 
   if (
+    market.bestBid != null ||
+    market.bestAsk != null ||
+    market.spread != null ||
+    market.spreadSource != null ||
     market.bidDepth != null ||
     market.askDepth != null ||
     market.priceImpact != null ||
-    market.fillProbability != null
+    market.fillProbability != null ||
+    market.noBestBid != null ||
+    market.noBestAsk != null ||
+    market.noBidDepth != null ||
+    market.noAskDepth != null
   ) {
     await db.orderbookSnapshot.create({
       data: {
@@ -272,8 +310,14 @@ export async function upsertScannedMarket(params: {
         bestBid: market.bestBid ?? null,
         bestAsk: market.bestAsk ?? null,
         spread: market.spread,
+        spreadSource: market.spreadSource ?? null,
+        orderbookSource: market.venue ?? null,
         bidDepth: market.bidDepth ?? null,
         askDepth: market.askDepth ?? null,
+        noBestBid: market.noBestBid ?? null,
+        noBestAsk: market.noBestAsk ?? null,
+        noBidDepth: market.noBidDepth ?? null,
+        noAskDepth: market.noAskDepth ?? null,
         priceImpact: market.priceImpact ?? null,
         fillProbability: market.fillProbability ?? null,
         rawJson: market.rawOrderbookJson ?? null,
@@ -295,40 +339,7 @@ export async function upsertScannedMarket(params: {
     },
   });
 
-  const existingCandidate = await db.tradeCandidate.findFirst({
-    where: { marketId: existing.id },
-  });
-
-  if (existingCandidate) {
-    const acceptedStr = serializeCriteria(scoreBreakdown.acceptedCriteria);
-    const rejectedStr = serializeCriteria(scoreBreakdown.rejectedCriteria);
-
-    await db.tradeCandidate.update({
-      where: { id: existingCandidate.id },
-      data: {
-        stage: scoreAction === 'SKIP' ? 'SCANNED' : 'TRIAGED',
-        candidateScore: scoreBreakdown.totalScore,
-        acceptedCriteria: acceptedStr,
-        rejectedCriteria: rejectedStr,
-        skipReason: scoreBreakdown.skipReason || null,
-        sourceScanRunId: scanRunId,
-        lastProcessedAt: new Date(),
-      },
-    });
-  }
-
-  scanRelatedMarkets(existing.id).catch(err =>
-    console.error('Related market scan failed for', existing.id, err),
-  );
-  correlationClusterManager.clusterAndLink({
-    id: existing.id,
-    title: market.title,
-    category: market.category,
-    resolutionTime: resolutionTime ?? existing.resolutionTime,
-    venue: market.venue,
-  }).catch((err) =>
-    console.error('Correlation cluster linking failed for', existing.id, err),
-  );
+  // Only run relation/cluster scans for new markets.
 
   return { created: false, updated: true, scoreAction, score: scoreBreakdown.totalScore };
 }

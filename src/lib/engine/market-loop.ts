@@ -1,7 +1,7 @@
 import { db } from '@/lib/db';
 import { runScanner } from '@/lib/engine/scanner';
 import { computeCandidateScore, classifyCandidateScore } from '@/lib/engine/candidate-scoring';
-import { shouldSkipCandidate, normalizeMarketTitle, createTitleHash, shouldReprocessMarket, computeNextEligibleAt, type ReprocessReason } from '@/lib/engine/candidate-dedupe';
+import { shouldSkipCandidate, normalizeMarketTitle, createTitleHash, shouldReprocessMarket, computeNextEligibleAt } from '@/lib/engine/candidate-dedupe';
 import { getEffectiveTradingConfig } from '@/lib/engine/trading-settings';
 import { logStageTransition } from '@/lib/engine/worker-checkpoint';
 import { normalizeTradingMode } from '@/lib/engine/mode';
@@ -26,34 +26,6 @@ function clamp(value: number, min: number, max: number): number {
 
 function buildThresholdSkipReason(score: number, candidateThreshold: number): string {
   return `BELOW_CANDIDATE_THRESHOLD:${score.toFixed(2)}<${candidateThreshold}`;
-}
-
-export type SortPriorityTag =
-  | 'NEW'
-  | 'MATERIAL_CHANGE'
-  | 'WALLET_SIGNAL'
-  | 'RELATED_CONTRADICTION'
-  | 'APLUS_SCORE'
-  | 'REFRESHED_ONLY';
-
-function mapReprocessReasonToTag(reason: ReprocessReason | string): SortPriorityTag {
-  if (reason === 'new_candidate') return 'NEW';
-  if (reason === 'price_move_3pct' || reason === 'liquidity_change_25pct' || reason === 'spread_improve_30pct') return 'MATERIAL_CHANGE';
-  if (reason === 'wallet_signal_new') return 'WALLET_SIGNAL';
-  if (reason === 'related_contradiction') return 'RELATED_CONTRADICTION';
-  return 'APLUS_SCORE';
-}
-
-function computeSortPriority(tag: SortPriorityTag): number {
-  const map: Record<SortPriorityTag, number> = {
-    NEW: 0,
-    MATERIAL_CHANGE: 1,
-    WALLET_SIGNAL: 2,
-    RELATED_CONTRADICTION: 3,
-    APLUS_SCORE: 4,
-    REFRESHED_ONLY: 5,
-  };
-  return map[tag];
 }
 
 function computeResolutionClarity(market: {
@@ -141,7 +113,7 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         venue: { in: enabledVenues },
         ...(enabledCategories.length > 0 ? { category: { in: enabledCategories } } : {}),
       },
-      orderBy: [{ lastSeenAt: 'desc' }, { id: 'desc' }],
+      orderBy: { id: 'desc' },
       skip: processedMarketCount,
       take: Math.min(marketBatchSize, remaining),
       include: {
@@ -180,13 +152,25 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
 
     processedMarketCount += recentMarkets.length;
 
-    // Sort batch by reprocess priority: NEW → existing-active → terminal
+    // Sort batch by reprocess priority: NEW → MATERIAL_CHANGE → WALLET_SIGNAL → RELATED_CONTRADICTION → APLUS_SCORE → REFRESHED_ONLY → terminal
     recentMarkets.sort((a, b) => {
       const aCand = a.tradeCandidates[0] ?? null;
       const bCand = b.tradeCandidates[0] ?? null;
-      const aPri = aCand ? (['DECIDED', 'EXECUTED'].includes(aCand.stage) ? 3 : 2) : 0;
-      const bPri = bCand ? (['DECIDED', 'EXECUTED'].includes(bCand.stage) ? 3 : 2) : 0;
-      return aPri - bPri;
+      // Terminal candidates always last
+      const aTerminal = aCand ? (['DECIDED', 'EXECUTED'].includes(aCand.stage) ? 1 : 0) : 0;
+      const bTerminal = bCand ? (['DECIDED', 'EXECUTED'].includes(bCand.stage) ? 1 : 0) : 0;
+      if (aTerminal !== bTerminal) return aTerminal - bTerminal;
+      // New markets (no candidate) get top priority
+      if (!aCand && bCand) return -1;
+      if (aCand && !bCand) return 1;
+      if (!aCand && !bCand) return a.id.localeCompare(b.id);
+      // For existing candidates, quick heuristic: prioritize by stage freshness
+      // SCANNED/WATCHING before DECIDED/EXECUTED (terminal already handled)
+      const aStagePri = aCand.stage === 'SCANNED' ? 0 : aCand.stage === 'WATCHING' ? 1 : 2;
+      const bStagePri = bCand.stage === 'SCANNED' ? 0 : bCand.stage === 'WATCHING' ? 1 : 2;
+      if (aStagePri !== bStagePri) return aStagePri - bStagePri;
+      // Stable secondary sort
+      return a.id.localeCompare(b.id);
     });
 
     for (const market of recentMarkets) {
@@ -346,12 +330,8 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         now,
       });
 
-      const sortTag: SortPriorityTag = reprocessCheck.shouldReprocess
-        ? mapReprocessReasonToTag(reprocessCheck.reason)
-        : 'REFRESHED_ONLY';
-      const sortPriority = computeSortPriority(sortTag);
-
       const reprocessBlocked = !reprocessCheck.shouldReprocess;
+      const isTerminalCandidate = existingCandidate && ['DECIDED', 'EXECUTED'].includes(existingCandidate.stage);
 
       let effectiveSkip = dedupeDecision.skip;
       let effectiveSkipReason = dedupeDecision.reason;
@@ -456,6 +436,11 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
         });
         candidateId = createdCandidate.id;
         totalCandidatesCreated++;
+      } else if (isTerminalCandidate) {
+        // Never overwrite DECIDED/EXECUTED candidates — read-only pass
+        candidateId = existingCandidate.id;
+        totalCandidatesSkipped++;
+        continue;
       } else {
         await db.tradeCandidate.update({
           where: { marketId: market.id },
@@ -592,6 +577,10 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
       await db.paperBet.updateMany({
         where: { orderId: order.id },
         data: { executionStatus: 'EXPIRED' },
+      });
+      await db.tradeCandidate.updateMany({
+        where: { marketId: order.marketId },
+        data: { stage: 'EXECUTION_FAILED' },
       });
     }
   }

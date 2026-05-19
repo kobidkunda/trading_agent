@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   History,
   Play,
@@ -10,6 +10,10 @@ import {
   Clock,
   TrendingUp,
   TrendingDown,
+  Search,
+  ChevronUp,
+  ChevronDown,
+  Filter,
 } from 'lucide-react';
 import {
   Card,
@@ -19,6 +23,14 @@ import {
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   Table,
   TableBody,
@@ -29,6 +41,9 @@ import {
 } from '@/components/ui/table';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { usePagination } from '@/hooks/use-pagination';
+import { PaginationBar } from '@/components/trading/PaginationBar';
+import type { PaginationParams, PaginatedResponse } from '@/lib/types';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -121,34 +136,54 @@ function formatDuration(started: string, completed: string | null): string {
 
 // ── component ────────────────────────────────────────────────────────────────
 
+const BACKTEST_STATUSES = ['PENDING', 'RUNNING', 'COMPLETED', 'FAILED'] as const;
+
 export function BacktestsDashboard() {
-  const [runs, setRuns] = useState<BacktestRun[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [starting, setStarting] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const res = await fetch('/api/backtests');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!cancelled) {
-          setRuns(data.runs ?? data ?? []);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load backtests');
-          toast.error('Failed to load backtests');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, []);
+  const {
+    data: runs,
+    page,
+    limit,
+    total,
+    totalPages,
+    sortBy,
+    sortOrder,
+    loading,
+    error,
+    setPage,
+    setLimit,
+    setSort,
+    fetchData,
+  } = usePagination<BacktestRun>(
+    async (params: PaginationParams): Promise<PaginatedResponse<BacktestRun>> => {
+      const query = new URLSearchParams({
+        page: String(params.page),
+        limit: String(params.limit),
+        sortBy: params.sortBy || 'createdAt',
+        sortOrder: params.sortOrder || 'desc',
+      });
+      if (search.trim()) query.set('search', search.trim());
+      if (statusFilter !== 'ALL') query.set('status', statusFilter);
+      const res = await fetch(`/api/backtests?${query}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    [search, statusFilter],
+    { defaultSortBy: 'startedAt', defaultSortOrder: 'desc' },
+  );
+
+  const handleSort = (field: string) => {
+    const newOrder = sortBy === field && sortOrder === 'desc' ? 'asc' : 'desc';
+    setSort(field, newOrder);
+  };
+
+  const SortIcon = sortOrder === 'desc' ? ChevronDown : ChevronUp;
+
+  const startIndex = total === 0 ? 0 : (page - 1) * limit + 1;
+  const endIndex = Math.min(page * limit, total);
 
   const handleStartBacktest = async () => {
     setStarting(true);
@@ -163,12 +198,7 @@ export function BacktestsDashboard() {
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
       toast.success('Backtest started');
-      // Reload
-      const reloadRes = await fetch('/api/backtests');
-      if (reloadRes.ok) {
-        const data = await reloadRes.json();
-        setRuns(data.runs ?? data ?? []);
-      }
+      await fetchData();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to start backtest');
     } finally {
@@ -176,8 +206,29 @@ export function BacktestsDashboard() {
     }
   };
 
-  // ── loading ──
-  if (loading) {
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <h2 className="text-xl font-semibold text-white">Backtests</h2>
+        <Card className="border-red-500/30 bg-gray-900">
+          <CardContent className="flex flex-col items-center py-12">
+            <XCircle className="mb-3 h-10 w-10 text-red-400" />
+            <p className="text-sm text-red-400">{error}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4 border-gray-700 text-gray-300 hover:bg-gray-800"
+              onClick={() => window.location.reload()}
+            >
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (loading && runs.length === 0) {
     return (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
@@ -194,34 +245,8 @@ export function BacktestsDashboard() {
     );
   }
 
-  // ── error ──
-  if (error) {
-    return (
-      <div className="space-y-6">
-        <h2 className="text-xl font-semibold text-white">Backtests</h2>
-        <Card className="border-red-500/30 bg-gray-900">
-          <CardContent className="flex flex-col items-center py-12">
-            <XCircle className="mb-3 h-10 w-10 text-red-400" />
-            <p className="text-sm text-red-400">{error}</p>
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-4 border-gray-700 text-gray-300 hover:bg-gray-800"
-              onClick={() => { setError(null); setLoading(true); window.location.reload(); }}
-            >
-              Retry
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  // ── stats ──
-  const totalRuns = runs.length;
   const completedRuns = runs.filter((r) => r.status === 'COMPLETED');
   const runningCount = runs.filter((r) => r.status === 'RUNNING').length;
-  const failedCount = runs.filter((r) => r.status === 'FAILED').length;
   const avgRoi = completedRuns.length > 0
     ? completedRuns.reduce((sum, r) => sum + r.roi, 0) / completedRuns.length
     : 0;
@@ -255,7 +280,7 @@ export function BacktestsDashboard() {
         <Card className="border-gray-800 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Total Runs</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{totalRuns}</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{total}</p>
           </CardContent>
         </Card>
         <Card className="border-emerald-500/20 bg-gray-900">
@@ -291,13 +316,40 @@ export function BacktestsDashboard() {
         </Card>
       </div>
 
+      {/* Filters */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+          <Input
+            placeholder="Search by name..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="border-gray-800 bg-gray-900 pl-10 text-sm text-white placeholder:text-gray-600"
+          />
+        </div>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="w-[180px] border-gray-800 bg-gray-900 text-sm text-gray-300">
+            <Filter className="mr-2 h-3.5 w-3.5 text-gray-500" />
+            <SelectValue placeholder="All Statuses" />
+          </SelectTrigger>
+          <SelectContent className="border-gray-800 bg-gray-900 text-gray-300">
+            <SelectItem value="ALL">All Statuses</SelectItem>
+            {BACKTEST_STATUSES.map((s) => (
+              <SelectItem key={s} value={s}>{s.charAt(0) + s.slice(1).toLowerCase()}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
       {/* Backtest runs table */}
       <Card className="border-gray-800 bg-gray-900">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-sm text-white">
             <History className="h-4 w-4 text-emerald-400" />
             Backtest Runs
-            <span className="ml-1 text-xs font-normal text-gray-500">({totalRuns})</span>
+            <span className="ml-1 text-xs font-normal text-gray-500">
+              (Showing {startIndex}–{endIndex} of {total})
+            </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
@@ -310,82 +362,115 @@ export function BacktestsDashboard() {
               <p className="mt-1 text-[11px] text-gray-600">Click &quot;Run Backtest&quot; to start your first backtest.</p>
             </div>
           ) : (
-            <div className="max-h-[600px] overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-gray-800 hover:bg-transparent">
-                    <TableHead className="text-gray-500">Name</TableHead>
-                    <TableHead className="text-gray-500">Period</TableHead>
-                    <TableHead className="text-right text-gray-500">Bets</TableHead>
-                    <TableHead className="text-right text-gray-500">Win Rate</TableHead>
-                    <TableHead className="text-right text-gray-500">ROI</TableHead>
-                    <TableHead className="text-right text-gray-500">Brier</TableHead>
-                    <TableHead className="text-right text-gray-500">Drawdown</TableHead>
-                    <TableHead className="text-gray-500">Status</TableHead>
-                    <TableHead className="text-right text-gray-500">Duration</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {runs.map((r) => (
-                    <TableRow
-                      key={r.id}
-                      className={cn(
-                        'border-gray-800 transition-colors hover:bg-gray-800/50',
-                        r.status === 'RUNNING' && 'bg-emerald-500/5',
-                        r.status === 'FAILED' && 'bg-red-500/5'
-                      )}
-                    >
-                      <TableCell>
-                        <p className="text-xs font-medium text-gray-200">{r.name}</p>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-xs text-gray-400">{r.period}</span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-300">{r.totalBets.toLocaleString()}</span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className={cn(
-                          'text-xs font-medium tabular-nums',
-                          r.winRate >= 0.55 ? 'text-emerald-400' : r.winRate >= 0.50 ? 'text-amber-400' : 'text-red-400'
-                        )}>
-                          {formatPct(r.winRate)}
+            <>
+              <div className="max-h-[600px] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-gray-800 hover:bg-transparent">
+                      <TableHead className="cursor-pointer text-gray-500 hover:text-gray-300" onClick={() => handleSort('name')}>
+                        <span className="inline-flex items-center gap-1">
+                          Name {sortBy === 'name' && <SortIcon className="h-3 w-3" />}
                         </span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          {r.roi > 0 ? (
-                            <TrendingUp className="h-3 w-3 text-emerald-400" />
-                          ) : r.roi < 0 ? (
-                            <TrendingDown className="h-3 w-3 text-red-400" />
-                          ) : null}
-                          <span className={cn('text-xs font-medium tabular-nums', roiColor(r.roi))}>
-                            {formatPct(r.roi)}
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-400">{formatScore(r.brierScore)}</span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className={cn(
-                          'text-xs tabular-nums',
-                          Math.abs(r.drawdown) > 0.2 ? 'text-red-400' : Math.abs(r.drawdown) > 0.1 ? 'text-amber-400' : 'text-emerald-400'
-                        )}>
-                          {formatDrawdown(r.drawdown)}
+                      </TableHead>
+                      <TableHead className="text-gray-500">Period</TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('totalBets')}>
+                        <span className="inline-flex items-center gap-1">
+                          Bets {sortBy === 'totalBets' && <SortIcon className="h-3 w-3" />}
                         </span>
-                      </TableCell>
-                      <TableCell>{statusBadge(r.status)}</TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs text-gray-500">
-                          {formatDuration(r.startedAt, r.completedAt)}
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('winRate')}>
+                        <span className="inline-flex items-center gap-1">
+                          Win Rate {sortBy === 'winRate' && <SortIcon className="h-3 w-3" />}
                         </span>
-                      </TableCell>
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('roi')}>
+                        <span className="inline-flex items-center gap-1">
+                          ROI {sortBy === 'roi' && <SortIcon className="h-3 w-3" />}
+                        </span>
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('brierScore')}>
+                        <span className="inline-flex items-center gap-1">
+                          Brier {sortBy === 'brierScore' && <SortIcon className="h-3 w-3" />}
+                        </span>
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('drawdown')}>
+                        <span className="inline-flex items-center gap-1">
+                          Drawdown {sortBy === 'drawdown' && <SortIcon className="h-3 w-3" />}
+                        </span>
+                      </TableHead>
+                      <TableHead className="text-gray-500">Status</TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('startedAt')}>
+                        <span className="inline-flex items-center gap-1">
+                          Duration {sortBy === 'startedAt' && <SortIcon className="h-3 w-3" />}
+                        </span>
+                      </TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                  </TableHeader>
+                  <TableBody>
+                    {runs.map((r) => (
+                      <TableRow
+                        key={r.id}
+                        className={cn(
+                          'border-gray-800 transition-colors hover:bg-gray-800/50',
+                          r.status === 'RUNNING' && 'bg-emerald-500/5',
+                          r.status === 'FAILED' && 'bg-red-500/5'
+                        )}
+                      >
+                        <TableCell>
+                          <p className="text-xs font-medium text-gray-200">{r.name}</p>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-xs text-gray-400">{r.period}</span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-300">{r.totalBets.toLocaleString()}</span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className={cn(
+                            'text-xs font-medium tabular-nums',
+                            r.winRate >= 0.55 ? 'text-emerald-400' : r.winRate >= 0.50 ? 'text-amber-400' : 'text-red-400'
+                          )}>
+                            {formatPct(r.winRate)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            {r.roi > 0 ? (
+                              <TrendingUp className="h-3 w-3 text-emerald-400" />
+                            ) : r.roi < 0 ? (
+                              <TrendingDown className="h-3 w-3 text-red-400" />
+                            ) : null}
+                            <span className={cn('text-xs font-medium tabular-nums', roiColor(r.roi))}>
+                              {formatPct(r.roi)}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-400">{formatScore(r.brierScore)}</span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className={cn(
+                            'text-xs tabular-nums',
+                            Math.abs(r.drawdown) > 0.2 ? 'text-red-400' : Math.abs(r.drawdown) > 0.1 ? 'text-amber-400' : 'text-emerald-400'
+                          )}>
+                            {formatDrawdown(r.drawdown)}
+                          </span>
+                        </TableCell>
+                        <TableCell>{statusBadge(r.status)}</TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs text-gray-500">
+                            {formatDuration(r.startedAt, r.completedAt)}
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <div className="border-t border-gray-800 px-4 py-3">
+                <PaginationBar page={page} totalPages={totalPages} limit={limit} onPageChange={setPage} onLimitChange={setLimit} />
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

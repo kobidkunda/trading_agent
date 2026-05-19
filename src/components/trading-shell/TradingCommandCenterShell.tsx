@@ -30,6 +30,7 @@ import {
   SlidersHorizontal,
   Cpu,
   ClipboardList,
+  Wrench,
 } from 'lucide-react';
 import { useTradingStore } from '@/store/trading-store';
 import {
@@ -76,6 +77,7 @@ import { BacktestsDashboard } from '@/components/trading/BacktestsDashboard';
 import { StrategyOptimizerDashboard } from '@/components/trading/StrategyOptimizerDashboard';
 import { AppSettings } from '@/components/trading/AppSettings';
 import { LogsDashboard } from '@/components/trading/LogsDashboard';
+import { QdrantSetupWizard } from '@/components/trading/QdrantSetupWizard';
 
 interface NavItem {
   id: PageView;
@@ -111,6 +113,7 @@ const NAV_ICONS: Record<PageView, React.ElementType> = {
   map: Network,
   researchProvider: BookOpen,
   logs: ClipboardList,
+  qdrantWizard: Wrench,
 };
 
 const NAV_ITEMS: NavItem[] = TRADING_PAGES.map((page) => ({
@@ -426,9 +429,22 @@ function PageContent({ activePage }: { activePage: PageView }) {
       return <ResearchProvider />;
     case 'logs':
       return <LogsDashboard />;
+    case 'qdrantWizard':
+      return <QdrantSetupWizardWrapper />;
     default:
       return <SimulationLab />;
   }
+}
+
+function QdrantSetupWizardWrapper() {
+  const [open, setOpen] = useState(true);
+  return (
+    <QdrantSetupWizard
+      open={open}
+      onOpenChange={setOpen}
+      credentialId=""
+    />
+  );
 }
 
 export function TradingCommandCenterShell({ initialPage }: { initialPage: PageView }) {

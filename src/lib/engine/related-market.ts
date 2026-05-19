@@ -150,6 +150,8 @@ export type RelationshipType =
   | 'COLLECTIVELY_EXHAUSTIVE'
   | 'NESTED_THRESHOLD'
   | 'RANGE_BUCKET'
+  | 'TITLE_DUPLICATE'
+  | 'VENUE_DUPLICATE'
   | 'DUPLICATE'
   | 'UNRELATED';
 
@@ -159,6 +161,8 @@ export interface RelationshipResult {
   textSimilarity: number;
   confidence: number;
   reason: string;
+  /** True when TITLE_DUPLICATE spans different venues — set by scanRelatedMarkets post-classify */
+  crossVenueDuplicate?: boolean;
 }
 
 export type RelationshipSeverity = 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'BLOCK';
@@ -250,10 +254,10 @@ export function classifyRelationship(
     new Set(entitiesB.names),
   );
 
-  // DUPLICATE: very high text similarity
+  // TITLE_DUPLICATE: very high text similarity (venue-aware promotion to VENUE_DUPLICATE happens in scanRelatedMarkets)
   if (textSim > 0.90) {
     return {
-      type: 'DUPLICATE',
+      type: 'TITLE_DUPLICATE',
       entityOverlap,
       textSimilarity: textSim,
       confidence: Math.min(1, 0.8 + textSim * 0.2),
@@ -449,6 +453,8 @@ export function evaluateRelationship(
 
   switch (type) {
     case 'DUPLICATE':
+    case 'TITLE_DUPLICATE':
+    case 'VENUE_DUPLICATE':
     case 'SAME_OUTCOME':
       expectedRuleObj = { ...expectedRuleObj, rule: 'P(A) ≈ P(B)', direction: 'symmetric' };
       violationScore = Math.abs((probA ?? 0) - (probB ?? 0));
@@ -693,6 +699,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
       id: true,
       title: true,
       category: true,
+      venue: true,
       latestPrice: true,
       lastSeenAt: true,
     },
@@ -707,7 +714,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
   // ── Phase 1: Entity-filtered markets (up to 200) ──
   const entityOrs = buildEntityFilter(entitiesA, marketId);
 
-  let entityMarkets: { id: string; title: string; category: string; latestPrice: number | null; lastSeenAt: Date }[] = [];
+  let entityMarkets: { id: string; title: string; category: string; venue: string; latestPrice: number | null; lastSeenAt: Date }[] = [];
 
   if (entityOrs.length > 0) {
     entityMarkets = await db.market.findMany({
@@ -722,6 +729,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
         id: true,
         title: true,
         category: true,
+        venue: true,
         latestPrice: true,
         lastSeenAt: true,
       },
@@ -729,7 +737,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
   }
 
   // ── Phase 2: Fallback — recent-active (last 100) if entity filter yields too few ──
-  let recentMarkets: { id: string; title: string; category: string; latestPrice: number | null; lastSeenAt: Date }[] = [];
+  let recentMarkets: { id: string; title: string; category: string; venue: string; latestPrice: number | null; lastSeenAt: Date }[] = [];
 
   if (entityMarkets.length < MIN_ENTITY_CANDIDATES) {
     recentMarkets = await db.market.findMany({
@@ -743,6 +751,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
         id: true,
         title: true,
         category: true,
+        venue: true,
         latestPrice: true,
         lastSeenAt: true,
       },
@@ -751,7 +760,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
 
   // ── Phase 3: Combine & deduplicate by id ──
   const seen = new Set<string>();
-  const combined: { id: string; title: string; category: string; latestPrice: number | null; lastSeenAt: Date }[] = [];
+  const combined: { id: string; title: string; category: string; venue: string; latestPrice: number | null; lastSeenAt: Date }[] = [];
 
   for (const m of entityMarkets) {
     if (!seen.has(m.id)) {
@@ -782,6 +791,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
         id: true,
         title: true,
         category: true,
+        venue: true,
         latestPrice: true,
         lastSeenAt: true,
       },
@@ -866,10 +876,19 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
 
     if (relationship.type === 'UNRELATED') continue;
 
+    // ── Venue-aware relationship promotion ──
+    let relationshipType = relationship.type;
+    const crossVenueDuplicate = (
+      relationship.type === 'TITLE_DUPLICATE' && market.venue !== other.venue
+    );
+    if (relationship.type === 'TITLE_DUPLICATE' && market.venue === other.venue) {
+      relationshipType = 'VENUE_DUPLICATE';
+    }
+
     const sigSrcB = freshnessToSignalSource(other.lastSeenAt, other.latestPrice);
 
     const evaluation = evaluateRelationship(
-      relationship,
+      { ...relationship, type: relationshipType, crossVenueDuplicate },
       { impliedProb: market.latestPrice, signalSource: sigSrcA },
       { impliedProb: other.latestPrice, signalSource: sigSrcB },
     );
@@ -879,7 +898,7 @@ export async function scanRelatedMarkets(marketId: string): Promise<number> {
     // B_IMPLIES_A gets normalized to A_IMPLIES_B with swapped pair.
     // For all non-directional types, sort alphabetically for deterministic storage.
     let pair: [string, string];
-    let finalType = relationship.type;
+    let finalType = relationshipType;
     if (relationship.type === 'A_IMPLIES_B' || relationship.type === 'NESTED_THRESHOLD') {
       pair = [market.id, other.id];
     } else if (relationship.type === 'B_IMPLIES_A') {

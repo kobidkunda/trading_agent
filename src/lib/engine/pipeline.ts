@@ -1955,9 +1955,9 @@ export async function runExecuteStage(
         await db.tradeCandidate.update({
           where: { id: candidate.id },
           data: {
-            stage: 'EXECUTED',
-            cooldownUntil: computeNextEligibleAt(new Date(), 48),
-            lastExecutionAt: new Date(),
+            stage: 'EXECUTION_PENDING',
+            cooldownUntil: computeNextEligibleAt(new Date(), 24),
+            lastExecutionAt: new Date(), // NOTE: EXECUTION_PENDING — not terminal. Will become EXECUTED after fill via order-tracker.
           },
         });
       }

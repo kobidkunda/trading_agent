@@ -440,7 +440,9 @@ export type RelationshipType =
   | 'COLLECTIVELY_EXHAUSTIVE'
   | 'NESTED_THRESHOLD'
   | 'RANGE_BUCKET'
-  | 'DUPLICATE';
+  | 'TITLE_DUPLICATE'        // same market, different venue (cross-venue title overlap)
+  | 'VENUE_DUPLICATE'        // same venue, similar market titles
+  | 'DUPLICATE';             // deprecated — kept for compat with existing DB records
 
 export interface APlusSignalConfig {
   minCandidateScore: number;
@@ -663,4 +665,56 @@ function routePatternToRegex(pattern: string): RegExp {
     .replace(/\\\[id\\\]/g, '[^/]+')
     .replace(/\\\[name\\\]/g, '[^/]+');
   return new RegExp(`^${escaped}$`);
+}
+
+// ============ PAGINATION ============
+
+export interface PaginationParams {
+  page: number;
+  limit: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+  search?: string;
+}
+
+export interface PaginatedResponse<T> {
+  data: T[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export function parsePaginationParams(searchParams: URLSearchParams): PaginationParams {
+  return {
+    page: Math.max(1, parseInt(searchParams.get('page') ?? '1', 10)),
+    limit: Math.min(100, Math.max(1, parseInt(searchParams.get('limit') ?? '25', 10))),
+    sortBy: searchParams.get('sortBy') || undefined,
+    sortOrder: (searchParams.get('sortOrder') as 'asc' | 'desc') || 'desc',
+    search: searchParams.get('search') || undefined,
+  };
+}
+
+export function buildPaginatedResponse<T>(
+  data: T[],
+  total: number,
+  params: PaginationParams,
+): PaginatedResponse<T> {
+  return {
+    data,
+    total,
+    page: params.page,
+    limit: params.limit,
+    totalPages: Math.ceil(total / params.limit),
+  };
+}
+
+export function buildWhereSearch(searchParam: string | undefined, fields: string[]): Record<string, unknown> {
+  if (!searchParam) return {};
+  if (fields.length === 0) return {};
+  return {
+    OR: fields.map((field) => ({
+      [field]: { contains: searchParam },
+    })),
+  };
 }

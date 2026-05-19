@@ -1,19 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { orderbookEngine, type PriceLevel } from '@/lib/engine/orderbook-microstructure';
+import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const marketId = searchParams.get('marketId');
-    const limit = parseInt(searchParams.get('limit') || '1');
+    const pagination = parsePaginationParams(searchParams);
 
     if (!marketId) {
-      const snapshots = await db.orderbookSnapshot.findMany({
-        orderBy: { capturedAt: 'desc' },
-        take: Math.min(limit, 50),
-      });
-      return NextResponse.json({ snapshots, total: snapshots.length });
+      const [snapshots, total] = await Promise.all([
+        db.orderbookSnapshot.findMany({
+          orderBy: { capturedAt: 'desc' },
+          skip: (pagination.page - 1) * pagination.limit,
+          take: pagination.limit,
+        }),
+        db.orderbookSnapshot.count(),
+      ]);
+      return NextResponse.json(buildPaginatedResponse(snapshots, total, pagination));
     }
 
     const snapshot = await db.orderbookSnapshot.findFirst({

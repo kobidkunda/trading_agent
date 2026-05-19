@@ -1,23 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { Prisma } from '@prisma/client';
+import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
+    const pagination = parsePaginationParams(searchParams);
     const name = searchParams.get('name');
     const state = searchParams.get('state');
 
     const where: Prisma.PromptTemplateWhereInput = {};
     if (name) where.name = name;
     if (state) where.state = state;
+    if (pagination.search) {
+      where.OR = [
+        { name: { contains: pagination.search } },
+        { body: { contains: pagination.search } },
+      ];
+    }
 
-    const prompts = await db.promptTemplate.findMany({
-      where,
-      orderBy: [{ name: 'asc' }, { version: 'desc' }],
-    });
+    const orderBy: Prisma.PromptTemplateOrderByWithRelationInput[] = pagination.sortBy
+      ? [{ [pagination.sortBy]: pagination.sortOrder || 'desc' }]
+      : [{ name: 'asc' }, { version: 'desc' }];
 
-    return NextResponse.json({ prompts });
+    const [data, total] = await Promise.all([
+      db.promptTemplate.findMany({
+        where,
+        orderBy,
+        skip: (pagination.page - 1) * pagination.limit,
+        take: pagination.limit,
+      }),
+      db.promptTemplate.count({ where }),
+    ]);
+
+    return NextResponse.json(buildPaginatedResponse(data, total, pagination));
   } catch (error) {
     return NextResponse.json({ error: 'Failed to fetch prompt templates' }, { status: 500 });
   }

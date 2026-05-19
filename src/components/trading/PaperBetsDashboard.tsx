@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useState } from 'react';
 import {
   BarChart3,
   Search,
@@ -39,10 +39,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
-
-// ── types ────────────────────────────────────────────────────────────────────
+import { usePagination } from '@/hooks/use-pagination';
+import { PaginationBar } from '@/components/trading/PaginationBar';
+import type { PaginationParams, PaginatedResponse } from '@/lib/types';
 
 interface PaperBet {
   id: string;
@@ -61,20 +61,21 @@ interface PaperBet {
 }
 
 type SortField = 'edge' | 'confidence' | 'brierScore' | 'pnl' | 'createdAt';
-type SortDir = 'asc' | 'desc';
 
-function normalizeBetsPayload(payload: unknown): PaperBet[] {
-  if (Array.isArray(payload)) return payload as PaperBet[];
-  if (payload && typeof payload === 'object') {
-    const record = payload as { bets?: unknown; data?: unknown; results?: unknown };
-    if (Array.isArray(record.bets)) return record.bets as PaperBet[];
-    if (Array.isArray(record.data)) return record.data as PaperBet[];
-    if (Array.isArray(record.results)) return record.results as PaperBet[];
-  }
-  return [];
+function formatPct(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+function formatPnl(value: number | null): string {
+  if (value === null) return '\u2014';
+  const prefix = value >= 0 ? '+' : '';
+  return `${prefix}$${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+}
+
+function formatScore(value: number | null): string {
+  if (value === null) return '\u2014';
+  return value.toFixed(4);
+}
 
 function pnlColor(value: number | null): string {
   if (value === null) return 'text-gray-500';
@@ -88,21 +89,6 @@ function edgeColor(edge: number): string {
   if (edge >= 0.05) return 'text-cyan-400';
   if (edge >= 0) return 'text-amber-400';
   return 'text-red-400';
-}
-
-function formatPct(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
-}
-
-function formatPnl(value: number | null): string {
-  if (value === null) return '—';
-  const prefix = value >= 0 ? '+' : '';
-  return `${prefix}$${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
-}
-
-function formatScore(value: number | null): string {
-  if (value === null) return '—';
-  return value.toFixed(4);
 }
 
 function outcomeBadge(outcome: string | null) {
@@ -123,76 +109,52 @@ function typeBadge(type: string) {
   return <Badge className="border-amber-500/30 bg-amber-500/10 text-amber-400 text-[10px]">WATCH</Badge>;
 }
 
-// ── component ────────────────────────────────────────────────────────────────
-
 export function PaperBetsDashboard() {
-  const [bets, setBets] = useState<PaperBet[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
-  const [sortField, setSortField] = useState<SortField>('createdAt');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const res = await fetch('/api/paper-bets');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!cancelled) {
-          setBets(normalizeBetsPayload(data));
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load paper bets');
-          toast.error('Failed to load paper bets');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, []);
+  const {
+    data: bets,
+    page,
+    limit,
+    total,
+    totalPages,
+    loading,
+    error,
+    setPage,
+    setLimit,
+    setSort,
+    sortBy,
+    sortOrder,
+    fetchData,
+  } = usePagination<PaperBet>(
+    async (params: PaginationParams): Promise<PaginatedResponse<PaperBet>> => {
+      const query = new URLSearchParams({
+        page: String(params.page),
+        limit: String(params.limit),
+        sortBy: params.sortBy || 'createdAt',
+        sortOrder: params.sortOrder || 'desc',
+      });
+      if (search.trim()) query.set('search', search.trim());
+      if (typeFilter !== 'ALL') query.set('type', typeFilter);
+      const res = await fetch(`/api/paper-bets?${query}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = await res.json();
+      const list = Array.isArray(raw.data) ? raw.data : (Array.isArray(raw.bets) ? raw.bets : (Array.isArray(raw.results) ? raw.results : (Array.isArray(raw) ? raw : [])));
+      return { ...raw, data: list };
+    },
+    [search, typeFilter],
+  );
 
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
-    } else {
-      setSortField(field);
-      setSortDir('desc');
-    }
-  };
+  function handleSort(field: SortField) {
+    const dir = sortBy === field && sortOrder === 'desc' ? 'asc' : 'desc';
+    setSort(field, dir);
+  }
 
-  const filtered = useMemo(() => {
-    let list = bets;
-    if (typeFilter !== 'ALL') {
-      list = list.filter((b) => b.predictionType === typeFilter);
-    }
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (b) =>
-          b.marketTitle?.toLowerCase().includes(q) ||
-          b.market?.toLowerCase().includes(q) ||
-          b.venue?.toLowerCase().includes(q)
-      );
-    }
-    return [...list].sort((a, b) => {
-      const av = a[sortField];
-      const bv = b[sortField];
-      if (av === null && bv === null) return 0;
-      if (av === null) return 1;
-      if (bv === null) return -1;
-      const aNum = typeof av === 'number' ? av : new Date(av).getTime();
-      const bNum = typeof bv === 'number' ? bv : new Date(bv).getTime();
-      return sortDir === 'desc' ? bNum - aNum : aNum - bNum;
-    });
-  }, [bets, search, typeFilter, sortField, sortDir]);
-
-  const SortIcon = sortDir === 'desc' ? ChevronDown : ChevronUp;
+  function SortIcon({ field }: { field: SortField }) {
+    if (sortBy !== field) return <ChevronDown className="ml-1 h-3 w-3 text-gray-600" />;
+    return sortOrder === 'desc' ? <ChevronDown className="ml-1 h-3 w-3" /> : <ChevronUp className="ml-1 h-3 w-3" />;
+  }
 
   // ── loading ──
   if (loading) {
@@ -222,7 +184,7 @@ export function PaperBetsDashboard() {
               variant="outline"
               size="sm"
               className="mt-4 border-gray-700 text-gray-300 hover:bg-gray-800"
-              onClick={() => { setError(null); setLoading(true); window.location.reload(); }}
+              onClick={() => { fetchData(); }}
             >
               Retry
             </Button>
@@ -233,7 +195,6 @@ export function PaperBetsDashboard() {
   }
 
   // ── stats ──
-  const totalBets = bets.length;
   const settledBets = bets.filter((b) => b.actualOutcome !== null);
   const winCount = settledBets.filter((b) => b.actualOutcome === 'WIN').length;
   const winRate = settledBets.length > 0 ? winCount / settledBets.length : 0;
@@ -241,7 +202,6 @@ export function PaperBetsDashboard() {
   const avgBrier = bets.length > 0
     ? bets.reduce((sum, b) => sum + (b.brierScore ?? 0), 0) / Math.max(1, bets.filter((b) => b.brierScore !== null).length)
     : 0;
-  const positiveEdgeCount = bets.filter((b) => b.edge > 0).length;
 
   return (
     <div className="space-y-6">
@@ -249,7 +209,7 @@ export function PaperBetsDashboard() {
       <div>
         <h2 className="text-xl font-semibold text-white">Paper Bets</h2>
         <p className="mt-1 text-sm text-gray-500">
-          Paper trading bet history with probability calibration and P&L tracking
+          Paper trading bet history with probability calibration and P&amp;L tracking
         </p>
       </div>
 
@@ -258,14 +218,14 @@ export function PaperBetsDashboard() {
         <Card className="border-gray-800 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Total Bets</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{totalBets}</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{total}</p>
           </CardContent>
         </Card>
         <Card className="border-emerald-500/20 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Win Rate</p>
             <p className="mt-1 text-2xl font-bold tabular-nums text-emerald-400">
-              {settledBets.length > 0 ? formatPct(winRate) : '—'}
+              {settledBets.length > 0 ? formatPct(winRate) : '\u2014'}
             </p>
           </CardContent>
         </Card>
@@ -274,7 +234,7 @@ export function PaperBetsDashboard() {
           totalPnl >= 0 ? 'border-emerald-500/20' : 'border-red-500/20'
         )}>
           <CardContent className="p-4">
-            <p className="text-xs text-gray-500">Total P&L</p>
+            <p className="text-xs text-gray-500">Total P&amp;L</p>
             <p className={cn('mt-1 text-2xl font-bold tabular-nums', pnlColor(totalPnl))}>
               {formatPnl(totalPnl)}
             </p>
@@ -284,7 +244,7 @@ export function PaperBetsDashboard() {
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Avg Brier</p>
             <p className="mt-1 text-2xl font-bold tabular-nums text-cyan-400">
-              {bets.some((b) => b.brierScore !== null) ? avgBrier.toFixed(4) : '—'}
+              {bets.some((b) => b.brierScore !== null) ? avgBrier.toFixed(4) : '\u2014'}
             </p>
           </CardContent>
         </Card>
@@ -321,12 +281,12 @@ export function PaperBetsDashboard() {
             <BarChart3 className="h-4 w-4 text-emerald-400" />
             Paper Bet History
             <span className="ml-1 text-xs font-normal text-gray-500">
-              ({filtered.length} of {totalBets})
+              ({total})
             </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          {filtered.length === 0 ? (
+          {bets.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-gray-800">
                 <BarChart3 className="h-6 w-6 text-gray-500" />
@@ -339,88 +299,96 @@ export function PaperBetsDashboard() {
               </p>
             </div>
           ) : (
-            <div className="max-h-[600px] overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-gray-800 hover:bg-transparent">
-                    <TableHead className="text-gray-500">Market</TableHead>
-                    <TableHead className="text-gray-500">Type</TableHead>
-                    <TableHead className="text-right text-gray-500">Predicted</TableHead>
-                    <TableHead className="text-right text-gray-500">Implied</TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('edge')}>
-                      <span className="inline-flex items-center gap-1">
-                        Edge {sortField === 'edge' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('confidence')}>
-                      <span className="inline-flex items-center gap-1">
-                        Conf {sortField === 'confidence' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('brierScore')}>
-                      <span className="inline-flex items-center gap-1">
-                        Brier {sortField === 'brierScore' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('pnl')}>
-                      <span className="inline-flex items-center gap-1">
-                        P&L {sortField === 'pnl' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="text-right text-gray-500">Outcome</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map((b) => (
-                    <TableRow
-                      key={b.id}
-                      className={cn(
-                        'border-gray-800 transition-colors hover:bg-gray-800/50',
-                        b.actualOutcome === 'WIN' && 'bg-emerald-500/5',
-                        b.actualOutcome === 'LOSS' && 'bg-red-500/5'
-                      )}
-                    >
-                      <TableCell>
-                        <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
-                          {b.marketTitle || b.market}
-                        </p>
-                      </TableCell>
-                      <TableCell>{typeBadge(b.predictionType)}</TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-300">{formatPct(b.predictedProb)}</span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-500">{formatPct(b.impliedProb)}</span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          {b.edge > 0 ? (
-                            <TrendingUp className="h-3 w-3 text-emerald-400" />
-                          ) : (
-                            <TrendingDown className="h-3 w-3 text-red-400" />
-                          )}
-                          <span className={cn('text-xs font-medium tabular-nums', edgeColor(b.edge))}>
-                            {b.edge >= 0 ? '+' : ''}{formatPct(b.edge)}
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-300">{formatPct(b.confidence)}</span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-400">{formatScore(b.brierScore)}</span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className={cn('text-xs font-medium tabular-nums', pnlColor(b.pnl))}>
-                          {formatPnl(b.pnl)}
+            <>
+              <p className="px-6 pb-2 text-xs text-gray-600">
+                Showing {((page - 1) * limit) + 1}\u2013{Math.min(page * limit, total)} of {total}
+              </p>
+              <div className="max-h-[600px] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-gray-800 hover:bg-transparent">
+                      <TableHead className="text-gray-500">Market</TableHead>
+                      <TableHead className="text-gray-500">Type</TableHead>
+                      <TableHead className="text-right text-gray-500">Predicted</TableHead>
+                      <TableHead className="text-right text-gray-500">Implied</TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('edge')}>
+                        <span className="inline-flex items-center gap-1">
+                          Edge <SortIcon field="edge" />
                         </span>
-                      </TableCell>
-                      <TableCell className="text-right">{outcomeBadge(b.actualOutcome)}</TableCell>
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('confidence')}>
+                        <span className="inline-flex items-center gap-1">
+                          Conf <SortIcon field="confidence" />
+                        </span>
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('brierScore')}>
+                        <span className="inline-flex items-center gap-1">
+                          Brier <SortIcon field="brierScore" />
+                        </span>
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('pnl')}>
+                        <span className="inline-flex items-center gap-1">
+                          P&amp;L <SortIcon field="pnl" />
+                        </span>
+                      </TableHead>
+                      <TableHead className="text-right text-gray-500">Outcome</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                  </TableHeader>
+                  <TableBody>
+                    {bets.map((b) => (
+                      <TableRow
+                        key={b.id}
+                        className={cn(
+                          'border-gray-800 transition-colors hover:bg-gray-800/50',
+                          b.actualOutcome === 'WIN' && 'bg-emerald-500/5',
+                          b.actualOutcome === 'LOSS' && 'bg-red-500/5'
+                        )}
+                      >
+                        <TableCell>
+                          <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
+                            {b.marketTitle || b.market}
+                          </p>
+                        </TableCell>
+                        <TableCell>{typeBadge(b.predictionType)}</TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-300">{formatPct(b.predictedProb)}</span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-500">{formatPct(b.impliedProb)}</span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            {b.edge > 0 ? (
+                              <TrendingUp className="h-3 w-3 text-emerald-400" />
+                            ) : (
+                              <TrendingDown className="h-3 w-3 text-red-400" />
+                            )}
+                            <span className={cn('text-xs font-medium tabular-nums', edgeColor(b.edge))}>
+                              {b.edge >= 0 ? '+' : ''}{formatPct(b.edge)}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-300">{formatPct(b.confidence)}</span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-400">{formatScore(b.brierScore)}</span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className={cn('text-xs font-medium tabular-nums', pnlColor(b.pnl))}>
+                            {formatPnl(b.pnl)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">{outcomeBadge(b.actualOutcome)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <div className="border-t border-gray-800 px-6 py-4">
+                <PaginationBar page={page} totalPages={totalPages} limit={limit} onPageChange={setPage} onLimitChange={setLimit} />
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

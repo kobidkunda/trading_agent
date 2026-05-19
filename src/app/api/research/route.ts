@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { Prisma } from '@prisma/client';
 import { buildStageTransparencyRecord } from '@/lib/engine/research/transparency';
+import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
 import type { TransparencyStageRecord } from '@/lib/types';
 
 interface ResearchRunWithRelations {
@@ -192,32 +193,39 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const marketId = searchParams.get('marketId');
     const status = searchParams.get('status');
-    const limit = parseInt(searchParams.get('limit') || '50');
-    const offset = parseInt(searchParams.get('offset') || '0');
+    const pagination = parsePaginationParams(searchParams);
 
     const where: Prisma.ResearchRunWhereInput = {};
     if (marketId) where.marketId = marketId;
     if (status) where.status = status;
+    if (pagination.search) {
+      where.market = { title: { contains: pagination.search } };
+    }
 
-    const researchRuns = await db.researchRun.findMany({
-      where,
-      include: {
-        market: { select: { id: true, title: true, venue: true, category: true } },
-        candidate: { select: { id: true, stage: true, triageStatus: true } },
-        sources: { orderBy: { extractedAt: 'desc' } },
-        agentOutputs: { orderBy: { createdAt: 'asc' } },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      skip: offset,
-    });
+    const orderBy: Prisma.ResearchRunOrderByWithRelationInput[] = pagination.sortBy
+      ? [{ [pagination.sortBy]: pagination.sortOrder || 'desc' }]
+      : [{ createdAt: 'desc' }];
 
-    const total = await db.researchRun.count({ where });
+    const [researchRuns, total] = await Promise.all([
+      db.researchRun.findMany({
+        where,
+        include: {
+          market: { select: { id: true, title: true, venue: true, category: true } },
+          candidate: { select: { id: true, stage: true, triageStatus: true } },
+          sources: { orderBy: { extractedAt: 'desc' } },
+          agentOutputs: { orderBy: { createdAt: 'asc' } },
+        },
+        orderBy,
+        skip: (pagination.page - 1) * pagination.limit,
+        take: pagination.limit,
+      }),
+      db.researchRun.count({ where }),
+    ]);
 
     // Map runs to include transparency stages and source provenance
     const mappedRuns = (researchRuns as unknown as ResearchRunWithRelations[]).map(mapResearchRun);
 
-    return NextResponse.json({ researchRuns: mappedRuns, total, limit, offset });
+    return NextResponse.json(buildPaginatedResponse(mappedRuns, total, pagination));
   } catch (error) {
     console.error('[Research API] GET error:', error);
     return NextResponse.json({ error: 'Failed to fetch research runs' }, { status: 500 });

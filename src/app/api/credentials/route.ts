@@ -2,29 +2,50 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { encrypt, isEncrypted } from '@/lib/engine/crypto';
 import { enforceRoutePermission } from '@/lib/engine/auth';
+import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
+import { Prisma } from '@prisma/client';
 
 export async function GET(request: NextRequest) {
   const denied = enforceRoutePermission(request, '/api/credentials', 'GET');
   if (denied) return denied;
   try {
-    const credentials = await db.credential.findMany({
-      orderBy: { createdAt: 'desc' },
-      select: {
-        id: true,
-        service: true,
-        label: true,
-        maskedPreview: true,
-        serviceUrl: true,
-        isActive: true,
-        lastTestedAt: true,
-        testResult: true,
-        testDetails: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
+    const { searchParams } = new URL(request.url);
+    const pagination = parsePaginationParams(searchParams);
 
-    return NextResponse.json({ credentials });
+    const where: Prisma.CredentialWhereInput = {};
+    if (pagination.search) {
+      where.OR = [
+        { service: { contains: pagination.search } },
+        { label: { contains: pagination.search } },
+      ];
+    }
+
+    const [data, total] = await Promise.all([
+      db.credential.findMany({
+        where,
+        orderBy: pagination.sortBy
+          ? { [pagination.sortBy]: pagination.sortOrder || 'desc' }
+          : { createdAt: 'desc' },
+        skip: (pagination.page - 1) * pagination.limit,
+        take: pagination.limit,
+        select: {
+          id: true,
+          service: true,
+          label: true,
+          maskedPreview: true,
+          serviceUrl: true,
+          isActive: true,
+          lastTestedAt: true,
+          testResult: true,
+          testDetails: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      db.credential.count({ where }),
+    ]);
+
+    return NextResponse.json(buildPaginatedResponse(data, total, pagination));
   } catch (error) {
     return NextResponse.json({ error: 'Failed to fetch credentials' }, { status: 500 });
   }

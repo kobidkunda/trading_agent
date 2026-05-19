@@ -1,11 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { Prisma } from '@prisma/client';
+import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
 
-export async function GET() {
-  const configs = await db.strategyConfigVersion.findMany({
-    orderBy: { version: 'desc' },
-  });
-  return NextResponse.json(configs);
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const pagination = parsePaginationParams(searchParams);
+
+    const where: Prisma.StrategyConfigVersionWhereInput = {};
+    if (pagination.search) {
+      where.OR = [
+        { name: { contains: pagination.search } },
+        { status: { contains: pagination.search } },
+        { notes: { contains: pagination.search } },
+      ];
+    }
+
+    const [data, total] = await Promise.all([
+      db.strategyConfigVersion.findMany({
+        where,
+        orderBy: { [pagination.sortBy || 'createdAt']: pagination.sortOrder || 'desc' },
+        skip: (pagination.page - 1) * pagination.limit,
+        take: pagination.limit,
+      }),
+      db.strategyConfigVersion.count({ where }),
+    ]);
+
+    return NextResponse.json(buildPaginatedResponse(data, total, pagination));
+  } catch (error) {
+    return NextResponse.json({ error: 'Failed to fetch strategy configs' }, { status: 500 });
+  }
 }
 
 export async function POST(req: NextRequest) {

@@ -55,6 +55,12 @@ interface PolymarketFetchResult {
     fillProbability?: number;
     spreadSource: SpreadSource;
     tokenId?: string | null;
+    yesTokenId?: string | null;
+    noTokenId?: string | null;
+    noBestBid?: number;
+    noBestAsk?: number;
+    noBidDepth?: number;
+    noAskDepth?: number;
     rawOrderbookJson?: string | null;
     resolutionTime?: string | null;
   }>;
@@ -254,9 +260,13 @@ export async function getPolymarketMarkets(options: VenueScanOptions = {}): Prom
     const resultMarkets = await Promise.all(markets.map(async (m: Record<string, unknown>) => {
       const tokens = (m.tokens || []) as Array<Record<string, unknown>>;
       const yesToken = tokens.find((t) => t.outcome === 'Yes') || tokens[0];
+      const noToken = tokens.find((t) => t.outcome === 'No');
       const price = typeof yesToken?.price === 'number' ? yesToken.price : 0.5;
       const tokenId = typeof yesToken?.token_id === 'string' ? yesToken.token_id : null;
+      const noTokenId = typeof noToken?.token_id === 'string' ? noToken.token_id : null;
+
       const orderbook = tokenId ? await getPolymarketOrderbook(tokenId, 1000, timeoutMs) : null;
+      const noOrderbook = noTokenId ? await getPolymarketOrderbook(noTokenId, 1000, timeoutMs) : null;
 
       const rawBestBid = orderbook?.bestBid ?? (typeof m.bestBid === 'number' ? m.bestBid : null);
       const rawBestAsk = orderbook?.bestAsk ?? (typeof m.bestAsk === 'number' ? m.bestAsk : null);
@@ -281,6 +291,12 @@ export async function getPolymarketMarkets(options: VenueScanOptions = {}): Prom
           ? 'REAL_ORDERBOOK'
           : 'ESTIMATED';
 
+      const noHasRealSpread =
+        noOrderbook?.spreadSource === 'REAL_ORDERBOOK' &&
+        noOrderbook.bestBid != null &&
+        noOrderbook.bestAsk != null &&
+        noOrderbook.bestBid < noOrderbook.bestAsk;
+
       return {
         externalId: String(m.condition_id || m.id || ''),
         title: String(m.question || m.title || ''),
@@ -300,6 +316,12 @@ export async function getPolymarketMarkets(options: VenueScanOptions = {}): Prom
         fillProbability: fillProbability ?? undefined,
         spreadSource,
         tokenId,
+        yesTokenId: tokenId,
+        noTokenId,
+        noBestBid: noHasRealSpread ? noOrderbook!.bestBid! : undefined,
+        noBestAsk: noHasRealSpread ? noOrderbook!.bestAsk! : undefined,
+        noBidDepth: (noOrderbook?.bidDepth ?? null) as number | undefined,
+        noAskDepth: (noOrderbook?.askDepth ?? null) as number | undefined,
         rawOrderbookJson: orderbook?.rawOrderbookJson ?? null,
         resolutionTime:
           typeof m.end_date_iso === 'string'

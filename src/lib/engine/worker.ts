@@ -571,10 +571,12 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       }
       const depth = resolveDepthFromType(jobType);
 
+      let result: Record<string, unknown>;
+
       if (jobId && depth === 'DEEP') {
         const drProgress = await loadDeepResearchProgress(jobId).catch(() => null);
         const resumePayload = drProgress ? { ...drProgress, jobId } : { jobId };
-        const result = await runResearchStage(marketId, depth, undefined, resumePayload) as unknown as Record<string, unknown>;
+        result = await runResearchStage(marketId, depth, undefined, resumePayload) as unknown as Record<string, unknown>;
         if (jobId) {
           await logStageTransition(marketId, {
             from: 'TRIAGED',
@@ -583,18 +585,30 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
             jobId,
           }).catch(() => {});
         }
-        return result;
+      } else {
+        if (jobId) {
+          await logStageTransition(marketId, {
+            from: 'TRIAGED',
+            to: 'RESEARCHING',
+            timestamp: new Date().toISOString(),
+            jobId,
+          }).catch(() => {});
+        }
+        result = await runResearchStage(marketId, depth) as unknown as Record<string, unknown>;
       }
 
-      if (jobId) {
-        await logStageTransition(marketId, {
-          from: 'TRIAGED',
-          to: 'RESEARCHING',
-          timestamp: new Date().toISOString(),
-          jobId,
-        }).catch(() => {});
+      // Chain: research complete → enqueue JUDGE
+      if (!result.skipped && result.researchRunId) {
+        await db.job.create({
+          data: {
+            type: 'JUDGE_MARKET',
+            status: 'PENDING',
+            priority: 8,
+            payload: JSON.stringify({ marketId, researchRunId: result.researchRunId }),
+          },
+        }).catch((err) => console.error('[Worker] Failed to enqueue JUDGE_MARKET:', err));
       }
-      return await runResearchStage(marketId, depth) as unknown as Record<string, unknown>;
+      return result;
     }
 
     case 'JUDGE_MARKET':
@@ -615,6 +629,26 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
           timestamp: new Date().toISOString(),
           jobId,
         }).catch(() => {});
+      }
+
+      // Chain: judge complete → enqueue RISK
+      if (!result.skipped) {
+        await db.job.create({
+          data: {
+            type: 'RISK_CHECK',
+            status: 'PENDING',
+            priority: 8,
+            payload: JSON.stringify({
+              marketId,
+              judgeProbability: result.judgeProbability as number ?? 0.5,
+              judgeConfidence: result.judgeConfidence as number ?? 0.5,
+              judgeUncertainty: result.judgeUncertainty as number ?? 0.3,
+              ensembleUncertaintyBoost: result.ensembleUncertaintyBoost as number ?? 0,
+              modelDisagreement: result.modelDisagreement as number ?? 0,
+              disagreementLevel: (result.disagreementLevel as string) ?? 'LOW',
+            }),
+          },
+        }).catch((err) => console.error('[Worker] Failed to enqueue RISK_CHECK:', err));
       }
       return result;
     }
@@ -645,6 +679,24 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
           timestamp: new Date().toISOString(),
           jobId,
         }).catch(() => {});
+      }
+
+      // Chain: risk passed with BID → enqueue EXECUTE
+      if (!result.skipped && result.riskAction === 'BID') {
+        await db.job.create({
+          data: {
+            type: 'PAPER_EXECUTE',
+            status: 'PENDING',
+            priority: 7,
+            payload: JSON.stringify({
+              marketId,
+              decisionId: result.decisionId as string,
+              judgeProbability: judge.judgeProbability,
+              judgeConfidence: judge.judgeConfidence,
+              judgeUncertainty: judge.judgeUncertainty,
+            }),
+          },
+        }).catch((err) => console.error('[Worker] Failed to enqueue PAPER_EXECUTE:', err));
       }
       return result;
     }
@@ -807,6 +859,7 @@ async function processOrderTracking(marketId?: string): Promise<Record<string, u
   });
 
   let tracked = 0;
+  let hasActiveOrders = false;
   for (const order of orders) {
     if (order.orderExpiryAt && order.orderExpiryAt < new Date()) {
       await db.order.update({
@@ -819,6 +872,10 @@ async function processOrderTracking(marketId?: string): Promise<Record<string, u
           fillAttemptCount: { increment: 1 },
         },
       });
+      await db.tradeCandidate.updateMany({
+        where: { marketId },
+        data: { stage: 'EXECUTION_FAILED' },
+      });
       tracked++;
       continue;
     }
@@ -829,15 +886,22 @@ async function processOrderTracking(marketId?: string): Promise<Record<string, u
     });
 
     if (terminalState) {
+      const newLifecycle = terminalState as any;
       await db.order.update({
         where: { id: order.id },
         data: {
-          lifecycleStatus: terminalState as any,
-          ...(terminalState === 'FILLED' ? { filledAt: new Date(), filledSize: order.size, remainingSize: 0 } : {}),
-          ...(terminalState === 'EXPIRED' ? { expiredAt: new Date() } : {}),
-          ...(terminalState === 'CANCELLED' ? { cancelledAt: new Date() } : {}),
+          lifecycleStatus: newLifecycle,
+          ...(newLifecycle === 'FILLED' ? { filledAt: new Date(), filledSize: order.size, remainingSize: 0 } : {}),
+          ...(newLifecycle === 'EXPIRED' ? { expiredAt: new Date() } : {}),
+          ...(newLifecycle === 'CANCELLED' ? { cancelledAt: new Date() } : {}),
         },
       });
+      if (newLifecycle === 'EXPIRED') {
+        await db.tradeCandidate.updateMany({
+          where: { marketId },
+          data: { stage: 'EXECUTION_FAILED' },
+        });
+      }
       tracked++;
       continue;
     }
@@ -854,6 +918,18 @@ async function processOrderTracking(marketId?: string): Promise<Record<string, u
       spread: latestOrderbook?.spread ?? marketSnapshot?.spread ?? null,
     });
     tracked++;
+    hasActiveOrders = true;
+  }
+
+  if (hasActiveOrders) {
+    await db.job.create({
+      data: {
+        type: 'ORDER_TRACK',
+        status: 'PENDING',
+        priority: 4,
+        payload: JSON.stringify({ marketId }),
+      },
+    }).catch((err) => console.error('[Worker] Failed to reschedule ORDER_TRACK:', err));
   }
 
   return { status: 'ORDER_TRACK_COMPLETED', marketId, ordersTracked: tracked };

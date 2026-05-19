@@ -4,16 +4,19 @@ import { Prisma } from '@prisma/client';
 import { getKalshiMarkets } from '@/lib/venues/kalshi';
 import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
 import { filterMarketsForMode } from '@/lib/engine/market-triage-mode-filter';
+import { runScanner } from '@/lib/engine/scanner';
+import { upsertScannedMarket } from '@/lib/engine/scanner-upsert';
+import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
+import type { ScannerMarketInput } from '@/lib/engine/scanner-upsert';
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
+    const pagination = parsePaginationParams(searchParams);
+
     const venue = searchParams.get('venue');
     const status = searchParams.get('status');
     const category = searchParams.get('category');
-    const search = searchParams.get('search');
-    const limit = parseInt(searchParams.get('limit') || '50');
-    const offset = parseInt(searchParams.get('offset') || '0');
     const onlyNew = searchParams.get('onlyNew') === 'true';
     const onlyChanged = searchParams.get('onlyChanged') === 'true';
     const onlyAPlus = searchParams.get('onlyAPlus') === 'true';
@@ -22,7 +25,10 @@ export async function GET(request: NextRequest) {
     const excludeRecentlyResearched = searchParams.get('excludeRecentlyResearched') === 'true';
     const minCandidateScore = parseInt(searchParams.get('minCandidateScore') || '0');
     const sortPriority = searchParams.get('sortPriority') === 'score';
-    const sortBy = searchParams.get('sortBy') || 'updatedAt';
+
+    // Use sortBy from pagination params; fall back to existing sortBy param for backward compat
+    const effectiveSortBy = searchParams.get('sortBy') || pagination.sortBy || 'updatedAt';
+    const effectiveSortOrder = (searchParams.get('sortOrder') as 'asc' | 'desc') || pagination.sortOrder || 'desc';
 
     const now = new Date();
     const freshThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -31,7 +37,13 @@ export async function GET(request: NextRequest) {
     if (venue) where.venue = venue;
     if (status) where.status = status;
     if (category) where.category = category;
-    if (search) where.title = { contains: search };
+    if (pagination.search) {
+      where.OR = [
+        { title: { contains: pagination.search } },
+        { category: { contains: pagination.search } },
+        { venue: { contains: pagination.search } },
+      ];
+    }
 
     // Build candidate-level filters
     const candidateWhere: Prisma.TradeCandidateWhereInput | undefined =
@@ -41,7 +53,6 @@ export async function GET(request: NextRequest) {
 
     if (candidateWhere) {
       if (onlyNew) {
-        // Markets with NO candidate (never processed) OR very recently first-seen AND no candidate yet
         if (candidateWhere.OR) {
           (candidateWhere.OR as Prisma.TradeCandidateWhereInput[]).push(
             { lastProcessedAt: null },
@@ -55,7 +66,6 @@ export async function GET(request: NextRequest) {
         }
       }
       if (onlyChanged) {
-        // Markets where reprocess reason is set AND not decided/executed
         if (candidateWhere.AND) {
           (candidateWhere.AND as Prisma.TradeCandidateWhereInput[]).push({
             reprocessReason: { not: null },
@@ -69,7 +79,6 @@ export async function GET(request: NextRequest) {
         }
       }
       if (onlyAPlus) {
-        // Score >= 90 AND not already decided/executed
         if (candidateWhere.AND) {
           (candidateWhere.AND as Prisma.TradeCandidateWhereInput[]).push({
             candidateScore: { gte: 90 },
@@ -133,9 +142,7 @@ export async function GET(request: NextRequest) {
       where.tradeCandidates = { some: candidateWhere };
     }
 
-    // Additional market-level filters (not candidate-dependent)
     if (onlyNew && !candidateWhere) {
-      // Fallback: markets with no candidate at all, firstSeen recently
       where.tradeCandidates = { none: {} };
       where.firstSeenAt = { gte: freshThreshold };
     }
@@ -152,28 +159,31 @@ export async function GET(request: NextRequest) {
       tradingMode: tradingModeSetting?.value ?? null,
     });
 
-    // Determine sort order — sortPriority=score overrides sortBy
+    // Determine sort order — sortPriority=score overrides pagination.sortBy
     let orderBy: Prisma.MarketOrderByWithRelationInput;
     if (sortPriority) {
       orderBy = { tradeCandidates: { _count: 'desc' } };
-    } else if (sortBy === 'score') {
+    } else if (effectiveSortBy === 'score' || effectiveSortBy === 'candidateScore') {
       orderBy = { tradeCandidates: { _count: 'desc' } };
-    } else if (sortBy === 'firstSeen') {
+    } else if (effectiveSortBy === 'firstSeen') {
       orderBy = { firstSeenAt: 'desc' };
     } else {
-      orderBy = { updatedAt: 'desc' };
+      orderBy = { updatedAt: effectiveSortOrder };
     }
 
-    const markets = await db.market.findMany({
-      where,
-      include: {
-        snapshots: { orderBy: { timestamp: 'desc' }, take: 1 },
-        tradeCandidates: { orderBy: { updatedAt: 'desc' }, take: 1 },
-      },
-      orderBy,
-      take: limit,
-      skip: offset,
-    });
+    const [markets, totalCount] = await Promise.all([
+      db.market.findMany({
+        where,
+        include: {
+          snapshots: { orderBy: { timestamp: 'desc' }, take: 1 },
+          tradeCandidates: { orderBy: { updatedAt: 'desc' }, take: 1 },
+        },
+        orderBy,
+        skip: (pagination.page - 1) * pagination.limit,
+        take: pagination.limit,
+      }),
+      db.market.count({ where }),
+    ]);
 
     const visibleMarkets = filterMarketsForMode(markets, tradingConfig.mode);
 
@@ -213,24 +223,10 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    return NextResponse.json({
-      markets: enrichedMarkets,
-      total: enrichedMarkets.length,
-      limit,
-      offset,
-      appliedFilters: {
-        onlyNew,
-        onlyChanged,
-        onlyAPlus,
-        excludeCooldown,
-        excludeExecuted,
-        excludeRecentlyResearched,
-        minCandidateScore,
-        sortPriority,
-        sortBy,
-      },
-    });
-  } catch (error) {
+    return NextResponse.json(
+      buildPaginatedResponse(enrichedMarkets, totalCount, pagination),
+    );
+  } catch {
     return NextResponse.json({ error: 'Failed to fetch markets' }, { status: 500 });
   }
 }
@@ -240,74 +236,77 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
 
     if (body.action === 'sync_kalshi') {
-      const kalshiResult = await getKalshiMarkets(); const kalshiMarkets = kalshiResult.markets;
-      
-      const created: string[] = [];
-      for (const market of kalshiMarkets) {
+      const scanResult = await runScanner(['KALSHI'], [], { suppressCandidateJobEnqueue: true });
+      const scanRunId = scanResult.scanRunId || 'manual-sync';
+
+      const kalshiResult = await getKalshiMarkets();
+      const kalshiMarkets = kalshiResult.markets;
+      let imported = 0;
+
+      for (const m of kalshiMarkets) {
         try {
-          const existing = await db.market.findFirst({
-            where: { externalId: market.ticker, venue: 'KALSHI' }
-          });
-
-          if (!existing) {
-            const createdMarket = await db.market.create({
-              data: {
-                externalId: market.ticker,
-                venue: 'KALSHI',
-                title: market.title,
-                description: market.subtitle || '',
-                category: market.category || 'other',
-                status: market.status === 'active' ? 'ACTIVE' : 'INACTIVE',
-                resolutionTime: new Date(market.close_time),
-              }
-            });
-            created.push(createdMarket.id);
-
-            await db.marketSnapshot.create({
-              data: {
-                marketId: createdMarket.id,
-                impliedProb: market.last_price / 100,
-                liquidity: market.volume,
-                spread: Math.max(0.01, (market.yes_ask - market.yes_bid) / 100),
-                volume24h: market.volume,
-                bestBid: market.yes_bid / 100,
-                bestAsk: market.yes_ask / 100,
-              }
-            });
-          } else {
-            await db.marketSnapshot.create({
-              data: {
-                marketId: existing.id,
-                impliedProb: market.last_price / 100,
-                liquidity: market.volume,
-                spread: Math.max(0.01, (market.yes_ask - market.yes_bid) / 100),
-                volume24h: market.volume,
-                bestBid: market.yes_bid / 100,
-                bestAsk: market.yes_ask / 100,
-              }
-            });
-          }
+          const scannerInput: ScannerMarketInput = {
+            externalId: m.ticker,
+            title: m.title,
+            description: m.subtitle || '',
+            category: m.category || 'other',
+            venue: 'KALSHI',
+            status: m.status === 'active' ? 'ACTIVE' : 'INACTIVE',
+            impliedProb: m.last_price / 100,
+            liquidity: m.volume,
+            spread: Math.max(0.01, (m.yes_ask - m.yes_bid) / 100),
+            volume24h: m.volume,
+            bestBid: m.yes_bid / 100,
+            bestAsk: m.yes_ask / 100,
+            resolutionTime: m.close_time ? new Date(m.close_time) : null,
+            dataSource: 'REAL',
+          };
+          const result = await upsertScannedMarket({ market: scannerInput, scanRunId: scanRunId as string });
+          if (result.created) imported++;
         } catch (e) {
-          console.error('Failed to import Kalshi market', market.ticker, e);
+          console.error('Failed to import Kalshi market', m.ticker, e);
         }
       }
 
-      return NextResponse.json({ imported: created.length, total: kalshiMarkets.length });
+      return NextResponse.json({ imported, total: kalshiMarkets.length });
     }
 
-    const market = await db.market.create({
+    const scanRun = await db.scanRun.create({
       data: {
-        externalId: body.externalId,
-        venue: body.venue,
-        title: body.title,
-        description: body.description || '',
-        category: body.category || 'other',
-        status: body.status || 'ACTIVE',
-        resolutionTime: body.resolutionTime ? new Date(body.resolutionTime) : null,
+        venue: body.venue || 'POLYMARKET',
+        status: 'COMPLETED' as const,
+        mode: 'PAPER',
+        startedAt: new Date(),
+        finishedAt: new Date(),
       },
     });
-    return NextResponse.json(market, { status: 201 });
-  } catch (error) {
+
+    const scannerInput: ScannerMarketInput = {
+      externalId: body.externalId,
+      title: body.title,
+      description: body.description || '',
+      category: body.category || 'other',
+      venue: body.venue || 'POLYMARKET',
+      status: body.status || 'ACTIVE',
+      impliedProb: body.impliedProb ?? 0.5,
+      liquidity: body.liquidity ?? 0,
+      spread: body.spread ?? 0.05,
+      volume24h: body.volume24h ?? 0,
+      resolutionTime: body.resolutionTime ? new Date(body.resolutionTime) : null,
+      dataSource: body.dataSource || 'REAL',
+    };
+
+    const result = await upsertScannedMarket({
+      market: scannerInput,
+      scanRunId: scanRun.id,
+    });
+
+    const market = await db.market.findFirst({
+      where: { externalId: body.externalId, venue: body.venue || 'POLYMARKET' },
+    });
+
+    return NextResponse.json({ market, created: result.created, updated: result.updated }, { status: result.created ? 201 : 200 });
+  } catch {
     return NextResponse.json({ error: 'Failed to create market' }, { status: 500 });
   }
 }

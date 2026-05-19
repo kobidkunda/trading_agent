@@ -11,7 +11,15 @@ function normalizeRole(value: string | null | undefined): UserRole | null {
 
 function isLocalhost(request: Request): boolean {
   const host = request.headers.get('host')?.toLowerCase() ?? '';
-  return host.includes('localhost') || host.startsWith('127.0.0.1') || host.startsWith('[::1]');
+  // Allow localhost, loopback, and LAN IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+  const isPrivate =
+    host.includes('localhost') ||
+    host.startsWith('127.0.0.1') ||
+    host.startsWith('[::1]') ||
+    /^192\.168\.\d+\.\d+/.test(host) ||
+    /^10\.\d+\.\d+\.\d+/.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+/.test(host);
+  return isPrivate;
 }
 
 /**

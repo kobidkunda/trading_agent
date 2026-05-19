@@ -1,11 +1,10 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useState } from 'react';
 import {
   GitCompare,
   AlertTriangle,
   Search,
-  Loader2,
   XCircle,
   Filter,
   ChevronUp,
@@ -35,8 +34,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { usePagination } from '@/hooks/use-pagination';
+import { PaginationBar } from '@/components/trading/PaginationBar';
+import type { PaginationParams, PaginatedResponse } from '@/lib/types';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -50,9 +51,6 @@ interface RelatedMarketPair {
   alertText: string | null;
   detectedAt: string;
 }
-
-type SortField = 'contradictionScore' | 'priceInconsistency' | 'detectedAt';
-type SortDir = 'asc' | 'desc';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -90,94 +88,54 @@ function formatScore(value: number | null): string {
   return value.toFixed(3);
 }
 
+const RELATIONSHIP_TYPES = ['CORRELATED', 'CONTRADICTORY', 'NEGATED', 'PARENT_CHILD', 'SAME_EVENT', 'ARBITRAGEABLE'] as const;
+
 // ── component ────────────────────────────────────────────────────────────────
 
 export function RelatedMarketsDashboard() {
-  const [pairs, setPairs] = useState<RelatedMarketPair[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [relFilter, setRelFilter] = useState<string>('ALL');
-  const [sortField, setSortField] = useState<SortField>('contradictionScore');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const res = await fetch('/api/related-markets');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!cancelled) {
-          setPairs(data.pairs ?? data ?? []);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load related markets');
-          toast.error('Failed to load related markets');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, []);
+  const {
+    data: pairs,
+    page,
+    limit,
+    total,
+    totalPages,
+    sortBy,
+    sortOrder,
+    loading,
+    error,
+    setPage,
+    setLimit,
+    setSort,
+  } = usePagination<RelatedMarketPair>(
+    async (params: PaginationParams): Promise<PaginatedResponse<RelatedMarketPair>> => {
+      const query = new URLSearchParams({
+        page: String(params.page),
+        limit: String(params.limit),
+        sortBy: params.sortBy || 'contradictionScore',
+        sortOrder: params.sortOrder || 'desc',
+      });
+      if (search.trim()) query.set('search', search.trim());
+      if (relFilter !== 'ALL') query.set('relationshipType', relFilter);
+      const res = await fetch(`/api/related-markets?${query}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    [search, relFilter],
+    { defaultSortBy: 'contradictionScore', defaultSortOrder: 'desc' },
+  );
 
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
-    } else {
-      setSortField(field);
-      setSortDir('desc');
-    }
+  const handleSort = (field: string) => {
+    const newOrder = sortBy === field && sortOrder === 'desc' ? 'asc' : 'desc';
+    setSort(field, newOrder);
   };
 
-  const relationshipTypes = useMemo(() => {
-    const set = new Set(pairs.map((p) => p.relationshipType));
-    return Array.from(set).sort();
-  }, [pairs]);
+  const SortIcon = sortOrder === 'desc' ? ChevronDown : ChevronUp;
 
-  const filtered = useMemo(() => {
-    let list = pairs;
-    if (relFilter !== 'ALL') {
-      list = list.filter((p) => p.relationshipType === relFilter);
-    }
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (p) =>
-          p.marketA.title?.toLowerCase().includes(q) ||
-          p.marketB.title?.toLowerCase().includes(q) ||
-          p.marketA.venue?.toLowerCase().includes(q) ||
-          p.marketB.venue?.toLowerCase().includes(q)
-      );
-    }
-    return list.sort((a, b) => {
-      const av = a[sortField];
-      const bv = b[sortField];
-      const aNum = av === null ? -Infinity : (typeof av === 'number' ? av : new Date(av as string).getTime());
-      const bNum = bv === null ? -Infinity : (typeof bv === 'number' ? bv : new Date(bv as string).getTime());
-      return sortDir === 'desc' ? bNum - aNum : aNum - bNum;
-    });
-  }, [pairs, search, relFilter, sortField, sortDir]);
-
-  const SortIcon = sortDir === 'desc' ? ChevronDown : ChevronUp;
-
-  // ── loading ──
-  if (loading) {
-    return (
-      <div className="space-y-6">
-        <div className="h-8 w-56 animate-pulse rounded bg-gray-800" />
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-20 animate-pulse rounded-xl bg-gray-900" />
-          ))}
-        </div>
-        <div className="h-96 animate-pulse rounded-xl bg-gray-900" />
-      </div>
-    );
-  }
+  const startIndex = total === 0 ? 0 : (page - 1) * limit + 1;
+  const endIndex = Math.min(page * limit, total);
 
   // ── error ──
   if (error) {
@@ -192,7 +150,7 @@ export function RelatedMarketsDashboard() {
               variant="outline"
               size="sm"
               className="mt-4 border-gray-700 text-gray-300 hover:bg-gray-800"
-              onClick={() => { setError(null); setLoading(true); window.location.reload(); }}
+              onClick={() => window.location.reload()}
             >
               Retry
             </Button>
@@ -202,11 +160,19 @@ export function RelatedMarketsDashboard() {
     );
   }
 
-  // ── stats ──
-  const totalPairs = pairs.length;
-  const contradictoryCount = pairs.filter((p) => p.relationshipType === 'CONTRADICTORY' || p.relationshipType === 'NEGATED').length;
-  const highContradictionCount = pairs.filter((p) => (p.contradictionScore ?? 0) >= 0.5).length;
-  const arbitrageableCount = pairs.filter((p) => p.relationshipType === 'ARBITRAGEABLE').length;
+  if (loading && pairs.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="h-8 w-56 animate-pulse rounded bg-gray-800" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="h-20 animate-pulse rounded-xl bg-gray-900" />
+          ))}
+        </div>
+        <div className="h-96 animate-pulse rounded-xl bg-gray-900" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -223,25 +189,31 @@ export function RelatedMarketsDashboard() {
         <Card className="border-gray-800 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Total Pairs</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{totalPairs}</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{total}</p>
           </CardContent>
         </Card>
         <Card className="border-amber-500/20 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Contradictory</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-amber-400">{contradictoryCount}</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-amber-400">
+              {pairs.filter((p) => p.relationshipType === 'CONTRADICTORY' || p.relationshipType === 'NEGATED').length}
+            </p>
           </CardContent>
         </Card>
         <Card className="border-red-500/20 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">High Contradiction</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-red-400">{highContradictionCount}</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-red-400">
+              {pairs.filter((p) => (p.contradictionScore ?? 0) >= 0.5).length}
+            </p>
           </CardContent>
         </Card>
         <Card className="border-emerald-500/20 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Arbitrageable</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-emerald-400">{arbitrageableCount}</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-emerald-400">
+              {pairs.filter((p) => p.relationshipType === 'ARBITRAGEABLE').length}
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -253,7 +225,9 @@ export function RelatedMarketsDashboard() {
           <Input
             placeholder="Search by market title or venue..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => {
+              setSearch(e.target.value);
+            }}
             className="border-gray-800 bg-gray-900 pl-10 text-sm text-white placeholder:text-gray-600"
           />
         </div>
@@ -264,7 +238,7 @@ export function RelatedMarketsDashboard() {
           </SelectTrigger>
           <SelectContent className="border-gray-800 bg-gray-900 text-gray-300">
             <SelectItem value="ALL">All Types</SelectItem>
-            {relationshipTypes.map((t) => (
+            {RELATIONSHIP_TYPES.map((t) => (
               <SelectItem key={t} value={t}>{t.replace(/_/g, ' ')}</SelectItem>
             ))}
           </SelectContent>
@@ -278,12 +252,12 @@ export function RelatedMarketsDashboard() {
             <GitCompare className="h-4 w-4 text-cyan-400" />
             Market Pairs
             <span className="ml-1 text-xs font-normal text-gray-500">
-              ({filtered.length} of {totalPairs})
+              (Showing {startIndex}–{endIndex} of {total})
             </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          {filtered.length === 0 ? (
+          {pairs.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-gray-800">
                 <GitCompare className="h-6 w-6 text-gray-500" />
@@ -296,93 +270,104 @@ export function RelatedMarketsDashboard() {
               </p>
             </div>
           ) : (
-            <div className="max-h-[600px] overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-gray-800 hover:bg-transparent">
-                    <TableHead className="text-gray-500">Market A</TableHead>
-                    <TableHead className="text-gray-500">Market B</TableHead>
-                    <TableHead className="text-gray-500">Relationship</TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('contradictionScore')}>
-                      <span className="inline-flex items-center gap-1">
-                        Contradiction {sortField === 'contradictionScore' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('priceInconsistency')}>
-                      <span className="inline-flex items-center gap-1">
-                        Inconsistency {sortField === 'priceInconsistency' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="text-gray-500">Alert</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map((p) => {
-                    const cl = contradictionLevel(p.contradictionScore);
-                    const isContradiction = p.relationshipType === 'CONTRADICTORY' || p.relationshipType === 'NEGATED';
-                    return (
-                      <TableRow
-                        key={p.id}
-                        className={cn(
-                          'border-gray-800 transition-colors hover:bg-gray-800/50',
-                          isContradiction && 'bg-amber-500/5'
-                        )}
+            <>
+              <div className="max-h-[600px] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-gray-800 hover:bg-transparent">
+                      <TableHead className="text-gray-500">Market A</TableHead>
+                      <TableHead className="text-gray-500">Market B</TableHead>
+                      <TableHead className="text-gray-500">Relationship</TableHead>
+                      <TableHead
+                        className="cursor-pointer text-right text-gray-500 hover:text-gray-300"
+                        onClick={() => handleSort('contradictionScore')}
                       >
-                        <TableCell>
-                          <div>
-                            <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
-                              {p.marketA.title}
-                            </p>
-                            <p className="mt-0.5 text-[10px] text-gray-600">
-                              {p.marketA.venue} · {p.marketA.category}
-                            </p>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div>
-                            <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
-                              {p.marketB.title}
-                            </p>
-                            <p className="mt-0.5 text-[10px] text-gray-600">
-                              {p.marketB.venue} · {p.marketB.category}
-                            </p>
-                          </div>
-                        </TableCell>
-                        <TableCell>{relationshipBadge(p.relationshipType)}</TableCell>
-                        <TableCell className="text-right">
-                          <span className={cn('text-xs font-medium tabular-nums', cl.color)}>
-                            {cl.label}
-                          </span>
-                          <span className="ml-1 text-[10px] text-gray-600">
-                            ({formatScore(p.contradictionScore)})
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <span className={cn(
-                            'text-xs tabular-nums',
-                            (p.priceInconsistency ?? 0) >= 0.1 ? 'text-amber-400' : 'text-gray-400'
-                          )}>
-                            {formatPct(p.priceInconsistency)}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          {p.alertText ? (
-                            <div className="flex items-center gap-1">
-                              <AlertTriangle className="h-3 w-3 shrink-0 text-amber-400" />
-                              <span className="max-w-[160px] truncate text-xs text-amber-400/80" title={p.alertText}>
-                                {p.alertText}
-                              </span>
-                            </div>
-                          ) : (
-                            <span className="text-xs text-gray-600">—</span>
+                        <span className="inline-flex items-center gap-1">
+                          Contradiction {sortBy === 'contradictionScore' && <SortIcon className="h-3 w-3" />}
+                        </span>
+                      </TableHead>
+                      <TableHead
+                        className="cursor-pointer text-right text-gray-500 hover:text-gray-300"
+                        onClick={() => handleSort('priceInconsistency')}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          Inconsistency {sortBy === 'priceInconsistency' && <SortIcon className="h-3 w-3" />}
+                        </span>
+                      </TableHead>
+                      <TableHead className="text-gray-500">Alert</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pairs.map((p) => {
+                      const cl = contradictionLevel(p.contradictionScore);
+                      const isContradiction = p.relationshipType === 'CONTRADICTORY' || p.relationshipType === 'NEGATED';
+                      return (
+                        <TableRow
+                          key={p.id}
+                          className={cn(
+                            'border-gray-800 transition-colors hover:bg-gray-800/50',
+                            isContradiction && 'bg-amber-500/5'
                           )}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
+                        >
+                          <TableCell>
+                            <div>
+                              <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
+                                {p.marketA.title}
+                              </p>
+                              <p className="mt-0.5 text-[10px] text-gray-600">
+                                {p.marketA.venue} · {p.marketA.category}
+                              </p>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div>
+                              <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
+                                {p.marketB.title}
+                              </p>
+                              <p className="mt-0.5 text-[10px] text-gray-600">
+                                {p.marketB.venue} · {p.marketB.category}
+                              </p>
+                            </div>
+                          </TableCell>
+                          <TableCell>{relationshipBadge(p.relationshipType)}</TableCell>
+                          <TableCell className="text-right">
+                            <span className={cn('text-xs font-medium tabular-nums', cl.color)}>
+                              {cl.label}
+                            </span>
+                            <span className="ml-1 text-[10px] text-gray-600">
+                              ({formatScore(p.contradictionScore)})
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className={cn(
+                              'text-xs tabular-nums',
+                              (p.priceInconsistency ?? 0) >= 0.1 ? 'text-amber-400' : 'text-gray-400'
+                            )}>
+                              {formatPct(p.priceInconsistency)}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            {p.alertText ? (
+                              <div className="flex items-center gap-1">
+                                <AlertTriangle className="h-3 w-3 shrink-0 text-amber-400" />
+                                <span className="max-w-[160px] truncate text-xs text-amber-400/80" title={p.alertText}>
+                                  {p.alertText}
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-gray-600">—</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+              <div className="border-t border-gray-800 px-4 py-3">
+                <PaginationBar page={page} totalPages={totalPages} limit={limit} onPageChange={setPage} onLimitChange={setLimit} />
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

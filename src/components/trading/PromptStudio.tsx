@@ -11,6 +11,8 @@ import {
   Plus,
   Loader2,
   Sparkles,
+  Search,
+  XCircle,
 } from 'lucide-react';
 import {
   Card,
@@ -20,6 +22,7 @@ import {
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
@@ -32,10 +35,26 @@ import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { usePagination } from '@/hooks/use-pagination';
+import { PaginationBar } from '@/components/trading/PaginationBar';
 import { DEFAULT_PROMPT_TEMPLATES } from '@/lib/constants';
 import type { PromptState } from '@/lib/types';
+import type { PaginationParams, PaginatedResponse } from '@/lib/types';
 
 // ── types ────────────────────────────────────────────────────────────────────
+
+interface RawPromptItem {
+  id: string;
+  name: string;
+  version: number;
+  state: PromptState;
+  body: string;
+  description?: string;
+  changelog?: string;
+  publishedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 interface PromptVersion {
   id?: string;
@@ -145,18 +164,7 @@ function simpleDiff(a: string, b: string): string {
 
 /** Build grouped PromptTemplate[] from flat API response */
 function buildPromptTemplates(
-  flat: Array<{
-    id: string;
-    name: string;
-    version: number;
-    state: PromptState;
-    body: string;
-    description?: string;
-    changelog?: string;
-    publishedAt?: string;
-    createdAt: string;
-    updatedAt: string;
-  }>
+  flat: RawPromptItem[],
 ): PromptTemplate[] {
   const grouped = new Map<string, PromptTemplate>();
 
@@ -200,9 +208,12 @@ function buildPromptTemplates(
 // ── component ────────────────────────────────────────────────────────────────
 
 export function PromptStudio() {
-  const [prompts, setPrompts] = useState<PromptTemplate[]>([]);
-  const [auditLog, setAuditLog] = useState<AuditEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  // ── search + filter + sort ──
+  const [search, setSearch] = useState('');
+  const [stateFilter, setStateFilter] = useState<string>('ALL');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  // ── editor state ──
   const [activePrompt, setActivePrompt] = useState<string>('');
   const [selectedVersion, setSelectedVersion] = useState<number>(1);
   const [editBody, setEditBody] = useState('');
@@ -210,41 +221,59 @@ export function PromptStudio() {
   const [saving, setSaving] = useState(false);
   const [seeding, setSeeding] = useState(false);
 
-  // Load data
+  // Debounce search
   useEffect(() => {
-    let cancelled = false;
-    async function fetchPrompts() {
-      try {
-        const res = await fetch('/api/prompts');
-        if (res.ok && !cancelled) {
-          const data = await res.json();
-          const flat = data.prompts ?? [];
-          setPrompts(buildPromptTemplates(flat));
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-          // Build audit log from prompt data if available
-          const audit: AuditEntry[] = flat.map((p: { name: string; version: number; state: string; createdAt: string }) => ({
-            id: `${p.name}-${p.version}`,
-            promptName: p.name,
-            action: p.state === 'PUBLISHED' ? 'published' as const : 'created' as const,
-            version: p.version,
-            timestamp: p.createdAt,
-            author: 'admin',
-          }));
-          setAuditLog(audit);
-        }
-      } catch {
-        // failed to load
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-    fetchPrompts();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const {
+    data: flatPrompts,
+    page,
+    limit,
+    total,
+    totalPages,
+    sortBy,
+    sortOrder,
+    loading,
+    error,
+    setPage,
+    setLimit,
+    setSort,
+    fetchData,
+  } = usePagination<RawPromptItem>(
+    async (params: PaginationParams): Promise<PaginatedResponse<RawPromptItem>> => {
+      const query = new URLSearchParams({
+        page: String(params.page),
+        limit: String(params.limit),
+        sortBy: (params.sortBy as string) || 'name',
+        sortOrder: params.sortOrder || 'asc',
+      });
+      if (debouncedSearch.trim()) query.set('search', debouncedSearch.trim());
+      if (stateFilter !== 'ALL') query.set('state', stateFilter);
+
+      const res = await fetch(`/api/prompts?${query}`);
+      if (!res.ok) throw new Error('Failed to fetch prompts');
+      return res.json();
+    },
+    [debouncedSearch, stateFilter],
+    { defaultSortBy: 'name', defaultSortOrder: 'asc' },
+  );
+
+  // Group flat API data into PromptTemplate[]
+  const prompts = useMemo(() => buildPromptTemplates(flatPrompts), [flatPrompts]);
+
+  // Build audit log from flat data
+  const auditLog = useMemo(() => {
+    return flatPrompts.map((p) => ({
+      id: `${p.name}-${p.version}`,
+      promptName: p.name,
+      action: (p.state === 'PUBLISHED' ? 'published' : 'created') as AuditEntry['action'],
+      version: p.version,
+      timestamp: p.createdAt,
+      author: 'admin',
+    }));
+  }, [flatPrompts]);
 
   // Set active prompt to first available after load
   useEffect(() => {
@@ -287,12 +316,11 @@ export function PromptStudio() {
     if (!currentPrompt || !currentVersionData) return;
     setSaving(true);
     try {
-      // Try to update existing version via PUT, fall back to POST
       const updateRes = await fetch('/api/prompts', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: currentVersionData.id,  // Will be undefined if not from API
+          id: currentVersionData.id,
           name: currentPrompt.name,
           version: selectedVersion,
           body: editBody,
@@ -300,7 +328,6 @@ export function PromptStudio() {
         }),
       });
       if (!updateRes.ok) {
-        // If PUT fails (e.g. no id), create new via POST
         await fetch('/api/prompts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -311,44 +338,18 @@ export function PromptStudio() {
           }),
         });
       }
+      toast.success('Draft saved');
+      fetchData();
     } catch {
-      // ignore - local state update is the fallback
+      // ignore
     }
-    // Update local state
-    setPrompts((prev) =>
-      prev.map((p) =>
-        p.name === currentPrompt.name
-          ? {
-              ...p,
-              versions: p.versions.map((v) =>
-                v.version === selectedVersion
-                  ? { ...v, body: editBody, state: 'DRAFT' as PromptState }
-                  : v
-              ),
-            }
-          : p
-      )
-    );
-    setAuditLog((prev) => [
-      {
-        id: `local-${Date.now()}`,
-        promptName: currentPrompt.name,
-        action: 'saved_draft',
-        version: selectedVersion,
-        timestamp: new Date().toISOString(),
-        author: 'admin',
-      },
-      ...prev,
-    ]);
     setSaving(false);
-    toast.success('Draft saved');
-  }, [currentPrompt, selectedVersion, editBody]);
+  }, [currentPrompt, selectedVersion, editBody, fetchData]);
 
   const publish = useCallback(async () => {
     if (!currentPrompt || !currentVersionData) return;
     setSaving(true);
     try {
-      // Try PUT first to update existing version
       const updateRes = await fetch('/api/prompts', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -361,7 +362,6 @@ export function PromptStudio() {
         }),
       });
       if (!updateRes.ok) {
-        // Fallback: create via POST
         await fetch('/api/prompts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -372,68 +372,30 @@ export function PromptStudio() {
           }),
         });
       }
+      toast.success(`Version ${selectedVersion} published`);
+      fetchData();
     } catch {
       // ignore
     }
-    setPrompts((prev) =>
-      prev.map((p) =>
-        p.name === currentPrompt.name
-          ? {
-              ...p,
-              currentVersion: selectedVersion,
-              versions: p.versions.map((v) => ({
-                ...v,
-                state: (v.version === selectedVersion
-                  ? 'PUBLISHED'
-                  : 'ARCHIVED') as PromptState,
-              })),
-            }
-          : p
-      )
-    );
-    setAuditLog((prev) => [
-      {
-        id: `local-${Date.now()}`,
-        promptName: currentPrompt.name,
-        action: 'published',
-        version: selectedVersion,
-        timestamp: new Date().toISOString(),
-        author: 'admin',
-      },
-      ...prev,
-    ]);
     setSaving(false);
-    toast.success(`Version ${selectedVersion} published`);
-  }, [currentPrompt, selectedVersion, editBody]);
+  }, [currentPrompt, selectedVersion, editBody, fetchData]);
 
   const rollback = useCallback(() => {
     if (!currentPrompt || !publishedVersion) return;
     setSelectedVersion(publishedVersion.version);
     setDiffMode(false);
-    setAuditLog((prev) => [
-      {
-        id: `local-${Date.now()}`,
-        promptName: currentPrompt.name,
-        action: 'rolled_back',
-        version: publishedVersion.version,
-        timestamp: new Date().toISOString(),
-        author: 'admin',
-      },
-      ...prev,
-    ]);
     toast.info(`Rolled back to v${publishedVersion.version}`);
   }, [currentPrompt, publishedVersion]);
 
   const seedDefaults = useCallback(async () => {
     setSeeding(true);
     try {
-      // Check which prompts already exist to avoid duplicates
-      const existingRes = await fetch('/api/prompts');
-      const existingData = existingRes.ok ? await existingRes.json() : { prompts: [] };
-      const existingNames = new Set((existingData.prompts ?? []).map((p: { name: string }) => p.name));
+      const existingRes = await fetch('/api/prompts?limit=50');
+      const existingData = existingRes.ok ? await existingRes.json() : { data: [] };
+      const existingNames = new Set((existingData.data ?? []).map((p: RawPromptItem) => p.name));
 
       for (const name of PROMPT_NAMES) {
-        if (existingNames.has(name)) continue; // Skip already-seeded prompts
+        if (existingNames.has(name)) continue;
         await fetch('/api/prompts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -445,25 +407,15 @@ export function PromptStudio() {
         });
       }
       toast.success('Default prompts seeded');
-
-      // Refresh the list
-      const res = await fetch('/api/prompts');
-      if (res.ok) {
-        const data = await res.json();
-        const flat = data.prompts ?? [];
-        setPrompts(buildPromptTemplates(flat));
-        if (flat.length > 0 && !activePrompt) {
-          setActivePrompt(flat[0].name);
-        }
-      }
+      fetchData();
     } catch {
       toast.error('Failed to seed default prompts');
     } finally {
       setSeeding(false);
     }
-  }, [activePrompt]);
+  }, [fetchData]);
 
-  if (loading) {
+  if (loading && flatPrompts.length === 0) {
     return (
       <div className="space-y-6">
         <h2 className="text-xl font-semibold text-white">Prompt Studio</h2>
@@ -472,10 +424,27 @@ export function PromptStudio() {
     );
   }
 
+  if (error && flatPrompts.length === 0) {
+    return (
+      <div className="space-y-6">
+        <h2 className="text-xl font-semibold text-white">Prompt Studio</h2>
+        <Card className="border-red-500/30 bg-gray-900">
+          <CardContent className="flex flex-col items-center py-12">
+            <XCircle className="mb-3 h-10 w-10 text-red-400" />
+            <p className="text-sm text-red-400">{error}</p>
+            <Button variant="outline" size="sm" className="mt-4 border-gray-700 text-gray-300 hover:bg-gray-800" onClick={fetchData}>
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-xl font-semibold text-white">Prompt Studio</h2>
           <p className="mt-1 text-sm text-gray-500">
@@ -483,6 +452,28 @@ export function PromptStudio() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Search */}
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
+            <Input
+              placeholder="Search prompts..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 w-48 border-gray-700 bg-gray-800 pl-8 text-xs text-white placeholder:text-gray-600"
+            />
+          </div>
+          {/* State filter */}
+          <Select value={stateFilter} onValueChange={setStateFilter}>
+            <SelectTrigger className="h-8 w-28 border-gray-700 bg-gray-800 text-xs text-gray-300">
+              <SelectValue placeholder="All States" />
+            </SelectTrigger>
+            <SelectContent className="border-gray-700 bg-gray-900">
+              <SelectItem value="ALL" className="text-xs">All States</SelectItem>
+              <SelectItem value="DRAFT" className="text-xs">Draft</SelectItem>
+              <SelectItem value="PUBLISHED" className="text-xs">Published</SelectItem>
+              <SelectItem value="ARCHIVED" className="text-xs">Archived</SelectItem>
+            </SelectContent>
+          </Select>
           <Button
             variant={diffMode ? 'default' : 'outline'}
             size="sm"
@@ -725,7 +716,12 @@ export function PromptStudio() {
       {/* Audit log */}
       <Card className="border-gray-800 bg-gray-900">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm text-white">Audit Log</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-sm text-white">
+            Audit Log
+            <span className="ml-1 text-xs font-normal text-gray-500">
+              ({(page - 1) * limit + 1}-{Math.min(page * limit, total)} of {total})
+            </span>
+          </CardTitle>
         </CardHeader>
         <CardContent>
           {auditLog.length === 0 ? (
@@ -733,40 +729,51 @@ export function PromptStudio() {
               <p className="text-xs text-gray-600">No audit entries</p>
             </div>
           ) : (
-            <ScrollArea className="max-h-64">
-              <div className="space-y-2">
-                {auditLog.map((entry) => (
-                  <div
-                    key={entry.id}
-                    className="flex items-center justify-between rounded-lg border border-gray-800/50 bg-gray-800/30 px-4 py-2.5"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span
-                        className={cn(
-                          'text-xs font-medium capitalize',
-                          actionColor(entry.action)
-                        )}
-                      >
-                        {actionLabel(entry.action)}
-                      </span>
-                      <span className="text-xs capitalize text-gray-400">
-                        {entry.promptName}
-                      </span>
-                      <Badge
-                        variant="outline"
-                        className="border-gray-700 text-[10px] text-gray-500"
-                      >
-                        v{entry.version}
-                      </Badge>
+            <>
+              <ScrollArea className="max-h-64">
+                <div className="space-y-2">
+                  {auditLog.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="flex items-center justify-between rounded-lg border border-gray-800/50 bg-gray-800/30 px-4 py-2.5"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span
+                          className={cn(
+                            'text-xs font-medium capitalize',
+                            actionColor(entry.action)
+                          )}
+                        >
+                          {actionLabel(entry.action)}
+                        </span>
+                        <span className="text-xs capitalize text-gray-400">
+                          {entry.promptName}
+                        </span>
+                        <Badge
+                          variant="outline"
+                          className="border-gray-700 text-[10px] text-gray-500"
+                        >
+                          v{entry.version}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-3 text-[11px] text-gray-600">
+                        <span>{entry.author}</span>
+                        <span>{formatTime(entry.timestamp)}</span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3 text-[11px] text-gray-600">
-                      <span>{entry.author}</span>
-                      <span>{formatTime(entry.timestamp)}</span>
-                    </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
+              </ScrollArea>
+              <div className="flex items-center justify-between border-t border-gray-800 pt-3 mt-3">
+                <span className="text-xs text-gray-500">
+                  Showing {(page - 1) * limit + 1}-{Math.min(page * limit, total)} of {total} entries
+                </span>
+                {loading && (
+                  <Loader2 className="h-4 w-4 animate-spin text-gray-500" />
+                )}
+                <PaginationBar page={page} totalPages={totalPages} limit={limit} onPageChange={setPage} onLimitChange={setLimit} />
               </div>
-            </ScrollArea>
+            </>
           )}
         </CardContent>
       </Card>

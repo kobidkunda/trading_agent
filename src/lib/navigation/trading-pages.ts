@@ -25,7 +25,8 @@ export type PageView =
   | 'backtests'
   | 'optimizer'
   | 'settings'
-  | 'logs';
+  | 'logs'
+  | 'qdrantWizard';
 
 export interface TradingPageDefinition {
   id: PageView;
@@ -61,6 +62,7 @@ export const TRADING_PAGES: TradingPageDefinition[] = [
   { id: 'map', label: 'System Map', slug: 'system-map' },
   { id: 'researchProvider', label: 'Research Provider', slug: 'research-provider' },
   { id: 'logs', label: 'Logs', slug: 'logs' },
+  { id: 'qdrantWizard', label: 'Qdrant Setup', slug: 'qdrant-setup' },
 ];
 
 const PAGE_BY_ID = new Map(TRADING_PAGES.map((page) => [page.id, page] as const));

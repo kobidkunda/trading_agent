@@ -3,8 +3,6 @@
 import { useEffect, useState, useMemo } from 'react';
 import {
   Wallet,
-  TrendingUp,
-  TrendingDown,
   Users,
   Signal,
   Search,
@@ -38,8 +36,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { usePagination } from '@/hooks/use-pagination';
+import { PaginationBar } from '@/components/trading/PaginationBar';
+import type { PaginationParams, PaginatedResponse } from '@/lib/types';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -76,8 +76,14 @@ interface CopySignal {
   pnl: number | null;
 }
 
-type SortField = 'rank' | 'winRate' | 'profitFactor' | 'realizedPnl' | 'brierScore';
-type SortDir = 'asc' | 'desc';
+interface WalletsApiResponse extends PaginatedResponse<WalletRecord> {
+  clusters?: ClusterActivity[];
+  signals?: CopySignal[];
+  totalWallets?: number;
+  profitableCount?: number;
+  avgWinRate?: number;
+  activeClusters?: number;
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -117,75 +123,90 @@ function rankBadge(rank: number) {
 // ── component ────────────────────────────────────────────────────────────────
 
 export function WalletsDashboard() {
-  const [wallets, setWallets] = useState<WalletRecord[]>([]);
-  const [clusters, setClusters] = useState<ClusterActivity[]>([]);
-  const [signals, setSignals] = useState<CopySignal[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState<string>('ALL');
-  const [sortField, setSortField] = useState<SortField>('rank');
-  const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [clusters, setClusters] = useState<ClusterActivity[]>([]);
+  const [signals, setSignals] = useState<CopySignal[]>([]);
+  const [extraStats, setExtraStats] = useState<{
+    totalWallets: number;
+    profitableCount: number;
+    avgWinRate: number;
+    activeClusters: number;
+  } | null>(null);
 
+  // Debounce search to avoid per-keystroke API calls
   useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const res = await fetch('/api/wallets');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!cancelled) {
-          setWallets(data.wallets ?? data.rankings ?? []);
-          setClusters(data.clusters ?? []);
-          setSignals(data.signals ?? []);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load wallets');
-          toast.error('Failed to load wallets');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, []);
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
+  const {
+    data: wallets,
+    page,
+    limit,
+    total,
+    totalPages,
+    sortBy,
+    sortOrder,
+    loading,
+    error,
+    setPage,
+    setLimit,
+    setSort,
+    fetchData,
+  } = usePagination<WalletRecord>(
+    async (params: PaginationParams): Promise<PaginatedResponse<WalletRecord>> => {
+      const query = new URLSearchParams({
+        page: String(params.page),
+        limit: String(params.limit),
+        sortBy: params.sortBy ?? 'rank',
+        sortOrder: params.sortOrder ?? 'asc',
+      });
+      if (debouncedSearch.trim()) query.set('search', debouncedSearch.trim());
+      if (catFilter !== 'ALL') query.set('category', catFilter);
+
+      const res = await fetch(`/api/wallets?${query}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json: WalletsApiResponse = await res.json();
+
+      // Populate side data from the same response
+      setClusters(json.clusters ?? []);
+      setSignals(json.signals ?? []);
+      if (json.totalWallets != null) {
+        setExtraStats({
+          totalWallets: json.totalWallets,
+          profitableCount: json.profitableCount ?? 0,
+          avgWinRate: json.avgWinRate ?? 0,
+          activeClusters: json.activeClusters ?? (json.clusters?.length ?? 0),
+        });
+      }
+
+      return json;
+    },
+    [debouncedSearch, catFilter],
+    { defaultSortBy: 'rank', defaultSortOrder: 'asc' },
+  );
+
+  const handleSort = (field: string) => {
+    if (sortBy === field) {
+      setSort(field, sortOrder === 'desc' ? 'asc' : 'desc');
     } else {
-      setSortField(field);
-      setSortDir(field === 'rank' ? 'asc' : 'desc');
+      const defaultOrder = field === 'rank' ? 'asc' : 'desc';
+      setSort(field, defaultOrder);
     }
   };
 
+  const SortIcon = sortOrder === 'desc' ? ChevronDown : ChevronUp;
+
+  // Categories for filter dropdown (from server or static)
   const categories = useMemo(() => {
-    const set = new Set(wallets.map((w) => w.categorySpecialization).filter(Boolean) as string[]);
-    return Array.from(set).sort();
-  }, [wallets]);
-
-  const filtered = useMemo(() => {
-    let list = wallets;
-    if (catFilter !== 'ALL') {
-      list = list.filter((w) => w.categorySpecialization === catFilter);
-    }
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter((w) => w.address.toLowerCase().includes(q) || (w.categorySpecialization ?? '').toLowerCase().includes(q));
-    }
-    return list.sort((a, b) => {
-      const av = a[sortField] ?? 0;
-      const bv = b[sortField] ?? 0;
-      return sortDir === 'desc' ? (bv as number) - (av as number) : (av as number) - (bv as number);
-    });
-  }, [wallets, search, catFilter, sortField, sortDir]);
-
-  const SortIcon = sortDir === 'desc' ? ChevronDown : ChevronUp;
+    if (extraStats) return []; // categories come from server / full dataset
+    return [];
+  }, [extraStats]);
 
   // ── loading ──
-  if (loading) {
+  if (loading && wallets.length === 0) {
     return (
       <div className="space-y-6">
         <div className="h-8 w-48 animate-pulse rounded bg-gray-800" />
@@ -200,7 +221,7 @@ export function WalletsDashboard() {
   }
 
   // ── error ──
-  if (error) {
+  if (error && wallets.length === 0) {
     return (
       <div className="space-y-6">
         <h2 className="text-xl font-semibold text-white">Wallets</h2>
@@ -212,7 +233,7 @@ export function WalletsDashboard() {
               variant="outline"
               size="sm"
               className="mt-4 border-gray-700 text-gray-300 hover:bg-gray-800"
-              onClick={() => { setError(null); setLoading(true); window.location.reload(); }}
+              onClick={() => fetchData()}
             >
               Retry
             </Button>
@@ -223,12 +244,10 @@ export function WalletsDashboard() {
   }
 
   // ── stats ──
-  const totalWallets = wallets.length;
-  const profitableCount = wallets.filter((w) => w.realizedPnl > 0).length;
-  const avgWinRate = wallets.length > 0
-    ? wallets.reduce((sum, w) => sum + w.winRate, 0) / wallets.length
-    : 0;
-  const activeClusters = clusters.length;
+  const totalWallets = extraStats?.totalWallets ?? total;
+  const profitableCount = extraStats?.profitableCount ?? 0;
+  const avgWinRate = extraStats?.avgWinRate ?? 0;
+  const activeClusters = extraStats?.activeClusters ?? clusters.length;
 
   return (
     <div className="space-y-6">
@@ -358,12 +377,12 @@ export function WalletsDashboard() {
             <Wallet className="h-4 w-4 text-emerald-400" />
             Wallet Rankings
             <span className="ml-1 text-xs font-normal text-gray-500">
-              ({filtered.length} of {totalWallets})
+              ({(page - 1) * limit + 1}-{Math.min(page * limit, total)} of {total})
             </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          {filtered.length === 0 ? (
+          {wallets.length === 0 && !loading ? (
             <div className="flex flex-col items-center justify-center py-16">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-gray-800">
                 <Wallet className="h-6 w-6 text-gray-500" />
@@ -376,78 +395,102 @@ export function WalletsDashboard() {
               </p>
             </div>
           ) : (
-            <div className="max-h-[600px] overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-gray-800 hover:bg-transparent">
-                    <TableHead className="w-12 text-gray-500">#</TableHead>
-                    <TableHead className="text-gray-500">Address</TableHead>
-                    <TableHead className="text-gray-500">Category</TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('winRate')}>
-                      <span className="inline-flex items-center gap-1">
-                        Win Rate {sortField === 'winRate' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('profitFactor')}>
-                      <span className="inline-flex items-center gap-1">
-                        Profit Factor {sortField === 'profitFactor' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('realizedPnl')}>
-                      <span className="inline-flex items-center gap-1">
-                        Realized PnL {sortField === 'realizedPnl' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('brierScore')}>
-                      <span className="inline-flex items-center gap-1">
-                        Brier {sortField === 'brierScore' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="text-right text-gray-500">Total Bets</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map((w) => (
-                    <TableRow key={w.id} className={cn(
-                      'border-gray-800 transition-colors hover:bg-gray-800/50',
-                      w.realizedPnl > 0 && 'bg-emerald-500/5',
-                      w.realizedPnl < 0 && 'bg-red-500/5'
-                    )}>
-                      <TableCell>{rankBadge(w.rank)}</TableCell>
-                      <TableCell>
-                        <span className="font-mono text-xs text-gray-300">{truncateAddress(w.address)}</span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-xs text-gray-400">{w.categorySpecialization ?? '—'}</span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className={cn('text-xs font-medium tabular-nums', winRateColor(w.winRate))}>
-                          {formatPct(w.winRate)}
+            <>
+              <div className="max-h-[600px] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-gray-800 hover:bg-transparent">
+                      <TableHead className="w-12 text-gray-500">#</TableHead>
+                      <TableHead className="text-gray-500">Address</TableHead>
+                      <TableHead className="text-gray-500">Category</TableHead>
+                      <TableHead
+                        className="cursor-pointer text-right text-gray-500 hover:text-gray-300 select-none"
+                        onClick={() => handleSort('winRate')}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          Win Rate {sortBy === 'winRate' && <SortIcon className="h-3 w-3" />}
                         </span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-300">
-                          {w.profitFactor.toFixed(2)}x
+                      </TableHead>
+                      <TableHead
+                        className="cursor-pointer text-right text-gray-500 hover:text-gray-300 select-none"
+                        onClick={() => handleSort('profitFactor')}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          Profit Factor {sortBy === 'profitFactor' && <SortIcon className="h-3 w-3" />}
                         </span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className={cn('text-xs font-medium tabular-nums', pnlColor(w.realizedPnl))}>
-                          {formatPnl(w.realizedPnl)}
+                      </TableHead>
+                      <TableHead
+                        className="cursor-pointer text-right text-gray-500 hover:text-gray-300 select-none"
+                        onClick={() => handleSort('realizedPnl')}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          Realized PnL {sortBy === 'realizedPnl' && <SortIcon className="h-3 w-3" />}
                         </span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-400">
-                          {w.brierScore !== null ? w.brierScore.toFixed(4) : '—'}
+                      </TableHead>
+                      <TableHead
+                        className="cursor-pointer text-right text-gray-500 hover:text-gray-300 select-none"
+                        onClick={() => handleSort('brierScore')}
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          Brier {sortBy === 'brierScore' && <SortIcon className="h-3 w-3" />}
                         </span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-400">{w.totalBets}</span>
-                      </TableCell>
+                      </TableHead>
+                      <TableHead className="text-right text-gray-500">Total Bets</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                  </TableHeader>
+                  <TableBody>
+                    {wallets.map((w) => (
+                      <TableRow key={w.id} className={cn(
+                        'border-gray-800 transition-colors hover:bg-gray-800/50',
+                        w.realizedPnl > 0 && 'bg-emerald-500/5',
+                        w.realizedPnl < 0 && 'bg-red-500/5'
+                      )}>
+                        <TableCell>{rankBadge(w.rank)}</TableCell>
+                        <TableCell>
+                          <span className="font-mono text-xs text-gray-300">{truncateAddress(w.address)}</span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-xs text-gray-400">{w.categorySpecialization ?? '—'}</span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className={cn('text-xs font-medium tabular-nums', winRateColor(w.winRate))}>
+                            {formatPct(w.winRate)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-300">
+                            {w.profitFactor.toFixed(2)}x
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className={cn('text-xs font-medium tabular-nums', pnlColor(w.realizedPnl))}>
+                            {formatPnl(w.realizedPnl)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-400">
+                            {w.brierScore !== null ? w.brierScore.toFixed(4) : '—'}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-400">{w.totalBets}</span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              {/* Info bar + Pagination */}
+              <div className="flex items-center justify-between border-t border-gray-800 px-4 py-3">
+                <span className="text-xs text-gray-500">
+                  Showing {(page - 1) * limit + 1}-{Math.min(page * limit, total)} of {total} wallets
+                </span>
+                {loading && (
+                  <Loader2 className="h-4 w-4 animate-spin text-gray-500" />
+                )}
+                <PaginationBar page={page} totalPages={totalPages} limit={limit} onPageChange={setPage} onLimitChange={setLimit} />
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

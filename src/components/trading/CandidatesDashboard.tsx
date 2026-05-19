@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useState } from 'react';
 import {
   Search,
   ChevronUp,
@@ -8,7 +8,6 @@ import {
   Target,
   Filter,
   Loader2,
-  ArrowUpDown,
   XCircle,
 } from 'lucide-react';
 import {
@@ -35,10 +34,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { STAGE_COLORS } from '@/lib/constants';
-import type { CandidateStage } from '@/lib/types';
+import { usePagination } from '@/hooks/use-pagination';
+import { PaginationBar } from '@/components/trading/PaginationBar';
+import type { PaginatedResponse, PaginationParams } from '@/lib/types';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -65,8 +65,12 @@ interface CandidateRecord {
   } | null;
 }
 
-type SortField = 'candidateScore' | 'biasAdjustedProb' | 'adjustedEdge' | 'createdAt';
-type SortDir = 'asc' | 'desc';
+const KNOWN_STAGES = [
+  'SCANNED', 'SCORED', 'DEDUPED', 'TRIAGED',
+  'DEERFLOW_RESEARCHED', 'FULL_RESEARCHED', 'DEBATED',
+  'POST_DEBATE_PREDICTED', 'ENSEMBLED', 'BIAS_CORRECTED',
+  'RISK_CHECKED', 'PAPER_EXECUTED', 'EXECUTED', 'SETTLED',
+];
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -119,81 +123,59 @@ function formatScore(value: number | null): string {
   return value.toFixed(1);
 }
 
+const SORT_LABELS: Record<string, string> = {
+  candidateScore: 'Score',
+  biasAdjustedProb: 'Adj Prob',
+  adjustedEdge: 'Edge',
+  createdAt: 'Created',
+};
+
 // ── component ────────────────────────────────────────────────────────────────
 
 export function CandidatesDashboard() {
-  const [candidates, setCandidates] = useState<CandidateRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
   const [stageFilter, setStageFilter] = useState<string>('ALL');
-  const [sortField, setSortField] = useState<SortField>('candidateScore');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const res = await fetch('/api/trading/candidates');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!cancelled) {
-          setCandidates(data.candidates ?? data ?? []);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load candidates');
-          toast.error('Failed to load candidates');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, []);
+  const {
+    data: candidates,
+    page,
+    limit,
+    total,
+    totalPages,
+    sortBy,
+    sortOrder,
+    loading,
+    error,
+    setPage,
+    setLimit,
+    setSort,
+    fetchData,
+  } = usePagination<CandidateRecord>(
+    async (params: PaginationParams): Promise<PaginatedResponse<CandidateRecord>> => {
+      const query = new URLSearchParams({
+        page: String(params.page),
+        limit: String(params.limit),
+        sortBy: params.sortBy || 'candidateScore',
+        sortOrder: params.sortOrder || 'desc',
+      });
+      if (searchTerm.trim()) query.set('search', searchTerm.trim());
+      if (stageFilter !== 'ALL') query.set('stage', stageFilter);
+      const res = await fetch(`/api/trading/candidates?${query}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    [searchTerm, stageFilter],
+    { defaultSortBy: 'candidateScore', defaultSortOrder: 'desc' },
+  );
 
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
-    } else {
-      setSortField(field);
-      setSortDir('desc');
-    }
+  const handleSearch = () => {
+    fetchData();
   };
 
-  const stages = useMemo(() => {
-    const set = new Set(candidates.map((c) => c.stage));
-    return Array.from(set).sort();
-  }, [candidates]);
+  const SortIcon = sortOrder === 'desc' ? ChevronDown : ChevronUp;
 
-  const filtered = useMemo(() => {
-    let list = candidates;
-    if (stageFilter !== 'ALL') {
-      list = list.filter((c) => c.stage === stageFilter);
-    }
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (c) =>
-          c.market?.title?.toLowerCase().includes(q) ||
-          c.market?.category?.toLowerCase().includes(q) ||
-          c.market?.venue?.toLowerCase().includes(q)
-      );
-    }
-    return list.sort((a, b) => {
-      const av = a[sortField];
-      const bv = b[sortField];
-      const aNum = av === null ? -Infinity : (typeof av === 'number' ? av : 0);
-      const bNum = bv === null ? -Infinity : (typeof bv === 'number' ? bv : 0);
-      return sortDir === 'desc' ? bNum - aNum : aNum - bNum;
-    });
-  }, [candidates, search, stageFilter, sortField, sortDir]);
-
-  const SortIcon = sortDir === 'desc' ? ChevronDown : ChevronUp;
-
-  // ── loading ──
-  if (loading) {
+  // ── loading (initial only — no data yet) ──
+  if (loading && candidates.length === 0) {
     return (
       <div className="space-y-6">
         <div className="h-8 w-48 animate-pulse rounded bg-gray-800" />
@@ -207,8 +189,8 @@ export function CandidatesDashboard() {
     );
   }
 
-  // ── error ──
-  if (error) {
+  // ── error (initial — no data yet) ──
+  if (error && candidates.length === 0) {
     return (
       <div className="space-y-6">
         <h2 className="text-xl font-semibold text-white">Trade Candidates</h2>
@@ -220,7 +202,7 @@ export function CandidatesDashboard() {
               variant="outline"
               size="sm"
               className="mt-4 border-gray-700 text-gray-300 hover:bg-gray-800"
-              onClick={() => { setError(null); setLoading(true); window.location.reload(); }}
+              onClick={() => fetchData()}
             >
               Retry
             </Button>
@@ -229,12 +211,6 @@ export function CandidatesDashboard() {
       </div>
     );
   }
-
-  // ── stats ──
-  const totalCount = candidates.length;
-  const highScoreCount = candidates.filter((c) => (c.candidateScore ?? 0) >= 90).length;
-  const positiveEdgeCount = candidates.filter((c) => (c.adjustedEdge ?? 0) > 0).length;
-  const skippedCount = candidates.filter((c) => c.skipReason).length;
 
   return (
     <div className="space-y-6">
@@ -253,25 +229,29 @@ export function CandidatesDashboard() {
         <Card className="border-gray-800 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Total Candidates</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{totalCount}</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{total}</p>
           </CardContent>
         </Card>
         <Card className="border-emerald-500/20 bg-gray-900">
           <CardContent className="p-4">
-            <p className="text-xs text-gray-500">A+ Score (≥90)</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-emerald-400">{highScoreCount}</p>
+            <p className="text-xs text-gray-500">Page</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-emerald-400">
+              {page} / {totalPages || 1}
+            </p>
           </CardContent>
         </Card>
         <Card className="border-cyan-500/20 bg-gray-900">
           <CardContent className="p-4">
-            <p className="text-xs text-gray-500">Positive Edge</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-cyan-400">{positiveEdgeCount}</p>
+            <p className="text-xs text-gray-500">Sort</p>
+            <p className="mt-1 text-lg font-bold tabular-nums text-cyan-400">
+              {SORT_LABELS[sortBy ?? ''] ?? sortBy ?? 'Score'}
+            </p>
           </CardContent>
         </Card>
-        <Card className="border-red-500/20 bg-gray-900">
+        <Card className="border-amber-500/20 bg-gray-900">
           <CardContent className="p-4">
-            <p className="text-xs text-gray-500">Skipped</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-red-400">{skippedCount}</p>
+            <p className="text-xs text-gray-500">Per Page</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-amber-400">{limit}</p>
           </CardContent>
         </Card>
       </div>
@@ -282,19 +262,20 @@ export function CandidatesDashboard() {
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
           <Input
             placeholder="Search by market title, category, or venue..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             className="border-gray-800 bg-gray-900 pl-10 text-sm text-white placeholder:text-gray-600"
           />
         </div>
-        <Select value={stageFilter} onValueChange={setStageFilter}>
+        <Select value={stageFilter} onValueChange={(v) => setStageFilter(v)}>
           <SelectTrigger className="w-[180px] border-gray-800 bg-gray-900 text-sm text-gray-300">
             <Filter className="mr-2 h-3.5 w-3.5 text-gray-500" />
             <SelectValue placeholder="All Stages" />
           </SelectTrigger>
           <SelectContent className="border-gray-800 bg-gray-900 text-gray-300">
             <SelectItem value="ALL">All Stages</SelectItem>
-            {stages.map((s) => (
+            {KNOWN_STAGES.map((s) => (
               <SelectItem key={s} value={s}>{s}</SelectItem>
             ))}
           </SelectContent>
@@ -308,19 +289,24 @@ export function CandidatesDashboard() {
             <Target className="h-4 w-4 text-emerald-400" />
             Candidates
             <span className="ml-1 text-xs font-normal text-gray-500">
-              ({filtered.length} of {totalCount})
+              ({candidates.length} of {total})
             </span>
           </CardTitle>
         </CardHeader>
-        <CardContent className="p-0">
-          {filtered.length === 0 ? (
+        <CardContent className="relative p-0">
+          {loading && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-b-xl bg-gray-900/60">
+              <Loader2 className="h-8 w-8 animate-spin text-emerald-400" />
+            </div>
+          )}
+          {candidates.length === 0 && !loading ? (
             <div className="flex flex-col items-center justify-center py-16">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-gray-800">
                 <Target className="h-6 w-6 text-gray-500" />
               </div>
               <p className="text-xs font-medium text-gray-400">No candidates found</p>
               <p className="mt-1 text-[11px] text-gray-600">
-                {search || stageFilter !== 'ALL'
+                {searchTerm || stageFilter !== 'ALL'
                   ? 'Try adjusting your filters.'
                   : 'Candidates will appear as markets are scanned.'}
               </p>
@@ -334,19 +320,19 @@ export function CandidatesDashboard() {
                     <TableHead className="text-gray-500">Venue</TableHead>
                     <TableHead className="text-gray-500">Category</TableHead>
                     <TableHead className="text-gray-500">Stage</TableHead>
-                    <TableHead className="cursor-pointer text-gray-500 hover:text-gray-300" onClick={() => handleSort('candidateScore')}>
+                    <TableHead className="cursor-pointer text-gray-500 hover:text-gray-300" onClick={() => setSort('candidateScore')}>
                       <span className="inline-flex items-center gap-1">
-                        Score {sortField === 'candidateScore' && <SortIcon className="h-3 w-3" />}
+                        Score {sortBy === 'candidateScore' && <SortIcon className="h-3 w-3" />}
                       </span>
                     </TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('biasAdjustedProb')}>
+                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => setSort('biasAdjustedProb')}>
                       <span className="inline-flex items-center gap-1">
-                        Adj Prob {sortField === 'biasAdjustedProb' && <SortIcon className="h-3 w-3" />}
+                        Adj Prob {sortBy === 'biasAdjustedProb' && <SortIcon className="h-3 w-3" />}
                       </span>
                     </TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('adjustedEdge')}>
+                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => setSort('adjustedEdge')}>
                       <span className="inline-flex items-center gap-1">
-                        Edge {sortField === 'adjustedEdge' && <SortIcon className="h-3 w-3" />}
+                        Edge {sortBy === 'adjustedEdge' && <SortIcon className="h-3 w-3" />}
                       </span>
                     </TableHead>
                     <TableHead className="text-right text-gray-500">Wallet</TableHead>
@@ -354,7 +340,7 @@ export function CandidatesDashboard() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filtered.map((c) => (
+                  {candidates.map((c) => (
                     <TableRow key={c.id} className="border-gray-800 transition-colors hover:bg-gray-800/50">
                       <TableCell>
                         <p className="max-w-[220px] truncate text-xs font-medium text-gray-200">
@@ -401,6 +387,14 @@ export function CandidatesDashboard() {
           )}
         </CardContent>
       </Card>
+
+      {/* Pagination bar */}
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-gray-400">
+          Showing {candidates.length > 0 ? (page - 1) * limit + 1 : 0}&ndash;{Math.min(page * limit, total)} of {total}
+        </span>
+        <PaginationBar page={page} totalPages={totalPages} limit={limit} onPageChange={setPage} onLimitChange={setLimit} />
+      </div>
     </div>
   );
 }

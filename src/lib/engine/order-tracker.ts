@@ -75,6 +75,10 @@ export async function processPaperOrderFill(params: {
       where: { orderId: params.orderId },
       data: { executionStatus: 'EXPIRED' },
     });
+    await db.tradeCandidate.updateMany({
+      where: { marketId: params.marketId },
+      data: { stage: 'EXECUTION_FAILED' },
+    });
     return {
       filledSize: 0,
       avgFillPrice: 0,
@@ -229,6 +233,19 @@ export async function processPaperOrderFill(params: {
         executionStatus: paperBetExecutionStatus,
         executedAt: newLifecycleStatus === 'FAILED' ? fillTimestamp : undefined,
       },
+    });
+  }
+
+  // ── Update candidate stage on terminal order lifecycle ─────────────────
+  if (newLifecycleStatus === 'FILLED') {
+    await db.tradeCandidate.updateMany({
+      where: { marketId: params.marketId },
+      data: { stage: 'EXECUTED', lastExecutionAt: fillTimestamp },
+    });
+  } else if (newLifecycleStatus === 'FAILED') {
+    await db.tradeCandidate.updateMany({
+      where: { marketId: params.marketId },
+      data: { stage: 'EXECUTION_FAILED' },
     });
   }
 

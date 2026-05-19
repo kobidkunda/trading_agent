@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   Plus,
   Trash2,
@@ -22,6 +22,8 @@ import {
   ChevronDown,
   ChevronRight,
   Database,
+  Search,
+  ChevronUp,
 } from 'lucide-react';
 import {
   Card,
@@ -63,8 +65,11 @@ import {
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { usePagination } from '@/hooks/use-pagination';
+import { PaginationBar } from '@/components/trading/PaginationBar';
 import { QdrantSetupWizard } from '@/components/trading/QdrantSetupWizard';
 import { QDRANT_DEFAULT_COLLECTIONS } from '@/lib/constants';
+import type { PaginationParams, PaginatedResponse } from '@/lib/types';
 
 // ── Service definitions ────────────────────────────────────────────────────
 
@@ -603,8 +608,6 @@ function AddCredentialDialog({
 // ── Main Component ────────────────────────────────────────────────────────
 
 export function CredentialManager() {
-  const [credentials, setCredentials] = useState<Credential[]>([]);
-  const [loading, setLoading] = useState(true);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Credential | null>(null);
@@ -615,6 +618,47 @@ export function CredentialManager() {
   const [autoSetupCredId, setAutoSetupCredId] = useState<string | null>(null);
   const [autoSetupRunning, setAutoSetupRunning] = useState(false);
   const [autoSetupResults, setAutoSetupResults] = useState<Array<{ key: string; name: string; created: boolean; skipped: boolean; error: string | null }> | null>(null);
+
+  // Search state
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const {
+    data: credentials,
+    page,
+    limit,
+    total,
+    totalPages,
+    sortBy,
+    sortOrder,
+    loading,
+    error,
+    setPage,
+    setLimit,
+    setSort,
+    fetchData,
+  } = usePagination<Credential>(
+    async (params: PaginationParams): Promise<PaginatedResponse<Credential>> => {
+      const query = new URLSearchParams({
+        page: String(params.page),
+        limit: String(params.limit),
+        sortBy: (params.sortBy as string) || 'createdAt',
+        sortOrder: params.sortOrder || 'desc',
+      });
+      if (debouncedSearch.trim()) query.set('search', debouncedSearch.trim());
+
+      const res = await fetch(`/api/credentials?${query}`);
+      if (!res.ok) throw new Error('Failed to fetch credentials');
+      return res.json();
+    },
+    [debouncedSearch],
+    { defaultSortBy: 'createdAt', defaultSortOrder: 'desc' },
+  );
 
   useEffect(() => {
     async function fetchQdrantLinks() {
@@ -638,43 +682,13 @@ export function CredentialManager() {
     fetchQdrantLinks();
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchCreds() {
-      try {
-        const res = await fetch('/api/credentials');
-        if (res.ok && !cancelled) {
-          const data = await res.json();
-          setCredentials(data.credentials ?? []);
-        }
-      } catch {
-        toast.error('Failed to load credentials');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    fetchCreds();
-    return () => { cancelled = true; };
-  }, []);
-
   const testConnection = useCallback(async (cred: Credential) => {
     setTestingId(cred.id);
     try {
       const res = await fetch(`/api/credentials/test?id=${cred.id}`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
-        setCredentials((prev) =>
-          prev.map((c) =>
-            c.id === cred.id
-              ? {
-                  ...c,
-                  testResult: data.testResult,
-                  testDetails: data.details,
-                  lastTestedAt: new Date().toISOString(),
-                }
-              : c,
-          ),
-        );
+        fetchData();
         if (data.testResult === 'SUCCESS') {
           toast.success(`${cred.service}: Connected`, { description: data.details });
         } else {
@@ -691,11 +705,11 @@ export function CredentialManager() {
     } finally {
       setTestingId(null);
     }
-  }, []);
+  }, [fetchData]);
 
   const addCredential = useCallback((cred: Credential) => {
-    setCredentials((prev) => [...prev, cred]);
-  }, []);
+    fetchData();
+  }, [fetchData]);
 
   const runAutoSetup = useCallback(async (credId: string) => {
     setAutoSetupCredId(credId);
@@ -738,21 +752,38 @@ export function CredentialManager() {
   const deleteCredential = useCallback(async (cred: Credential) => {
     try {
       await fetch(`/api/credentials?id=${cred.id}`, { method: 'DELETE' });
+      fetchData();
     } catch {
       // ignore
     }
-    setCredentials((prev) => prev.filter((c) => c.id !== cred.id));
     setDeleteTarget(null);
     toast.success(`${cred.service} credential removed`);
-  }, []);
+  }, [fetchData]);
 
-  if (loading) {
+  if (loading && credentials.length === 0) {
     return (
       <div className="space-y-6">
         <h2 className="text-xl font-semibold text-white">Credentials</h2>
         {Array.from({ length: 4 }).map((_, i) => (
           <div key={i} className="h-28 animate-pulse rounded-xl bg-gray-900" />
         ))}
+      </div>
+    );
+  }
+
+  if (error && credentials.length === 0) {
+    return (
+      <div className="space-y-6">
+        <h2 className="text-xl font-semibold text-white">Credential Manager</h2>
+        <Card className="border-red-500/30 bg-gray-900">
+          <CardContent className="flex flex-col items-center py-12">
+            <XCircle className="mb-3 h-10 w-10 text-red-400" />
+            <p className="text-sm text-red-400">{error}</p>
+            <Button variant="outline" size="sm" className="mt-4 border-gray-700 text-gray-300 hover:bg-gray-800" onClick={fetchData}>
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }
@@ -776,6 +807,16 @@ export function CredentialManager() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {/* Search */}
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
+            <Input
+              placeholder="Search credentials..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="h-8 w-48 border-gray-700 bg-gray-800 pl-8 text-xs text-white placeholder:text-gray-600"
+            />
+          </div>
           <div className="flex items-center gap-2 text-xs text-gray-500">
             <span className="flex items-center gap-1">
               <span className="h-2 w-2 rounded-full bg-emerald-400" />
@@ -816,7 +857,7 @@ export function CredentialManager() {
         <Card className="border-gray-800 bg-gray-900">
           <CardContent className="p-3">
             <p className="text-[11px] text-gray-500">Total Services</p>
-            <p className="mt-1 text-xl font-bold tabular-nums text-white">{credentials.length}</p>
+            <p className="mt-1 text-xl font-bold tabular-nums text-white">{total}</p>
           </CardContent>
         </Card>
         <Card className="border-gray-800 bg-gray-900">
@@ -868,7 +909,8 @@ export function CredentialManager() {
 
       {/* Credential cards */}
       {credentials.length > 0 && (
-        <div className="space-y-3">
+        <>
+          <div className="space-y-3">
           {credentials.map((cred) => {
             const serviceDef = getServiceDef(cred.service);
             const isExpanded = expandedId === cred.id;
@@ -1162,7 +1204,18 @@ export function CredentialManager() {
               </Card>
             );
           })}
-        </div>
+          </div>
+          {/* Pagination */}
+          <div className="flex items-center justify-between border-t border-gray-800 pt-3 mt-3">
+            <span className="text-xs text-gray-500">
+              Showing {(page - 1) * limit + 1}-{Math.min(page * limit, total)} of {total} credentials
+            </span>
+            {loading && (
+              <Loader2 className="h-4 w-4 animate-spin text-gray-500" />
+            )}
+            <PaginationBar page={page} totalPages={totalPages} limit={limit} onPageChange={setPage} onLimitChange={setLimit} />
+          </div>
+        </>
       )}
 
       {wizardCredId && (

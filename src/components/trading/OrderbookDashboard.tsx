@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   Gauge,
   Loader2,
@@ -11,6 +11,9 @@ import {
   BarChart3,
   Anchor,
   ShieldAlert,
+  Search,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import {
   Card,
@@ -20,6 +23,7 @@ import {
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -30,8 +34,9 @@ import {
 } from '@/components/ui/table';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
-
-// ── types ────────────────────────────────────────────────────────────────────
+import { usePagination } from '@/hooks/use-pagination';
+import { PaginationBar } from '@/components/trading/PaginationBar';
+import type { PaginationParams, PaginatedResponse } from '@/lib/types';
 
 interface OrderbookMarket {
   id: string;
@@ -51,7 +56,7 @@ interface OrderbookMarket {
   lastUpdated: string;
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+type SortField = 'spread' | 'bidDepth' | 'askDepth' | 'depthImbalance' | 'fillProbability' | 'capturedAt';
 
 function formatPrice(value: number): string {
   return `$${value.toFixed(4)}`;
@@ -101,53 +106,68 @@ function venueBadge(venue: string) {
   );
 }
 
-// ── component ────────────────────────────────────────────────────────────────
-
 export function OrderbookDashboard() {
-  const [markets, setMarkets] = useState<OrderbookMarket[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const res = await fetch('/api/orderbook');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!cancelled) {
-            const raw = data.markets ?? data.snapshots ?? data;
-            const list = Array.isArray(raw) ? raw : [];
-            setMarkets(list.map((s: Record<string, unknown>) => ({
-              id: String(s.id ?? ''),
-              marketId: String(s.marketId ?? ''),
-              marketTitle: String(s.marketTitle ?? s.market?.title ?? s.title ?? ''),
-              venue: String(s.venue ?? s.market?.venue ?? ''),
-              bestBid: Number(s.bestBid ?? 0),
-              bestAsk: Number(s.bestAsk ?? 0),
-              spread: Number(s.spread ?? 0),
-              bidDepth: Number(s.bidDepth ?? 0),
-              askDepth: Number(s.askDepth ?? 0),
-              depthImbalance: Number(s.depthImbalance ?? 0),
-              largeBidWall: s.largeBidWall != null ? Number(s.largeBidWall) : null,
-              largeAskWall: s.largeAskWall != null ? Number(s.largeAskWall) : null,
-              fillProbability: s.fillProbability != null ? Number(s.fillProbability) : null,
-              thinBookWarning: Boolean(s.thinBookWarning ?? s.thinBookDanger ?? false),
-              lastUpdated: String(s.lastUpdated ?? s.capturedAt ?? ''),
-            })));
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load orderbook');
-          toast.error('Failed to load orderbook');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, []);
+  const {
+    data: markets,
+    page,
+    limit,
+    total,
+    totalPages,
+    loading,
+    error,
+    setPage,
+    setLimit,
+    setSort,
+    sortBy,
+    sortOrder,
+    fetchData,
+  } = usePagination<OrderbookMarket>(
+    async (params: PaginationParams): Promise<PaginatedResponse<OrderbookMarket>> => {
+      const query = new URLSearchParams({
+        page: String(params.page),
+        limit: String(params.limit),
+        sortBy: params.sortBy || 'capturedAt',
+        sortOrder: params.sortOrder || 'desc',
+      });
+      if (searchTerm.trim()) query.set('search', searchTerm.trim());
+      const res = await fetch(`/api/orderbook?${query}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = await res.json();
+      const rawList = raw.data ?? raw.markets ?? raw.snapshots ?? raw;
+      const list = Array.isArray(rawList) ? rawList : [];
+      const mapped = list.map((s: Record<string, unknown>) => ({
+        id: String(s.id ?? ''),
+        marketId: String(s.marketId ?? ''),
+        marketTitle: String(s.marketTitle ?? s.market?.title ?? s.title ?? ''),
+        venue: String(s.venue ?? s.market?.venue ?? ''),
+        bestBid: Number(s.bestBid ?? 0),
+        bestAsk: Number(s.bestAsk ?? 0),
+        spread: Number(s.spread ?? 0),
+        bidDepth: Number(s.bidDepth ?? 0),
+        askDepth: Number(s.askDepth ?? 0),
+        depthImbalance: Number(s.depthImbalance ?? 0),
+        largeBidWall: s.largeBidWall != null ? Number(s.largeBidWall) : null,
+        largeAskWall: s.largeAskWall != null ? Number(s.largeAskWall) : null,
+        fillProbability: s.fillProbability != null ? Number(s.fillProbability) : null,
+        thinBookWarning: Boolean(s.thinBookWarning ?? s.thinBookDanger ?? false),
+        lastUpdated: String(s.lastUpdated ?? s.capturedAt ?? ''),
+      }));
+      return { ...raw, data: mapped };
+    },
+    [searchTerm],
+  );
+
+  function handleSort(field: SortField) {
+    const dir = sortBy === field && sortOrder === 'desc' ? 'asc' : 'desc';
+    setSort(field, dir);
+  }
+
+  function SortIcon({ field }: { field: SortField }) {
+    if (sortBy !== field) return <ChevronDown className="ml-1 h-3 w-3 text-gray-600" />;
+    return sortOrder === 'desc' ? <ChevronDown className="ml-1 h-3 w-3" /> : <ChevronUp className="ml-1 h-3 w-3" />;
+  }
 
   // ── loading ──
   if (loading) {
@@ -177,7 +197,7 @@ export function OrderbookDashboard() {
               variant="outline"
               size="sm"
               className="mt-4 border-gray-700 text-gray-300 hover:bg-gray-800"
-              onClick={() => { setError(null); setLoading(true); window.location.reload(); }}
+              onClick={() => { fetchData(); }}
             >
               Retry
             </Button>
@@ -188,11 +208,10 @@ export function OrderbookDashboard() {
   }
 
   // ── stats ──
-  const totalMarkets = markets.length;
   const thinBookCount = markets.filter((m) => m.thinBookWarning).length;
   const whaleWallCount = markets.filter((m) => m.largeBidWall || m.largeAskWall).length;
-  const avgSpread = totalMarkets > 0
-    ? markets.reduce((sum, m) => sum + m.spread, 0) / totalMarkets
+  const avgSpread = markets.length > 0
+    ? markets.reduce((sum, m) => sum + m.spread, 0) / markets.length
     : 0;
 
   return (
@@ -210,7 +229,7 @@ export function OrderbookDashboard() {
         <Card className="border-gray-800 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Markets Tracked</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{totalMarkets}</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{total}</p>
           </CardContent>
         </Card>
         <Card className={cn(
@@ -243,13 +262,24 @@ export function OrderbookDashboard() {
         </Card>
       </div>
 
+      {/* Search */}
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+        <Input
+          placeholder="Search by market title..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="border-gray-800 bg-gray-900 pl-10 text-sm text-white placeholder:text-gray-600"
+        />
+      </div>
+
       {/* Orderbook depth table */}
       <Card className="border-gray-800 bg-gray-900">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-sm text-white">
             <Gauge className="h-4 w-4 text-cyan-400" />
             Orderbook Depth
-            <span className="ml-1 text-xs font-normal text-gray-500">({totalMarkets})</span>
+            <span className="ml-1 text-xs font-normal text-gray-500">({total})</span>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
@@ -262,102 +292,120 @@ export function OrderbookDashboard() {
               <p className="mt-1 text-[11px] text-gray-600">Orderbook data will appear as markets are tracked.</p>
             </div>
           ) : (
-            <div className="max-h-[600px] overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-gray-800 hover:bg-transparent">
-                    <TableHead className="text-gray-500">Market</TableHead>
-                    <TableHead className="text-gray-500">Venue</TableHead>
-                    <TableHead className="text-right text-gray-500">Best Bid</TableHead>
-                    <TableHead className="text-right text-gray-500">Best Ask</TableHead>
-                    <TableHead className="text-right text-gray-500">Spread</TableHead>
-                    <TableHead className="text-right text-gray-500">Bid Depth</TableHead>
-                    <TableHead className="text-right text-gray-500">Ask Depth</TableHead>
-                    <TableHead className="text-right text-gray-500">Imbalance</TableHead>
-                    <TableHead className="text-center text-gray-500">Fill Prob</TableHead>
-                    <TableHead className="text-gray-500">Warnings</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {markets.map((m) => {
-                    const gauge = fillProbGauge(m.fillProbability);
-                    return (
-                      <TableRow
-                        key={m.id}
-                        className={cn(
-                          'border-gray-800 transition-colors hover:bg-gray-800/50',
-                          m.thinBookWarning && 'bg-red-500/5'
-                        )}
-                      >
-                        <TableCell>
-                          <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
-                            {m.marketTitle}
-                          </p>
-                        </TableCell>
-                        <TableCell>{venueBadge(m.venue)}</TableCell>
-                        <TableCell className="text-right">
-                          <span className="text-xs tabular-nums text-emerald-400">{formatPrice(m.bestBid)}</span>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <span className="text-xs tabular-nums text-red-400">{formatPrice(m.bestAsk)}</span>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <span className={cn('text-xs font-medium tabular-nums', spreadColor(m.spread))}>
-                            {formatPct(m.spread)}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <span className="text-xs tabular-nums text-gray-300">{formatDepth(m.bidDepth)}</span>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <span className="text-xs tabular-nums text-gray-300">{formatDepth(m.askDepth)}</span>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-1">
-                            {m.depthImbalance > 0.1 ? (
-                              <TrendingUp className="h-3 w-3 text-emerald-400" />
-                            ) : m.depthImbalance < -0.1 ? (
-                              <TrendingDown className="h-3 w-3 text-red-400" />
-                            ) : null}
-                            <span className={cn('text-xs tabular-nums', imbalanceColor(m.depthImbalance))}>
-                              {m.depthImbalance > 0 ? '+' : ''}{(m.depthImbalance * 100).toFixed(0)}%
+            <>
+              <p className="px-6 pb-2 text-xs text-gray-600">
+                Showing {((page - 1) * limit) + 1}\u2013{Math.min(page * limit, total)} of {total}
+              </p>
+              <div className="max-h-[600px] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-gray-800 hover:bg-transparent">
+                      <TableHead className="text-gray-500">Market</TableHead>
+                      <TableHead className="text-gray-500">Venue</TableHead>
+                      <TableHead className="text-right text-gray-500">Best Bid</TableHead>
+                      <TableHead className="text-right text-gray-500">Best Ask</TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('spread')}>
+                        <span className="inline-flex items-center gap-1">Spread <SortIcon field="spread" /></span>
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('bidDepth')}>
+                        <span className="inline-flex items-center gap-1">Bid Depth <SortIcon field="bidDepth" /></span>
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('askDepth')}>
+                        <span className="inline-flex items-center gap-1">Ask Depth <SortIcon field="askDepth" /></span>
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('depthImbalance')}>
+                        <span className="inline-flex items-center gap-1">Imbalance <SortIcon field="depthImbalance" /></span>
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-center text-gray-500 hover:text-gray-300" onClick={() => handleSort('fillProbability')}>
+                        <span className="inline-flex items-center gap-1">Fill Prob <SortIcon field="fillProbability" /></span>
+                      </TableHead>
+                      <TableHead className="text-gray-500">Warnings</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {markets.map((m) => {
+                      const gauge = fillProbGauge(m.fillProbability);
+                      return (
+                        <TableRow
+                          key={m.id}
+                          className={cn(
+                            'border-gray-800 transition-colors hover:bg-gray-800/50',
+                            m.thinBookWarning && 'bg-red-500/5'
+                          )}
+                        >
+                          <TableCell>
+                            <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
+                              {m.marketTitle}
+                            </p>
+                          </TableCell>
+                          <TableCell>{venueBadge(m.venue)}</TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs tabular-nums text-emerald-400">{formatPrice(m.bestBid)}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs tabular-nums text-red-400">{formatPrice(m.bestAsk)}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className={cn('text-xs font-medium tabular-nums', spreadColor(m.spread))}>
+                              {formatPct(m.spread)}
                             </span>
-                          </div>
-                        </TableCell>
-                        <TableCell className="w-28">
-                          <div className="mx-auto h-2 w-20 overflow-hidden rounded-full bg-gray-800">
-                            <div
-                              className={cn('h-full rounded-full transition-all', gauge.color)}
-                              style={{ width: gauge.width }}
-                            />
-                          </div>
-                          <p className="mt-1 text-center text-[10px] text-gray-500">
-                            {m.fillProbability !== null ? `${(m.fillProbability * 100).toFixed(0)}%` : '—'}
-                          </p>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1">
-                            {m.thinBookWarning && (
-                              <span title="Thin book warning">
-                                <ShieldAlert className="h-3.5 w-3.5 text-red-400" />
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs tabular-nums text-gray-300">{formatDepth(m.bidDepth)}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs tabular-nums text-gray-300">{formatDepth(m.askDepth)}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              {m.depthImbalance > 0.1 ? (
+                                <TrendingUp className="h-3 w-3 text-emerald-400" />
+                              ) : m.depthImbalance < -0.1 ? (
+                                <TrendingDown className="h-3 w-3 text-red-400" />
+                              ) : null}
+                              <span className={cn('text-xs tabular-nums', imbalanceColor(m.depthImbalance))}>
+                                {m.depthImbalance > 0 ? '+' : ''}{(m.depthImbalance * 100).toFixed(0)}%
                               </span>
-                            )}
-                            {(m.largeBidWall || m.largeAskWall) && (
-                              <span title="Anchor wall detected">
-                                <Anchor className="h-3.5 w-3.5 text-amber-400" />
-                              </span>
-                            )}
-                            {!m.thinBookWarning && !m.largeBidWall && !m.largeAskWall && (
-                              <span className="text-xs text-gray-600">—</span>
-                            )}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
+                            </div>
+                          </TableCell>
+                          <TableCell className="w-28">
+                            <div className="mx-auto h-2 w-20 overflow-hidden rounded-full bg-gray-800">
+                              <div
+                                className={cn('h-full rounded-full transition-all', gauge.color)}
+                                style={{ width: gauge.width }}
+                              />
+                            </div>
+                            <p className="mt-1 text-center text-[10px] text-gray-500">
+                              {m.fillProbability !== null ? `${(m.fillProbability * 100).toFixed(0)}%` : '\u2014'}
+                            </p>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-1">
+                              {m.thinBookWarning && (
+                                <span title="Thin book warning">
+                                  <ShieldAlert className="h-3.5 w-3.5 text-red-400" />
+                                </span>
+                              )}
+                              {(m.largeBidWall || m.largeAskWall) && (
+                                <span title="Anchor wall detected">
+                                  <Anchor className="h-3.5 w-3.5 text-amber-400" />
+                                </span>
+                              )}
+                              {!m.thinBookWarning && !m.largeBidWall && !m.largeAskWall && (
+                                <span className="text-xs text-gray-600">\u2014</span>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+              <div className="border-t border-gray-800 px-6 py-4">
+                <PaginationBar page={page} totalPages={totalPages} limit={limit} onPageChange={setPage} onLimitChange={setLimit} />
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -393,7 +441,7 @@ export function OrderbookDashboard() {
                             {formatDepth(m.largeBidWall)}
                           </Badge>
                         ) : (
-                          <span className="text-xs text-gray-600">—</span>
+                          <span className="text-xs text-gray-600">\u2014</span>
                         )}
                       </TableCell>
                       <TableCell className="text-right">
@@ -402,7 +450,7 @@ export function OrderbookDashboard() {
                             {formatDepth(m.largeAskWall)}
                           </Badge>
                         ) : (
-                          <span className="text-xs text-gray-600">—</span>
+                          <span className="text-xs text-gray-600">\u2014</span>
                         )}
                       </TableCell>
                     </TableRow>

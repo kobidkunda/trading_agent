@@ -93,6 +93,7 @@ model MarketSnapshot {
   market         Market   @relation(fields: [marketId], references: [id])
   venue          String?
   tokenId        String?
+  noTokenId      String?
   price          Float?
   impliedProb    Float
   impliedProbability Float?
@@ -104,6 +105,10 @@ model MarketSnapshot {
   bestAsk        Float?
   bidDepth       Float?
   askDepth       Float?
+  noBestBid      Float?
+  noBestAsk      Float?
+  noBidDepth     Float?
+  noAskDepth     Float?
   priceImpact    Float?
   fillProbability Float?
   yesPrice       Float?
@@ -823,6 +828,10 @@ model OrderbookSnapshot {
   orderbookSource String?
   bidDepth       Float?
   askDepth       Float?
+  noBestBid      Float?
+  noBestAsk      Float?
+  noBidDepth     Float?
+  noAskDepth     Float?
   depthImbalance Float?
   largeBidWall   Float?
   largeAskWall   Float?

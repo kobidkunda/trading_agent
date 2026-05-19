@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useState } from 'react';
 import {
   ScrollText,
   Filter,
@@ -33,8 +33,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { usePagination } from '@/hooks/use-pagination';
+import { PaginationBar } from '@/components/trading/PaginationBar';
+import type { PaginationParams, PaginatedResponse } from '@/lib/types';
 
 type LifecycleStatus = 'PLANNED' | 'SUBMITTED' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'FAILED' | 'EXPIRED';
 
@@ -65,8 +67,7 @@ interface OrderRecord {
   } | null;
 }
 
-type SortField = 'price' | 'size' | 'lifecycleStatus' | 'pnl' | 'createdAt';
-type SortDir = 'asc' | 'desc';
+const ORDER_LIFECYCLE_STATUSES: LifecycleStatus[] = ['PLANNED', 'SUBMITTED', 'PARTIALLY_FILLED', 'FILLED', 'CANCELLED', 'FAILED', 'EXPIRED'];
 
 function lifecycleBadge(status: LifecycleStatus) {
   const styles: Record<string, string> = {
@@ -116,91 +117,53 @@ function formatPnl(val: number | null): string {
 }
 
 export function PaperOrdersDashboard() {
-  const [orders, setOrders] = useState<OrderRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
-  const [sortField, setSortField] = useState<SortField>('createdAt');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const res = await fetch('/api/orders');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!cancelled) setOrders(data.orders ?? data ?? []);
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load orders');
-          toast.error('Failed to load orders');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, []);
+  const {
+    data: orders,
+    page,
+    limit,
+    total,
+    totalPages,
+    sortBy,
+    sortOrder,
+    loading,
+    error,
+    setPage,
+    setLimit,
+    setSort,
+  } = usePagination<OrderRecord>(
+    async (params: PaginationParams): Promise<PaginatedResponse<OrderRecord>> => {
+      const query = new URLSearchParams({
+        page: String(params.page),
+        limit: String(params.limit),
+        sortBy: params.sortBy || 'createdAt',
+        sortOrder: params.sortOrder || 'desc',
+      });
+      if (search.trim()) query.set('search', search.trim());
+      if (statusFilter !== 'ALL') query.set('status', statusFilter);
+      const res = await fetch(`/api/orders?${query}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    [search, statusFilter],
+    { defaultSortBy: 'createdAt', defaultSortOrder: 'desc' },
+  );
 
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
-    } else {
-      setSortField(field);
-      setSortDir('desc');
-    }
+  const handleSort = (field: string) => {
+    const newOrder = sortBy === field && sortOrder === 'desc' ? 'asc' : 'desc';
+    setSort(field, newOrder);
   };
 
-  const statuses = useMemo(() => {
-    const set = new Set(orders.map((o) => o.lifecycleStatus));
-    return Array.from(set).sort();
-  }, [orders]);
+  const SortIcon = sortOrder === 'desc' ? ChevronDown : ChevronUp;
 
-  const filtered = useMemo(() => {
-    let list = orders;
-    if (statusFilter !== 'ALL') {
-      list = list.filter((o) => o.lifecycleStatus === statusFilter);
-    }
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (o) =>
-          o.market?.title?.toLowerCase().includes(q) ||
-          o.market?.venue?.toLowerCase().includes(q) ||
-          o.side?.toLowerCase().includes(q)
-      );
-    }
-    return list.sort((a, b) => {
-      const av = a[sortField];
-      const bv = b[sortField];
-      const aNum = av === null || av === undefined ? -Infinity : (typeof av === 'string' ? av.localeCompare(String(bv)) : Number(av));
-      const bNum = bv === null || bv === undefined ? -Infinity : (typeof bv === 'string' ? String(bv).localeCompare(String(av)) : Number(bv));
-      return sortDir === 'desc' ? bNum - aNum : aNum - bNum;
-    });
-  }, [orders, search, statusFilter, sortField, sortDir]);
-
-  const SortIcon = sortDir === 'desc' ? ChevronDown : ChevronUp;
+  const startIndex = total === 0 ? 0 : (page - 1) * limit + 1;
+  const endIndex = Math.min(page * limit, total);
 
   const filledCount = orders.filter((o) => o.lifecycleStatus === 'FILLED').length;
   const openCount = orders.filter((o) => ['PLANNED', 'SUBMITTED', 'PARTIALLY_FILLED'].includes(o.lifecycleStatus)).length;
   const totalPnl = orders.reduce((s, o) => s + (o.pnl ?? 0), 0);
-
-  if (loading) {
-    return (
-      <div className="space-y-6">
-        <div className="h-8 w-48 animate-pulse rounded bg-gray-800" />
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-20 animate-pulse rounded-xl bg-gray-900" />
-          ))}
-        </div>
-        <div className="h-96 animate-pulse rounded-xl bg-gray-900" />
-      </div>
-    );
-  }
 
   if (error) {
     return (
@@ -211,11 +174,25 @@ export function PaperOrdersDashboard() {
             <XCircle className="mb-3 h-10 w-10 text-red-400" />
             <p className="text-sm text-red-400">{error}</p>
             <Button variant="outline" size="sm" className="mt-4 border-gray-700 text-gray-300 hover:bg-gray-800"
-              onClick={() => { setError(null); setLoading(true); window.location.reload(); }}>
+              onClick={() => window.location.reload()}>
               Retry
             </Button>
           </CardContent>
         </Card>
+      </div>
+    );
+  }
+
+  if (loading && orders.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="h-8 w-48 animate-pulse rounded bg-gray-800" />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="h-20 animate-pulse rounded-xl bg-gray-900" />
+          ))}
+        </div>
+        <div className="h-96 animate-pulse rounded-xl bg-gray-900" />
       </div>
     );
   }
@@ -233,7 +210,7 @@ export function PaperOrdersDashboard() {
         <Card className="border-gray-800 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Total Orders</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{orders.length}</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{total}</p>
           </CardContent>
         </Card>
         <Card className="border-cyan-500/20 bg-gray-900">
@@ -275,7 +252,7 @@ export function PaperOrdersDashboard() {
           </SelectTrigger>
           <SelectContent className="border-gray-800 bg-gray-900 text-gray-300">
             <SelectItem value="ALL">All Statuses</SelectItem>
-            {statuses.map((s) => (
+            {ORDER_LIFECYCLE_STATUSES.map((s) => (
               <SelectItem key={s} value={s}>{s.replace('_', ' ')}</SelectItem>
             ))}
           </SelectContent>
@@ -288,12 +265,12 @@ export function PaperOrdersDashboard() {
             <ScrollText className="h-4 w-4 text-emerald-400" />
             Orders
             <span className="ml-1 text-xs font-normal text-gray-500">
-              ({filtered.length} of {orders.length})
+              (Showing {startIndex}–{endIndex} of {total})
             </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          {filtered.length === 0 ? (
+          {orders.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-gray-800">
                 <ScrollText className="h-6 w-6 text-gray-500" />
@@ -306,79 +283,84 @@ export function PaperOrdersDashboard() {
               </p>
             </div>
           ) : (
-            <div className="max-h-[600px] overflow-y-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-gray-800 hover:bg-transparent">
-                    <TableHead className="text-gray-500">Market</TableHead>
-                    <TableHead className="text-gray-500">Side</TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('price')}>
-                      <span className="inline-flex items-center gap-1">
-                        Price {sortField === 'price' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('size')}>
-                      <span className="inline-flex items-center gap-1">
-                        Size {sortField === 'size' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="text-gray-500">Status</TableHead>
-                    <TableHead className="text-right text-gray-500">Spread Cost</TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('pnl')}>
-                      <span className="inline-flex items-center gap-1">
-                        PnL {sortField === 'pnl' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                    <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('createdAt')}>
-                      <span className="inline-flex items-center gap-1">
-                        Created {sortField === 'createdAt' && <SortIcon className="h-3 w-3" />}
-                      </span>
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map((o) => (
-                    <TableRow key={o.id} className={cn(
-                      'border-gray-800 transition-colors hover:bg-gray-800/50',
-                      o.lifecycleStatus === 'FAILED' && 'bg-red-500/5'
-                    )}>
-                      <TableCell>
-                        <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
-                          {o.market?.title ?? '—'}
-                        </p>
-                      </TableCell>
-                      <TableCell>{sideBadge(o.side)}</TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-300">
-                          {o.price === null || o.price === undefined ? '—' : `$${o.price.toFixed(4)}`}
+            <>
+              <div className="max-h-[600px] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-gray-800 hover:bg-transparent">
+                      <TableHead className="text-gray-500">Market</TableHead>
+                      <TableHead className="text-gray-500">Side</TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('price')}>
+                        <span className="inline-flex items-center gap-1">
+                          Price {sortBy === 'price' && <SortIcon className="h-3 w-3" />}
                         </span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-300">
-                          {o.size === null || o.size === undefined ? '—' : `$${o.size.toFixed(2)}`}
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('size')}>
+                        <span className="inline-flex items-center gap-1">
+                          Size {sortBy === 'size' && <SortIcon className="h-3 w-3" />}
                         </span>
-                      </TableCell>
-                      <TableCell>{lifecycleBadge(o.lifecycleStatus)}</TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-500">
-                          {o.spreadCost !== null ? formatCurrency(o.spreadCost) : '—'}
+                      </TableHead>
+                      <TableHead className="text-gray-500">Status</TableHead>
+                      <TableHead className="text-right text-gray-500">Spread Cost</TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('pnl')}>
+                        <span className="inline-flex items-center gap-1">
+                          PnL {sortBy === 'pnl' && <SortIcon className="h-3 w-3" />}
                         </span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className={cn('text-xs font-medium tabular-nums', pnlColor(o.pnl))}>
-                          {formatPnl(o.pnl)}
+                      </TableHead>
+                      <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('createdAt')}>
+                        <span className="inline-flex items-center gap-1">
+                          Created {sortBy === 'createdAt' && <SortIcon className="h-3 w-3" />}
                         </span>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <span className="text-xs tabular-nums text-gray-500">
-                          {new Date(o.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                        </span>
-                      </TableCell>
+                      </TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                  </TableHeader>
+                  <TableBody>
+                    {orders.map((o) => (
+                      <TableRow key={o.id} className={cn(
+                        'border-gray-800 transition-colors hover:bg-gray-800/50',
+                        o.lifecycleStatus === 'FAILED' && 'bg-red-500/5'
+                      )}>
+                        <TableCell>
+                          <p className="max-w-[200px] truncate text-xs font-medium text-gray-200">
+                            {o.market?.title ?? '—'}
+                          </p>
+                        </TableCell>
+                        <TableCell>{sideBadge(o.side)}</TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-300">
+                            {o.price === null || o.price === undefined ? '—' : `$${o.price.toFixed(4)}`}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-300">
+                            {o.size === null || o.size === undefined ? '—' : `$${o.size.toFixed(2)}`}
+                          </span>
+                        </TableCell>
+                        <TableCell>{lifecycleBadge(o.lifecycleStatus)}</TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-500">
+                            {o.spreadCost !== null ? formatCurrency(o.spreadCost) : '—'}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className={cn('text-xs font-medium tabular-nums', pnlColor(o.pnl))}>
+                            {formatPnl(o.pnl)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-500">
+                            {new Date(o.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                          </span>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <div className="border-t border-gray-800 px-4 py-3">
+                <PaginationBar page={page} totalPages={totalPages} limit={limit} onPageChange={setPage} onLimitChange={setLimit} />
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
