@@ -26,6 +26,31 @@ interface ProviderConfig {
   model: string;
 }
 
+function parseStreamingChatCompletion(text: string): { content: string; tokenCount: number } | null {
+  if (!text.includes('data:')) return null;
+
+  let content = '';
+  let tokenCount = 0;
+
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data:')) continue;
+
+    const payload = trimmed.slice('data:'.length).trim();
+    if (!payload || payload === '[DONE]') continue;
+
+    try {
+      const chunk = JSON.parse(payload);
+      content += chunk.choices?.[0]?.delta?.content || '';
+      tokenCount = chunk.usage?.total_tokens || tokenCount;
+    } catch {
+      continue;
+    }
+  }
+
+  return content ? { content, tokenCount } : null;
+}
+
 function isInvalidApiKey(key: string): boolean {
   if (!key || key.length < 20) return true;
   const invalidPatterns = [
@@ -160,9 +185,22 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
         throw lastError;
       }
 
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content || '';
-      const tokenCount = data.usage?.total_tokens || 0;
+      const responseText = await response.text();
+      let content = '';
+      let tokenCount = 0;
+
+      try {
+        const data = JSON.parse(responseText);
+        content = data.choices?.[0]?.message?.content || '';
+        tokenCount = data.usage?.total_tokens || 0;
+      } catch {
+        const streamed = parseStreamingChatCompletion(responseText);
+        if (!streamed) {
+          throw new Error(`LLM response was not valid JSON or SSE chat completion: ${responseText.slice(0, 500)}`);
+        }
+        content = streamed.content;
+        tokenCount = streamed.tokenCount;
+      }
 
       let parsedJson: Record<string, unknown> | null = null;
       if (options.responseFormat === 'json') {

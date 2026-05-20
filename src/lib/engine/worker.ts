@@ -756,6 +756,14 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       }
       const research = await lookupResearchRunForMarket(marketId, data.researchRunId as string | undefined);
       if (!research) {
+        // Check if research is still in progress — if so, retry instead of failing
+        const runningResearch = await db.researchRun.findFirst({
+          where: { marketId, status: { in: ['PENDING', 'RUNNING'] } },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (runningResearch) {
+          throw new Error(`Research still in progress for ${marketId} (status: ${runningResearch.status}). Retrying JUDGE_MARKET.`);
+        }
         throw new Error(`No completed ResearchRun found for market: ${marketId}`);
       }
       const result = await runJudgeStage(marketId, research.researchRunId, research.researchContext, research.depth) as unknown as Record<string, unknown>;
@@ -821,31 +829,47 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       // Chain: risk passed with BID → enqueue EXECUTE
       if (!result.skipped && result.riskAction === 'BID') {
         const gatedRisk = result.gatedRiskResult as Record<string, unknown> | undefined;
-        await db.job.create({
-          data: {
+        const dedupKey = `PAPER_EXECUTE:${result.decisionId}`;
+
+        // Deduplication: skip if an active job already exists for this decision
+        const existingExecJob = await db.job.findFirst({
+          where: {
             type: 'PAPER_EXECUTE',
-            status: 'PENDING',
-            priority: 10,
-            payload: JSON.stringify({
-              marketId,
-              decisionId: result.decisionId as string,
-              judgeProbability: judge.judgeProbability,
-              judgeConfidence: judge.judgeConfidence,
-              judgeUncertainty: judge.judgeUncertainty,
-              aPlusGatePassed: result.aPlusGatePassed as boolean ?? false,
-              gatedAction: gatedRisk?.action ?? 'BID',
-              gatedAdjustedSize: gatedRisk?.adjustedSize ?? 0,
-              gatedMaxSize: gatedRisk?.maxSize ?? 0,
-              gatedEdge: gatedRisk?.edge ?? 0,
-              gatedSide: gatedRisk?.side ?? 'YES',
-              gatedReasonCode: gatedRisk?.reasonCode ?? '',
-              gatedReason: gatedRisk?.reason ?? '',
-              gatedUrgency: gatedRisk?.urgency ?? 'MEDIUM',
-              gatedFees: gatedRisk?.fees ?? 0,
-              gatedSlippage: gatedRisk?.slippage ?? 0,
-            }),
+            dedupKey,
+            status: { in: ['PENDING', 'RUNNING', 'RETRYING', 'COMPLETED'] },
           },
         });
+
+        if (existingExecJob) {
+          console.log(`[Worker] PAPER_EXECUTE job already exists for decision ${result.decisionId}, skipping duplicate`);
+        } else {
+          await db.job.create({
+            data: {
+              type: 'PAPER_EXECUTE',
+              status: 'PENDING',
+              priority: 10,
+              dedupKey,
+              payload: JSON.stringify({
+                marketId,
+                decisionId: result.decisionId as string,
+                judgeProbability: judge.judgeProbability,
+                judgeConfidence: judge.judgeConfidence,
+                judgeUncertainty: judge.judgeUncertainty,
+                aPlusGatePassed: result.aPlusGatePassed as boolean ?? false,
+                gatedAction: gatedRisk?.action ?? 'BID',
+                gatedAdjustedSize: gatedRisk?.adjustedSize ?? 0,
+                gatedMaxSize: gatedRisk?.maxSize ?? 0,
+                gatedEdge: gatedRisk?.edge ?? 0,
+                gatedSide: gatedRisk?.side ?? 'YES',
+                gatedReasonCode: gatedRisk?.reasonCode ?? '',
+                gatedReason: gatedRisk?.reason ?? '',
+                gatedUrgency: gatedRisk?.urgency ?? 'MEDIUM',
+                gatedFees: gatedRisk?.fees ?? 0,
+                gatedSlippage: gatedRisk?.slippage ?? 0,
+              }),
+            },
+          });
+        }
       }
       return result;
     }
@@ -1090,7 +1114,7 @@ async function processOrderTracking(marketId?: string): Promise<Record<string, u
       data: {
         type: 'ORDER_TRACK',
         status: 'PENDING',
-        priority: 4,
+        priority: 10,
         payload: JSON.stringify({ marketId }),
       },
     }).catch((err) => console.error('[Worker] Failed to reschedule ORDER_TRACK:', err));

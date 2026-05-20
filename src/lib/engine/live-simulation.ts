@@ -8,6 +8,7 @@ import {
   type PipelineStageEvent,
 } from '@/lib/engine/pipeline';
 import { runResolutionCycle } from '@/lib/engine/resolution-poller';
+import { ensurePaperLoopRunning } from '@/lib/engine/paper-order-loop';
 import { DEFAULT_STRATEGY } from '@/lib/engine/risk';
 import { runMarketLoopOnce } from '@/lib/engine/market-loop';
 import { processNextQueuedJobOnce } from '@/lib/engine/worker';
@@ -469,6 +470,12 @@ function startEngine(): void {
     state.dataSource = 'REAL';
     console.log(`[LiveSim] Starting in ${state.mode} mode (real scanner)`);
     setSimulationTimeout(setTimeout(runPaperLoop, 2000));
+    // Auto-start dedicated paper order fill loop for PAPER mode
+    if (state.mode === 'PAPER') {
+      ensurePaperLoopRunning().catch((err) => {
+        console.error('[LiveSim] Paper order loop auto-start failed:', err);
+      });
+    }
   }
 }
 

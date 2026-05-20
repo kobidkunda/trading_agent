@@ -56,7 +56,7 @@ const normalizedServiceKey = serviceKey.trim().toLowerCase().replace(/[\s\-]+/g,
 
 export async function searchSearXNG(query: string, maxResults: number = 50): Promise<SearchResult[]> {
   const credResult = await getCredentialForService('searxng');
-  const baseUrl = credResult?.baseUrl || process.env.SEARXNG_URL || 'http://localhost:8888';
+  const baseUrl = credResult?.baseUrl || process.env.SEARXNG_URL || 'http://192.168.88.97:7777';
   const apiKey = credResult?.apiKey || '';
 
   try {
@@ -120,7 +120,7 @@ export async function searchSearXNGX(query: string, maxResults: number = 50): Pr
 
 async function searchSearXNGWithFilter(query: string, maxResults: number = 50): Promise<SearchResult[]> {
   const credResult = await getCredentialForService('searxng');
-  const baseUrl = credResult?.baseUrl || process.env.SEARXNG_URL || 'http://localhost:8888';
+  const baseUrl = credResult?.baseUrl || process.env.SEARXNG_URL || 'http://192.168.88.97:7777';
   const apiKey = credResult?.apiKey || '';
 
   try {

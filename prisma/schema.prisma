@@ -936,4 +936,5 @@ model Job {
   researchCheckpoints ResearchCheckpoint[]
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+
 }

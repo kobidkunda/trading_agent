@@ -5,10 +5,11 @@ import { runTriageAgent } from '@/lib/engine/agents/triage';
 import { runDebateArena } from '@/lib/engine/debate-arena';
 import { searchSearXNG } from '@/lib/engine/research/search';
 import { extractContent } from '@/lib/engine/research/extract';
-import { runDeerFlowResearch } from '@/lib/engine/research/deerflow';
+// DeerFlow disabled — service unreachable
+// import { runDeerFlowResearch } from '@/lib/engine/research/deerflow';
 import { runTradingAgentsSimple, runTradingAgentsNative, isNativeAnalysisCandidate } from '@/lib/engine/research/tradingagents-api';
 import { runFullResearch } from '@/lib/engine/research/full-research';
-import { synthesizeFindings, formatAgentReachAsSource, formatDeerFlowAsSource, formatSearchAsSource, formatTradingAgentsAsSource, formatRedditAsSource, formatXAsSource } from '@/lib/engine/research/synthesis';
+import { synthesizeFindings, formatAgentReachAsSource, formatSearchAsSource, formatTradingAgentsAsSource, formatRedditAsSource, formatXAsSource } from '@/lib/engine/research/synthesis';
 import { writeResearchToQdrant, retrieveSimilarMarkets } from '@/lib/engine/memory/qdrant';
 import { isTestMode, getTradingMode, getModeState } from '@/lib/engine/mode';
 import { getStageRouting, getResearchDepth, getModelForStage } from '@/lib/engine/service-routing';
@@ -186,34 +187,6 @@ async function saveSearchSources(
   );
 }
 
-async function saveDeerFlowSources(
-  researchRunId: string,
-  result: Awaited<ReturnType<typeof runDeerFlowResearch>>,
-): Promise<void> {
-  await saveSearchSources(
-    researchRunId,
-    result.allSearchResults.map((source) => ({
-      ...source,
-      sourceType: 'SEARCH',
-      recencyScore: 0.7,
-      qualityScore: 0.65,
-    })),
-  );
-
-  await Promise.all(
-    dedupeSourcesByUrl(result.allExtractedContent).map((source) =>
-      createResearchSourceSafe({
-        researchRunId,
-        url: source.url,
-        title: source.title,
-        content: source.content,
-        sourceType: 'CRAWL',
-        recencyScore: 0.8,
-        qualityScore: 0.75,
-      }),
-    ),
-  );
-}
 
 async function saveRedditSources(researchRunId: string, redditReport: Record<string, unknown>): Promise<number> {
   const posts = Array.isArray(redditReport.posts) ? (redditReport.posts as Array<Record<string, unknown>>) : [];
@@ -466,7 +439,7 @@ export async function runResearchStage(
 
   const ctx = await resolvePipelineContext(marketId);
   const { market, candidate, impliedProb, routing } = ctx;
-  const actualDepth: ResearchDepth = depth ?? getResearchDepth(routing);
+  let actualDepth: ResearchDepth = depth ?? getResearchDepth(routing);
 
   const researchRun = await db.researchRun.create({
     data: {
@@ -480,65 +453,14 @@ export async function runResearchStage(
 
   let researchContext = '';
 
+  // DeerFlow disabled — service unreachable (192.168.88.97:2026). Redirect DEERFLOW→FULL.
   if (actualDepth === 'DEERFLOW') {
-    stages.push('DEERFLOW');
-    const deerflowHealth = await canRunStage('DEERFLOW');
-
-    if (!deerflowHealth.canRun) {
-      await emitStage({
-        stage: 'DEERFLOW',
-        type: 'failed',
-        message: `Health check failed: ${deerflowHealth.skipReason}`,
-        provider: 'deerflow',
-        serviceName: 'deerflow',
-        failureReason: deerflowHealth.skipReason,
-      });
-      await db.researchRun.update({
-        where: { id: researchRun.id },
-        data: { status: 'FAILED', completedAt: new Date() },
-      });
-      throw new Error(`DeerFlow unavailable: ${deerflowHealth.skipReason}`);
-    }
-
-    await emitStage({
-      stage: 'DEERFLOW',
-      message: 'Running DeerFlow research',
-      provider: 'deerflow',
-      serviceName: 'deerflow',
-      model: routing.deerflowModel || routing.deerflowApiModel || 'default',
-    });
-    const deerFlowResult = await runDeerFlowResearch(
-      market.title,
-      market.description || '',
-      impliedProb,
-      routing,
-    );
-
-    researchContext = [
-      deerFlowResult.summary,
-      ...deerFlowResult.keyFindings.map((f) => `Finding: ${f}`),
-      ...deerFlowResult.contradictions.map((c) => `Contradiction: ${c}`),
-    ].join('\n');
-
-    await saveDeerFlowSources(researchRun.id, deerFlowResult);
-
-    await db.agentOutput.create({
-      data: {
-        researchRunId: researchRun.id,
-        role: 'DEERFLOW',
-        stage: 'DEERFLOW',
-        serviceName: 'deerflow',
-        provider: 'deerflow',
-        modelUsed: routing.deerflowModel || 'default',
-        output: JSON.stringify(deerFlowResult),
-        rawOutput: JSON.stringify(deerFlowResult),
-        summary: deerFlowResult.summary.slice(0, 4000),
-      },
-    });
-  } else if (actualDepth === 'FULL') {
-    const synthesisModel = routing.deerflowModel || routing.analystDeepThinkLlm || 'paper_proglm';
+    console.warn('[Pipeline] DEERFLOW depth requested but DeerFlow disabled, falling back to FULL');
+    actualDepth = 'FULL';
+  }
+  if (actualDepth === 'FULL') {
+    const synthesisModel = routing.analystDeepThinkLlm || 'paper_proglm';
     const analystSections: string[] = [];
-    let deerflowSource: ReturnType<typeof formatDeerFlowAsSource> | null = null;
     let agentReachSource: ReturnType<typeof formatAgentReachAsSource> | null = null;
     let newsSource: ReturnType<typeof formatTradingAgentsAsSource> | null = null;
     let sentimentSource: ReturnType<typeof formatTradingAgentsAsSource> | null = null;
@@ -600,7 +522,7 @@ export async function runResearchStage(
         extractedContentCount: webSearchResults.length,
         currentSearchPhase: 'WEB_SEARCH',
         partialResultIds: [],
-      }).catch(() => {});
+      }).catch((e) => { console.error('[Pipeline] Failed to save deep research progress (WEB_SEARCH):', e); });
     }
 
     const fullResearchResult = await runFullResearch({
@@ -614,34 +536,7 @@ export async function runResearchStage(
     });
 
     if (fullResearchResult.deerflow) {
-      deerflowSource = formatDeerFlowAsSource(fullResearchResult.deerflow);
-      analystSections.push(`[DEERFLOW]\n${deerflowSource.raw}`);
-      await saveDeerFlowSources(researchRun.id, fullResearchResult.deerflow);
-      await db.agentOutput.create({
-        data: {
-          researchRunId: researchRun.id,
-          role: 'DEERFLOW',
-          stage: 'DEERFLOW',
-          serviceName: 'deerflow',
-          provider: 'deerflow',
-          modelUsed: routing.deerflowModel || routing.deerflowApiModel || 'default',
-          output: JSON.stringify(fullResearchResult.deerflow),
-          rawOutput: JSON.stringify(fullResearchResult.deerflow),
-          summary: fullResearchResult.deerflow.summary.slice(0, 4000),
-        },
-      });
-
-      if (resumeFromCheckpoint?.jobId) {
-        await saveDeepResearchProgress(resumeFromCheckpoint.jobId, researchRun.id, {
-          completedSearchQueries: resumeFromCheckpoint.completedSearchQueries ?? [
-            market.title,
-            ...additionalQueries,
-          ],
-          extractedContentCount: (resumeFromCheckpoint.extractedContentCount ?? 0) + fullResearchResult.deerflow.keyFindings.length,
-          currentSearchPhase: 'DEERFLOW',
-          partialResultIds: [],
-        }).catch(() => {});
-      }
+      console.warn('[Pipeline] DeerFlow result present but DeerFlow disabled — ignoring');
     }
 
     if (fullResearchResult.agentReach) {
@@ -806,7 +701,7 @@ export async function runResearchStage(
         extractedContentCount: analystSections.length,
         currentSearchPhase: 'SYNTHESIS',
         partialResultIds: [],
-      }).catch(() => {});
+      }).catch((e) => { console.error('[Pipeline] Failed to save deep research progress (SYNTHESIS):', e); });
     }
 
     await emitStage({
@@ -823,7 +718,7 @@ export async function runResearchStage(
         newsSource,
         sentimentSource,
         technicalSource,
-        deerflowSource,
+        null, // deerflow — disabled
         agentReachSource,
         searchSource,
         redditSource,
@@ -916,7 +811,7 @@ export async function runResearchStage(
       });
     }
 
-    // ── TradingAgents for QUICK/DEEP depths (not FULL/DEERFLOW which handle it above) ──
+    // ── TradingAgents for QUICK/DEEP depths (not FULL which handles it above) ──
     stages.push('ANALYSTS');
     await emitStage({
       stage: 'TRADINGAGENTS',
@@ -1141,10 +1036,7 @@ export async function runResearchStage(
   // Quality gate: when research produces no usable context, still complete
   // the run with a fallback indicator. The judge stage will build a
   // market-data fallback context so the pipeline doesn't stall.
-  const failurePatterns = [
-    'Research unavailable: DeerFlow and Firecrawl both unavailable',
-    'Research unavailable: DeerFlow service is down',
-  ];
+  const failurePatterns: string[] = [];
   if (!researchContext || failurePatterns.includes(researchContext.trim())) {
     console.warn(`[Pipeline] Research produced no usable context for ${marketId}, marking for fallback`);
     // Don't throw — let judge stage build fallback from market data
@@ -1156,7 +1048,7 @@ export async function runResearchStage(
       where: { id: researchRun.id },
       data: { status: 'COMPLETED', completedAt: new Date() },
     });
-  } catch { /* non-fatal */ }
+  } catch (e) { console.error('[Pipeline] Failed to finalize research run status:', e); }
 
   return {
     researchRunId: researchRun.id,
@@ -1185,7 +1077,7 @@ function buildMarketDataFallbackContext(
 ): string {
   const lines = [
     `[FALLBACK_CONTEXT — NO RESEARCH SOURCES AVAILABLE]`,
-    `All research sources (DeerFlow, SearXNG, TradingAgents, Agent-Reach) returned 0 usable sources.`,
+    `All research sources (SearXNG, TradingAgents, Agent-Reach) returned 0 usable sources.`,
     `Confidence estimates should be conservative (low confidence) due to research unavailability.`,
     ``,
     `--- MARKET DATA (for fallback analysis) ---`,
@@ -1232,7 +1124,7 @@ export async function runJudgeStage(
   const researchIsBare =
     !researchContext ||
     researchContext.trim().length < 50 ||
-    /^\[(WEB\s*SEARCH|ANALYSTS|DEERFLOW|TRADINGAGENTS|AGENT\s*REACH)\]\s*\n?\s*FAILED/.test(researchContext.trim());
+    /^\[(WEB\s*SEARCH|ANALYSTS|TRADINGAGENTS|AGENT\s*REACH)\]\s*\n?\s*FAILED/.test(researchContext.trim());
 
   const effectiveResearchContext = researchIsBare
     ? buildMarketDataFallbackContext(
@@ -1376,6 +1268,14 @@ export async function runJudgeStage(
       await db.researchRun.update({
         where: { id: researchRunId },
         data: { status: 'FAILED', completedAt: new Date() },
+      });
+      await db.auditLog.create({
+        data: {
+          action: 'DEBATE_FAILED',
+          entityType: 'ResearchRun',
+          entityId: researchRunId,
+          details: message,
+        },
       });
       await emitStage({
         stage: 'JUDGE',
@@ -2051,7 +1951,7 @@ export async function runExecuteStage(
           priority: 4,
           payload: JSON.stringify({ marketId }),
         },
-      }).catch(() => {});
+      }).catch((e) => { console.error('[Pipeline] Failed to create ORDER_TRACK job:', e); });
 
       if (candidate) {
         await db.tradeCandidate.update({
@@ -2237,7 +2137,7 @@ export async function runPipelineForMarket(
           data: { status: 'FAILED', completedAt: new Date() },
         });
       }
-    } catch {}
+    } catch (e) { console.error('[Pipeline] Failed to mark orphaned research runs as FAILED:', e); }
     return result;
   }
 }

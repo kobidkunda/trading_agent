@@ -1,7 +1,7 @@
 import { db } from '@/lib/db';
 import type { PaperBetExecutionStatus } from '@/lib/types';
 
-const EXECUTED_PAPER_BET_STATUSES: PaperBetExecutionStatus[] = ['SUBMITTED', 'FILLED', 'PARTIAL'];
+const EXECUTED_PAPER_BET_STATUSES: PaperBetExecutionStatus[] = ['FILLED', 'PARTIAL'];
 const RESOLVED_PAPER_BET_STATUSES: PaperBetExecutionStatus[] = ['FILLED', 'PARTIAL'];
 
 export interface PaperBetScore {

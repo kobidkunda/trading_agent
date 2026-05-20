@@ -69,10 +69,10 @@ export async function fetchAvailableModels(): Promise<string[]> {
     
     console.log(`[ModelDiscovery] Found ${models.length} models from LiteLLM`);
     
-    // Filter to paper_* models and known good models
+    // Filter to known good models and dynamic discovery
     const preferredModels = models.filter((id: string) => {
-      // Prioritize paper_* models (our naming convention)
-      if (id.startsWith('paper_')) return true;
+      // Prioritize dynamic naming conventions for the current endpoint
+      if (id.includes('pro') || id.includes('flash') || id.includes('lite') || id.includes('free') || id.includes('paid')) return true;
       // Include other known good models
       if (['gpt-5', 'claude-opus-4-6-thinking', 'gemini-2-5-pro', 'kimi-k2-5', 'kimi-k2p5-turbo'].includes(id)) return true;
       return false;

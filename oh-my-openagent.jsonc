@@ -1,0 +1,149 @@
+{
+  "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/oh-my-opencode.schema.json",
+  "team_mode": {
+    "enabled": true
+  },
+  "runtime_fallback": true,
+  "tmux": {
+    "enabled": true,
+    "layout": "main-vertical",
+    "main_pane_size": 60,
+    "main_pane_min_width": 120,
+    "agent_pane_min_width": 40
+  },
+  "background_task": {
+    "defaultConcurrency": 10,
+    "staleTimeoutMs": 180000
+  },
+  "agents": {
+    "sisyphus": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "prometheus": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "metis": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "oracle": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "hephaestus": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "momus": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "atlas": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "multimodal-looker": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "explore": {
+      "model": "selfhost/flash_paid",
+      "fallback_models": [
+        "selfhost/lite_paid"
+      ]
+    },
+    "librarian": {
+      "model": "selfhost/flash_paid",
+      "fallback_models": [
+        "selfhost/lite_paid"
+      ]
+    },
+    "sisyphus-junior": {
+      "model": "selfhost/flash_paid",
+      "fallback_models": [
+        "selfhost/lite_paid"
+      ]
+    }
+  },
+  "categories": {
+    "visual-engineering": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "ultrabrain": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "deep": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "artistry": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "quick": {
+      "model": "selfhost/lite_paid",
+      "fallback_models": [
+        "selfhost/flash_paid"
+      ]
+    },
+    "unspecified-low": {
+      "model": "selfhost/flash_paid",
+      "fallback_models": [
+        "selfhost/lite_paid"
+      ]
+    },
+    "unspecified-high": {
+      "model": "selfhost/pro_paid",
+      "fallback_models": [
+        "selfhost/flash_paid",
+        "selfhost/lite_paid"
+      ]
+    },
+    "writing": {
+      "model": "selfhost/flash_paid",
+      "fallback_models": [
+        "selfhost/lite_paid"
+      ]
+    }
+  }
+}

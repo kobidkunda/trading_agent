@@ -1,0 +1,10 @@
+name = "market-venue-proxy"
+compatibility_date = "2025-05-21"
+compatibility_flags = ["nodejs_compat"]
+
+[env.production]
+name = "market-venue-proxy-prod"
+
+[vars]
+PROXY_TIMEOUT_MS = "25000"
+ALLOW_ANY_TARGET = "false"

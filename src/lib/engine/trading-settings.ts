@@ -19,16 +19,27 @@ export interface EffectiveTradingConfigInput {
   tradingMode?: string | null;
 }
 
+let _scopedConfigOverride: Partial<TradingConfig> | null = null;
+
+export function setScopedConfigOverride(override: Partial<TradingConfig> | null): void {
+  _scopedConfigOverride = override;
+}
+
 export function getEffectiveTradingConfig(input: EffectiveTradingConfigInput = {}): TradingConfig {
   const fromStrategy = {
     ...DEFAULT_STRATEGY,
     ...(input.strategySettings ?? {}),
   };
 
+  const tradingOverrides = input.tradingConfig ?? {};
   const merged = normalizeTradingConfig({
     ...fromStrategy,
-    ...(input.tradingConfig ?? {}),
-    mode: normalizeTradingMode(input.tradingMode ?? input.tradingConfig?.mode ?? undefined),
+    ...tradingOverrides,
+    // Restore strategy-authoritative fields so stale trading_config cannot clobber them
+    enabledVenues: fromStrategy.enabledVenues,
+    enabledCategories: fromStrategy.enabledCategories,
+    mode: normalizeTradingMode(input.tradingMode ?? tradingOverrides.mode ?? undefined),
+    ...(_scopedConfigOverride ?? {}),
   });
 
   setTradingMode(merged.mode);

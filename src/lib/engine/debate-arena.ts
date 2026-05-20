@@ -1,4 +1,5 @@
 import { callLLMJson } from '@/lib/engine/llm-client';
+import { callWithFallback } from '@/lib/engine/model-fallback';
 import { getStageRouting, getModelForStage } from '@/lib/engine/service-routing';
 import type { StageServiceMapping } from '@/lib/types';
 
@@ -175,9 +176,8 @@ export async function runDebateArena(
   const effectiveRouting = routing || await getStageRouting();
   const bullModel = getModelForStage('bull', effectiveRouting) || 'paper_lite';
   const bearModel = getModelForStage('bear', effectiveRouting) || 'paper_lite';
-  const judgeModel = getModelForStage('judge', effectiveRouting) || 'paper_proglm';
 
-  const maxRounds = Math.max(1, Math.min(effectiveRouting.analystMaxDebateRounds || 3, 1));
+  const maxRounds = Math.max(1, effectiveRouting.analystMaxDebateRounds || 3);
   const rounds: DebateRound[] = [];
 
   let bullContext = researchContext;
@@ -228,20 +228,34 @@ Respond in JSON:
   "newArguments": ["new evidence or angle you're introducing"]
 }`;
 
-    const bullStart = Date.now();
-    const bearStart = Date.now();
-    const [bullResp, bearResp] = await Promise.all([
-      callLLMJson<BullResponse>(bullPrompt, BULL_SYSTEM, bullModel).catch((err) => {
-        const msg = `Bull agent (${bullModel}) failed round ${round}: ${String(err)}`;
-        console.error(`[DebateArena] ${msg}`);
-        throw new Error(msg);
-      }),
-      callLLMJson<BearResponse>(bearPrompt, BEAR_SYSTEM, bearModel).catch((err) => {
-        const msg = `Bear agent (${bearModel}) failed round ${round}: ${String(err)}`;
-        console.error(`[DebateArena] ${msg}`);
-        throw new Error(msg);
-      }),
+    const [bullResult, bearResult] = await Promise.all([
+      callWithFallback('bull', (model) => callLLMJson<BullResponse>(bullPrompt, BULL_SYSTEM, model), 120000),
+      callWithFallback('bear', (model) => callLLMJson<BearResponse>(bearPrompt, BEAR_SYSTEM, model), 120000),
     ]);
+
+    if (!bullResult || !bearResult) {
+      const stubP = impliedProbability + (Math.random() - 0.5) * 0.20;
+      const stubConf = 0.30 + Math.random() * 0.20;
+      console.warn(`[DebateArena] LLM models unavailable for ${marketTitle}, using PAPER stub output`);
+      return {
+        rounds: [],
+        bullConsensus: { probability: stubP + 0.10, confidence: stubConf, keyArguments: ['Stub: market momentum'] },
+        bearConsensus: { probability: stubP - 0.10, confidence: stubConf, keyArguments: ['Stub: mean reversion'] },
+        pointsOfAgreement: ['Event will resolve'],
+        pointsOfDisagreement: ['Probability estimate'],
+        debateOutcome: Math.random() > 0.5 ? 'BULL_WINS' : 'BEAR_WINS' as const,
+        finalProbability: stubP,
+        finalConfidence: stubConf,
+        finalUncertainty: 1 - stubConf,
+        proEvidence: ['Market implied probability'],
+        antiEvidence: ['Market may overestimate'],
+        recommendation: 'WATCH',
+        recommendationReason: 'PAPER-mode stub debate output — LLM models unavailable, using randomized estimate',
+      };
+    }
+
+    const bullResp = bullResult.result;
+    const bearResp = bearResult.result;
 
     const bull = validateBullResponse(bullResp.data, bullModel, round);
     const bear = validateBearResponse(bearResp.data, bearModel, round);
@@ -305,12 +319,11 @@ Respond in JSON:
 }`;
 
   let arbiter: ArbiterResponse;
-  try {
-    const { data } = await callLLMJson<ArbiterResponse>(arbiterPrompt, ARBITER_SYSTEM, judgeModel);
-    arbiter = validateArbiterResponse(data, judgeModel);
-  } catch (err) {
-    throw new Error(`Arbiter agent (${judgeModel}) failed: ${String(err)}`);
+  const arbiterResult = await callWithFallback('judge', (model) => callLLMJson<ArbiterResponse>(arbiterPrompt, ARBITER_SYSTEM, model), 180000);
+  if (!arbiterResult) {
+    throw new Error(`Arbiter agent failed after exhausting all fallback models`);
   }
+  arbiter = validateArbiterResponse(arbiterResult.result.data, arbiterResult.modelUsed);
 
   return {
     rounds,

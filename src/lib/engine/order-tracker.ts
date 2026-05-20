@@ -36,6 +36,7 @@ export function derivePaperBetExecutionStatus(params: {
 
   if (params.lifecycleStatus === 'FAILED') return 'FAILED';
   if (params.lifecycleStatus === 'EXPIRED') return 'EXPIRED';
+  if (params.lifecycleStatus === 'CANCELLED') return 'CANCELLED';
   if (params.lifecycleStatus === 'PLANNED') return 'PLANNED';
 
   return 'SUBMITTED';
@@ -88,7 +89,9 @@ export async function processPaperOrderFill(params: {
     };
   }
 
-// Risk re-evaluation gate: check if market still meets BID criteria
+// Risk re-evaluation gate: check if market still meets BID criteria.
+// Skip for CONSERVATIVE_PAPER fill — paper orders should always attempt fills
+// regardless of current snapshot state, since fills are simulated.
   const [latestMarketSnapshot, latestDecision] = await Promise.all([
     db.marketSnapshot.findFirst({
       where: { marketId: params.marketId },
@@ -101,7 +104,11 @@ export async function processPaperOrderFill(params: {
     }),
   ]);
 
+  const skipRiskGate =
+    normalizeFillModel(params.fillModel) === 'CONSERVATIVE_PAPER';
+
   if (
+    !skipRiskGate &&
     latestMarketSnapshot &&
     latestDecision &&
     latestDecision.judgeProbability != null &&

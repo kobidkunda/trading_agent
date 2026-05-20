@@ -34,7 +34,7 @@ export function getModelForStage(stage: string, routing: StageServiceMapping, de
     bear: routing.bearModel,
     contradiction: routing.contradictionModel,
     judge: routing.judgeModel,
-    deerflow: routing.deerflowModel,
+    // deerflow removed — service disabled
   };
   return stageModelMap[stage] || defaultModel || undefined;
 }
@@ -51,7 +51,7 @@ export async function getSearchConfig(routing: StageServiceMapping): Promise<{ b
   }
   const defaultCred = await getCredentialForService('searxng');
   if (defaultCred) return defaultCred;
-  return { baseUrl: process.env.SEARXNG_URL || 'http://localhost:8888', apiKey: '' };
+  return { baseUrl: process.env.SEARXNG_URL || 'http://192.168.88.97:7777', apiKey: '' };
 }
 
 export async function getVectorConfig(routing: StageServiceMapping): Promise<{ baseUrl: string; apiKey: string; collection: string }> {
@@ -62,19 +62,19 @@ export async function getVectorConfig(routing: StageServiceMapping): Promise<{ b
   return { baseUrl, apiKey, collection };
 }
 
-export type ResearchProvider = 'deerflow' | 'firecrawl' | 'tradingagents' | 'agent_reach';
+export type ResearchProvider = 'firecrawl' | 'tradingagents' | 'agent_reach';
 
 export async function resolveResearchProvider(): Promise<ResearchProvider> {
-  const deerflowHealth = await checkServiceHealth('deerflow');
-  if (deerflowHealth.status === 'UP') {
-    return 'deerflow';
+  // DeerFlow removed — service unreachable. Try tradingagents first.
+  const taHealth = await checkServiceHealth('tradingagents');
+  if (taHealth.status === 'UP') {
+    return 'tradingagents';
   }
-
-  throw new Error(`DeerFlow unavailable: ${deerflowHealth.error || deerflowHealth.status}`);
+  throw new Error(`No research provider available: tradingagents=${taHealth.status}`);
 }
 
 export async function getAvailableResearchProviders(): Promise<ResearchProvider[]> {
-  const providers: ResearchProvider[] = ['deerflow', 'firecrawl', 'tradingagents', 'agent_reach'];
+  const providers: ResearchProvider[] = ['firecrawl', 'tradingagents', 'agent_reach'];
   const available: ResearchProvider[] = [];
 
   const results = await Promise.all(

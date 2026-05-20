@@ -190,7 +190,7 @@ export function resolvePaperFill(params: {
       (params.askDepth != null && params.askDepth > 0) ||
       (params.spread != null && params.spread > 0);
 
-    if (fillModel !== 'CONSERVATIVE_PAPER' || !hasBookSignal || params.liquidity <= 0) {
+    if (fillModel !== 'CONSERVATIVE_PAPER' || !hasBookSignal) {
       return {
         filledSize: 0,
         avgFillPrice: 0,
@@ -201,7 +201,9 @@ export function resolvePaperFill(params: {
     }
 
     // Conservative fallback when partial book data exists but explicit fill probability is unavailable.
-    const fillRatio = Math.min(0.25, params.liquidity / Math.max(1, params.size * params.price * 400));
+    // Use liquidity when available; fall back to order size when liquidity is unknown but spread confirms real market.
+    const effectiveLiquidity = params.liquidity > 0 ? params.liquidity : Math.max(1, params.size * params.price * 100);
+    const fillRatio = Math.min(0.25, effectiveLiquidity / Math.max(1, params.size * params.price * 400));
     const filledSize = Math.round(params.size * fillRatio * 100) / 100;
     const slippage = params.price * Math.max(0.015, (1 - fillRatio) * 0.03);
     const avgFillPrice = filledSize > 0 ? params.price + slippage : 0;
@@ -216,7 +218,9 @@ export function resolvePaperFill(params: {
     };
   }
 
-  if (fillProb < 0.10) {
+  const isConservative = fillModel === 'CONSERVATIVE_PAPER';
+
+  if (!isConservative && fillProb < 0.10) {
     // Very low fill probability — NO_FILL but retryable (not terminal FAIL).
     // Subsequent fill attempts may succeed as orderbook conditions improve.
     return {

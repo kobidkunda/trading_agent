@@ -6,7 +6,7 @@ import { buildFallbackChain, fetchAvailableModels } from './model-discovery';
  * AUTO-FETCHES from LiteLLM API - no hardcoding!
  */
 export async function getModelWithFallbacks(
-  stage: 'triage' | 'bull' | 'bear' | 'contradiction' | 'judge' | 'deerflow' | 
+  stage: 'triage' | 'bull' | 'bear' | 'contradiction' | 'judge' | 'deerflow' | 'deerflow' |
          'news' | 'sentiment' | 'technical' | 'deepThink' | 'quickThink'
 ): Promise<string[]> {
   const routing = await getStageRouting();
@@ -37,11 +37,6 @@ export async function getModelWithFallbacks(
       primary: routing.judgeModel, 
       fallbacks: routing.judgeFallbackModels,
       fallbackField: 'judgeFallbackModels'
-    },
-    deerflow: { 
-      primary: routing.deerflowModel, 
-      fallbacks: routing.deerflowFallbackModels,
-      fallbackField: 'deerflowFallbackModels'
     },
     news: { 
       primary: routing.newsAnalystModel, 
@@ -101,6 +96,7 @@ export async function callWithFallback<T>(
   timeoutMs: number = 60000
 ): Promise<{ result: T; modelUsed: string } | null> {
   const models = await getModelWithFallbacks(stage);
+  let lastError = 'unknown';
   
   console.log(`[Fallback] ${stage}: Will try models [${models.join(' → ')}]`);
   
@@ -128,13 +124,14 @@ export async function callWithFallback<T>(
       
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      console.log(`[Fallback] ${stage}: ❌ ${model} failed: ${errorMsg}`);
+      lastError = `${model}: ${errorMsg}`;
+      console.log(`[Fallback] ${stage}: ❌ ${lastError}`);
       
       // Continue to next fallback
       continue;
     }
   }
   
-  console.error(`[Fallback] ${stage}: All models failed`);
+  console.error(`[Fallback] ${stage}: All models failed. Last error: ${lastError}`);
   return null;
 }

@@ -24,7 +24,7 @@ function normalizeServiceName(name: string): string {
 }
 
 const SERVICE_ENDPOINTS: Record<string, string> = {
-  deerflow: '/health',
+  // deerflow removed — service disabled
   qdrant: '/healthz',
   searxng: '/search?q=test&format=json',
   tradingagents: '/health',
@@ -37,7 +37,7 @@ const SERVICE_ENDPOINTS: Record<string, string> = {
 };
 
 const SERVICE_DISPLAY_NAMES: Record<string, string> = {
-  deerflow: 'DeerFlow',
+  // deerflow removed — service disabled
   qdrant: 'Qdrant',
   searxng: 'SearXNG',
   tradingagents: 'TradingAgents',
@@ -75,9 +75,9 @@ export async function checkServiceHealth(serviceName: string): Promise<ServiceHe
     let serviceUrl = cred?.serviceUrl;
     if (!serviceUrl) {
       const envUrlMap: Record<string, string> = {
-        searxng: process.env.SEARXNG_URL || 'http://localhost:8888',
+        searxng: process.env.SEARXNG_URL || 'http://192.168.88.97:7777',
         qdrant: process.env.QDRANT_URL || 'http://localhost:6333',
-        deerflow: process.env.DEERFLOW_URL || 'http://localhost:2026',
+      // deerflow entry removed — service disabled
         tradingagents: process.env.TRADINGAGENTS_URL || 'http://localhost:8100',
         agent_reach: process.env.AGENT_REACH_URL || '',
         openai: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
@@ -186,7 +186,7 @@ export async function checkServicesHealth(services: string[]): Promise<HealthChe
  */
 export async function getResearchServicesHealth(): Promise<HealthCheckResult> {
   return checkServicesHealth([
-    'deerflow',
+    // deerflow removed — service disabled
     'tradingagents',
     'qdrant',
     'searxng',
@@ -200,8 +200,7 @@ export function getRequiredServicesForStage(stage: string): string[] {
    // Normalize stage name to handle case variations (e.g. 'TRADINGAGENTS' → 'tradingagents')
    const normalized = normalizeServiceName(stage);
    switch (normalized) {
-     case 'deerflow':
-       return ['deerflow'];
+     // deerflow case removed — service disabled
      case 'tradingagents':
        return ['tradingagents'];
      case 'web_search':

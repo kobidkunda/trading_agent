@@ -271,7 +271,6 @@ export async function GET(
           });
         }
       };
-      ensureFailure('deerflow', deerflowSources.length > 0);
       ensureFailure('reddit', redditSources.length > 0);
       ensureFailure('twitter', twitterSources.length > 0);
       ensureFailure('agentReach', agentReachSources.length > 0);

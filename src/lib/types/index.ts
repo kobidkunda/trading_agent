@@ -175,9 +175,13 @@ export interface StageServiceMapping {
   contradictionFallbackModels?: string[];
   judgeModel?: string;
   judgeFallbackModels?: string[];
+  // deerflow fields kept for backward compatibility — engine ignores them
   deerflowModel?: string;
   deerflowFallbackModels?: string[];
   deerflowApiModel?: string;
+  deerflowSearchIterations?: number;
+  deerflowQuestionsPerIteration?: number;
+  deerflowMaxDepth?: number;
   newsAnalystModel?: string;
   newsAnalystFallbackModels?: string[];
   sentimentAnalystModel?: string;
@@ -197,9 +201,7 @@ export interface StageServiceMapping {
   agentReachToolName?: string;
   vectorDbCollection?: string;
   embeddingProvider?: string;
-  deerflowSearchIterations?: number;
-  deerflowQuestionsPerIteration?: number;
-  deerflowMaxDepth?: number;
+  // deerflowSearchIterations / deerflowQuestionsPerIteration / deerflowMaxDepth removed — DeerFlow disabled
   researchDepth?: ResearchDepth;
   mirofishPredictionModel?: string;
   researchFallbackProvider?: string;
@@ -435,7 +437,8 @@ export type PaperBetExecutionStatus =
   | 'PARTIAL'
   | 'FILLED'
   | 'FAILED'
-  | 'EXPIRED';
+  | 'EXPIRED'
+  | 'CANCELLED';
 
 export type ScanMode = 'FULL_SCAN' | 'INCREMENTAL_SCAN' | 'RESUME_FROM_CURSOR';
 

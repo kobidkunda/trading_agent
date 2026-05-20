@@ -25,6 +25,31 @@
 
 ---
 
+# AGENTS.md — Trading Agent App
+
+## Real App Facts
+- App is a **Next.js 16 App Router SPA**: `src/app/page.tsx` loads `TradingCommandCenterShell`.
+- UI pages are defined in `src/lib/navigation/trading-pages.ts` and rendered from `src/components/trading/*`.
+- API layer has **64 `route.ts` files** under `src/app/api/*`.
+- DB is **Prisma + SQLite**: `prisma/schema.prisma` has **38 models** and **4 enums**.
+- Always import DB from `src/lib/db.ts`; never create another Prisma client.
+- Modes are in `src/lib/engine/mode.ts`: `DEMO=MOCK+SIMULATED`, `PAPER=REAL+SIMULATED`, `LIVE=REAL+REAL`, but live execution is still blocked.
+- Main flow: market scan → `TradeCandidate` → research/agents → `Decision` → risk → `Order`/`PaperBet` → `Outcome`.
+- Uploaded zip contains `db/custom.db-shm` and `db/custom.db-wal`, but **no `db/custom.db`**. Do not assume DB rows exist.
+
+Request to market etc goes throgh proxy as set in configation its stored here apps/proxyapp deployed to netlify or similar 
+
+## Agent Rules
+- **Do not guess.** Verify from code, DB, API response, or logs.
+- For any error, return the **exact error/status/stack/file/route**. Do not hide it behind generic text.
+- No hardcoded data, fake rows, or silent fallback in `PAPER`/`LIVE`.
+- Mock/demo data is allowed only in `DEMO` mode.
+- Every `catch` must log the real error with `console.error`; also persist `AuditLog`/`Job` failure when possible.
+- For blank pages, trace separately: UI page → API route → Prisma query → DB rows → engine writer.
+- Current blank areas to verify separately: Market Triage, Research Queue, Paper Orders, Paper Bets, Decisions, Outcomes.
+- When reporting issues, name the exact broken file/function/model and the missing or wrong data.
+- Do not skip modules. Do not say “fixed” until typecheck/tests and direct API/DB checks pass.
+
 ## Architecture — Critical Facts
 
 1. **Stack**: Next.js + Prisma + SQLite. No FastAPI, no Celery, no Postgres. Postgres migration is Phase 2/3 only.

@@ -171,7 +171,14 @@ export async function runScanner(
           const rawPrice = (m as any).last_price_dollars ?? m.last_price ?? 0;
           const rawBid = (m as any).yes_bid_dollars ?? m.yes_bid ?? 0;
           const rawAsk = (m as any).yes_ask_dollars ?? m.yes_ask ?? 0;
-          const rawLiq = (m as any).liquidity_dollars ?? m.volume ?? 0;
+          // Kalshi liquidity_dollars is often "0" even when open_interest exists.
+          // Try open_interest → volume_24h_fp → volume → 0 as fallback chain.
+          const rawLiqString = (m as any).liquidity_dollars;
+          const rawLiqNum = typeof rawLiqString === 'string' ? Number(rawLiqString) : (typeof rawLiqString === 'number' ? rawLiqString : NaN);
+          const hasLiquidity = Number.isFinite(rawLiqNum) && rawLiqNum > 0;
+          const rawLiq = hasLiquidity
+            ? rawLiqNum
+            : ((m as any).open_interest ?? (m as any).volume_24h_fp ?? m.volume ?? 0);
           const price = typeof rawPrice === 'string' ? Number(rawPrice) : (typeof rawPrice === 'number' ? rawPrice : 0);
           const bid = typeof rawBid === 'string' ? Number(rawBid) : (typeof rawBid === 'number' ? rawBid : 0);
           const ask = typeof rawAsk === 'string' ? Number(rawAsk) : (typeof rawAsk === 'number' ? rawAsk : 0);

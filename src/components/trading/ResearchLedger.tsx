@@ -659,7 +659,8 @@ function InlineDecisionDetail({
           const data = await res.json();
           setResearch(data.data ?? data.researchRuns ?? []);
         }
-      } catch {
+      } catch (e) {
+        console.error('[ResearchLedger] Failed to fetch research data:', e);
       } finally {
         if (!cancelled) setLoading(false);
       }
