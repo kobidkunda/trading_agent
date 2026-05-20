@@ -22,7 +22,11 @@ type LegacyAgentOutput = {
   startedAt?: Date | null;
   endedAt?: Date | null;
   confidence?: number | null;
+  stage?: string | null;
+  serviceName?: string | null;
 };
+
+type ProviderKey = 'deerflow' | 'reddit' | 'twitter' | 'agentReach' | 'searxng';
 
 function safeJsonParse<T>(value: string | null | undefined): T | null {
   if (!value) return null;
@@ -219,6 +223,61 @@ export async function GET(
     twitterSources = dedupeByUrl(twitterSources);
     agentReachSources = dedupeByUrl(agentReachSources);
 
+    const sourceErrors: Record<ProviderKey, Array<{ role: string; serviceName: string | null; message: string; modelUsed: string | null }>> = {
+      deerflow: [],
+      reddit: [],
+      twitter: [],
+      agentReach: [],
+      searxng: [],
+    };
+
+    const providerKeyForOutput = (output: LegacyAgentOutput): ProviderKey | null => {
+      const role = output.role.toUpperCase();
+      const service = (output.serviceName || output.provider || '').toUpperCase();
+      if (role.includes('DEERFLOW') || service.includes('DEERFLOW')) return 'deerflow';
+      if (role.includes('REDDIT')) return 'reddit';
+      if (role.includes('X_ANALYST') || role.includes('TWITTER') || service.includes('TWITTER')) return 'twitter';
+      if (role.includes('AGENT_REACH') || service.includes('AGENT_REACH')) return 'agentReach';
+      if (role.includes('SEARCH') || role.includes('SEARXNG') || service.includes('SEARXNG')) return 'searxng';
+      return null;
+    };
+
+    for (const output of latestResearch?.agentOutputs || []) {
+      const key = providerKeyForOutput(output);
+      if (!key) continue;
+      const text = output.failureReason || output.summary || output.rawOutput || output.output || '';
+      const failed = Boolean(output.failureReason) || /\bFAILED\b|\berror\b|unavailable|timeout|aborted/i.test(text);
+      if (!failed) continue;
+      sourceErrors[key].push({
+        role: output.role,
+        serviceName: output.serviceName || output.provider || null,
+        message: text.slice(0, 1000),
+        modelUsed: output.modelUsed || null,
+      });
+    }
+
+    if (latestResearch?.status === 'FAILED') {
+      const genericFailure = (() => {
+        const failedOutput = (latestResearch.agentOutputs || []).find((output) => output.failureReason || output.summary || output.rawOutput);
+        return failedOutput?.failureReason || failedOutput?.summary || failedOutput?.rawOutput || 'Research run failed before this provider produced sources.';
+      })();
+      const ensureFailure = (key: ProviderKey, hasSources: boolean) => {
+        if (!hasSources && sourceErrors[key].length === 0) {
+          sourceErrors[key].push({
+            role: 'RESEARCH_FAILED',
+            serviceName: key,
+            message: genericFailure,
+            modelUsed: null,
+          });
+        }
+      };
+      ensureFailure('deerflow', deerflowSources.length > 0);
+      ensureFailure('reddit', redditSources.length > 0);
+      ensureFailure('twitter', twitterSources.length > 0);
+      ensureFailure('agentReach', agentReachSources.length > 0);
+      ensureFailure('searxng', searxngSources.length > 0);
+    }
+
     // Parse synthesis from latest research
     let synthesis: Record<string, unknown> | null = null;
     if (latestResearch?.synthesis) {
@@ -348,8 +407,7 @@ export async function GET(
     }
 
     // Pipeline stages from transparency stages in research
-    const pipeline = {
-      stages: ((latestResearch?.transparencyStages as any[]) || []).map((stage: any) => ({
+    const explicitStages = ((latestResearch?.transparencyStages as any[]) || []).map((stage: any) => ({
         stage: stage.stage || 'UNKNOWN',
         status: stage.status || 'completed',
         startedAt: stage.startedAt || latestResearch?.startedAt?.toISOString(),
@@ -360,7 +418,41 @@ export async function GET(
         model: stage.model || '',
         message: stage.message || '',
         failureReason: stage.failureReason || null,
-      })) || [],
+      }));
+    const derivedStages = latestResearch && explicitStages.length === 0
+      ? [
+          {
+            stage: `RESEARCH_${latestResearch.depth || 'UNKNOWN'}`,
+            status: latestResearch.status || 'UNKNOWN',
+            startedAt: latestResearch.startedAt?.toISOString() || latestResearch.createdAt?.toISOString() || null,
+            endedAt: latestResearch.completedAt?.toISOString() || null,
+            duration: 0,
+            serviceName: 'research-run',
+            provider: 'system',
+            model: '',
+            message: latestResearch.status === 'FAILED'
+              ? 'Research failed. See provider errors and agent outputs below.'
+              : `Research status: ${latestResearch.status}`,
+            failureReason: latestResearch.status === 'FAILED' ? 'Research run failed before producing required sources/decision.' : null,
+          },
+          ...(latestResearch.agentOutputs || [])
+            .filter((output) => output.failureReason || /\bFAILED\b|\berror\b|unavailable|timeout|aborted/i.test(output.summary || output.rawOutput || output.output || ''))
+            .map((output) => ({
+              stage: output.stage || output.role || 'AGENT_OUTPUT',
+              status: 'FAILED',
+              startedAt: output.startedAt?.toISOString() || latestResearch.startedAt?.toISOString() || latestResearch.createdAt?.toISOString() || null,
+              endedAt: output.endedAt?.toISOString() || latestResearch.completedAt?.toISOString() || null,
+              duration: 0,
+              serviceName: output.serviceName || '',
+              provider: output.provider || '',
+              model: output.modelUsed || '',
+              message: output.summary || output.rawOutput || output.output || '',
+              failureReason: output.failureReason || output.summary || output.rawOutput || null,
+            })),
+        ]
+      : [];
+    const pipeline = {
+      stages: explicitStages.length > 0 ? explicitStages : derivedStages,
     };
 
     // Agent outputs
@@ -474,6 +566,7 @@ export async function GET(
           engine: s.provider || 'SEARXNG',
         })),
       },
+      sourceErrors,
       synthesis,
       debate,
       risk,

@@ -18,6 +18,8 @@ mock.module('@/lib/engine/worker', () => ({
   getWorkerState: () => ({ status: 'STOPPED' }),
   startWorker: startWorkerMock,
   stopWorker: stopWorkerMock,
+  processNextQueuedJobOnce: mock(async () => null),
+  runWorkerFlowUntilIdle: mock(async () => ({ marketLoop: null, processedJobs: [], jobsProcessed: 0, completed: true })),
 }));
 
 mock.module('@/lib/engine/mode', () => ({

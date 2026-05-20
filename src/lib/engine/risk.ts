@@ -24,6 +24,11 @@ const MAX_CLUSTER_UTILIZATION = 0.8;
 const MAX_CLUSTER_OVERLAP = 3;
 const TAIL_RISK_MAX_SEEKED = 3;
 
+// Absolute minimum confidence floors — cannot be overridden by DB settings.
+// Prevents zeroed strategy thresholds from bypassing all quality gates.
+const ABSOLUTE_MIN_BID_CONFIDENCE = 0.30;
+const ABSOLUTE_MIN_WATCH_CONFIDENCE = 0.20;
+
 export function computeRisk(
   input: RiskEngineInput,
   clusterOpts?: {
@@ -39,8 +44,14 @@ export function computeRisk(
   const maxPositionSize = input.maxPositionSize ?? MAX_POSITION_SIZE;
   const bidEdgeThreshold = input.bidEdgeThreshold ?? BID_EDGE_THRESHOLD;
   const watchEdgeThreshold = input.watchEdgeThreshold ?? WATCH_EDGE_THRESHOLD;
-  const bidConfidenceThreshold = input.bidConfidenceThreshold ?? BID_CONFIDENCE_THRESHOLD;
-  const watchConfidenceThreshold = input.watchConfidenceThreshold ?? WATCH_CONFIDENCE_THRESHOLD;
+  const bidConfidenceThreshold = Math.max(
+    input.bidConfidenceThreshold ?? BID_CONFIDENCE_THRESHOLD,
+    ABSOLUTE_MIN_BID_CONFIDENCE,
+  );
+  const watchConfidenceThreshold = Math.max(
+    input.watchConfidenceThreshold ?? WATCH_CONFIDENCE_THRESHOLD,
+    ABSOLUTE_MIN_WATCH_CONFIDENCE,
+  );
   const maxUncertaintyThreshold = input.maxUncertaintyThreshold ?? MAX_UNCERTAINTY_THRESHOLD;
   const edge = Math.abs(input.judgeProbability - input.impliedProbability);
   const effectiveEdge = edge - input.fees - input.slippage;
@@ -186,6 +197,10 @@ function watch(reasonCode: RiskReasonCode, reason: string, edge: number, input: 
 }
 
 export function computePositionSize(edge: number, confidence: number, uncertainty: number): number {
+  // Guard: no position if uncertainty is too high (would cause division by zero)
+  if (uncertainty >= 0.9999 || edge <= 0) {
+    return 0;
+  }
   const kellyFraction = edge / (1 - uncertainty);
   const conservativeKelly = kellyFraction * 0.25;
   const confidenceMultiplier = 0.5 + confidence * 0.5;

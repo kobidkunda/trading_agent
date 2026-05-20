@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-
-const MIROFISH_BASE = process.env.MIROFISH_URL || '';
+import { getCredentialForService } from '@/lib/engine/research/search';
 
 const PREFIX_MAP: [string, string, string, boolean][] = [
   ['free_', 'free', 'mirofish', true],
@@ -38,7 +37,21 @@ function classify(id: string): { tier: string; provider: string; isFree: boolean
 
 export async function GET() {
   try {
-    const res = await fetch(`${MIROFISH_BASE}/api/llm/models`, {
+    const cred = await getCredentialForService('mirofis');
+    const baseUrl = (cred?.baseUrl || process.env.MIROFISH_URL || '').replace(/\/$/, '');
+    if (!baseUrl) {
+      return NextResponse.json({
+        models: [],
+        success: false,
+        error: 'MiroFish URL not configured. Add MiroFish credential or set MIROFISH_URL.',
+      });
+    }
+
+    const headers: Record<string, string> = {};
+    if (cred?.apiKey) headers.Authorization = `Bearer ${cred.apiKey}`;
+
+    const res = await fetch(`${baseUrl}/api/llm/models`, {
+      headers,
       signal: AbortSignal.timeout(10000),
     });
 

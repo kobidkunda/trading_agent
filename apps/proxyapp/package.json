@@ -1,19 +1,24 @@
 {
   "name": "prediction-market-proxy",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Deployable serverless proxy for prediction-market data APIs.",
+  "description": "Serverless proxy for prediction-market APIs (Polymarket, Kalshi, SX Bet, Manifold). Deploy to Netlify, Vercel, Railway, or Render.",
   "scripts": {
-    "dev:netlify": "netlify dev",
-    "deploy:netlify": "netlify deploy --prod --dir=public --functions=netlify/functions",
-    "deploy:vercel": "vercel --prod",
-    "test": "node tests/proxy-core.test.js"
+    "test":             "node tests/proxy-core.test.js",
+    "dev:netlify":      "netlify dev",
+    "dev:vercel":       "vercel dev",
+    "deploy:netlify":   "netlify deploy --prod --dir=public --functions=netlify/functions --no-build",
+    "deploy:vercel":    "vercel --prod",
+    "login:netlify":    "netlify login",
+    "login:vercel":     "vercel login",
+    "env:netlify":      "netlify env:list",
+    "env:set:netlify":  "netlify env:set"
   },
   "engines": {
     "node": ">=18"
   },
   "devDependencies": {
     "netlify-cli": "^26.0.0",
-    "vercel": "^46.1.1"
+    "vercel":       "^46.1.1"
   }
 }

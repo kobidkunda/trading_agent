@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const result = startWorker(intervalMs);
+    const result = await startWorker(intervalMs);
     return NextResponse.json(result);
   }
 

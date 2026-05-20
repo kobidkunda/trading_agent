@@ -126,7 +126,11 @@ interface ResearchSourceRecord {
   id: string;
   url: string;
   title: string | null;
+  content: string | null;
   sourceType: string;
+  recencyScore: number | null;
+  qualityScore: number | null;
+  extractedAt: string;
 }
 
 interface ResearchRunRecord {
@@ -137,6 +141,184 @@ interface ResearchRunRecord {
   completedAt: string | null;
   agentOutputs: AgentOutputRecord[];
   sources: ResearchSourceRecord[];
+  causalTreeNodes: CausalTreeNodeRecord[];
+}
+
+interface MarketSnapshotRecord {
+  id: string;
+  price: number | null;
+  impliedProb: number;
+  liquidity: number;
+  spread: number;
+  spreadSource: string | null;
+  volume24h: number;
+  bestBid: number | null;
+  bestAsk: number | null;
+  bidDepth: number | null;
+  askDepth: number | null;
+  fillProbability: number | null;
+  capturedAt: string;
+}
+
+interface OrderbookSnapshotRecord {
+  id: string;
+  bestBid: number | null;
+  bestAsk: number | null;
+  spread: number | null;
+  spreadSource: string | null;
+  orderbookSource: string | null;
+  bidDepth: number | null;
+  askDepth: number | null;
+  depthImbalance: number | null;
+  largeBidWall: number | null;
+  largeAskWall: number | null;
+  thinBookDanger: boolean;
+  priceImpact: number | null;
+  fillProbability: number | null;
+  capturedAt: string;
+}
+
+interface TradeCandidateRecord {
+  id: string;
+  stage: string;
+  triageStatus: string | null;
+  triageReason: string | null;
+  candidateScore: number | null;
+  adjustedEdge: number | null;
+  rawEdge: number | null;
+  edgeDirection: string | null;
+  biasAdjustedProb: number | null;
+  walletSignalScore: number | null;
+  walletSignalReason: string | null;
+  relatedMarketSignal: number | null;
+  oracleRiskPenalty: number | null;
+  correlationRiskPenalty: number | null;
+  manipulationRiskPenalty: number | null;
+  uncertaintyPenalty: number | null;
+  contradictionPenalty: number | null;
+  acceptedCriteria: string | null;
+  rejectedCriteria: string | null;
+  skipReason: string | null;
+  retryCount: number;
+  lastError: string | null;
+  updatedAt: string;
+}
+
+interface CandidateRunRecord {
+  id: string;
+  candidateScore: number;
+  liquidityScore: number;
+  spreadScore: number;
+  volumeScore: number;
+  freshnessScore: number;
+  edgeScore: number;
+  confidenceScore: number;
+  sourceQualityScore: number;
+  resolutionClarityScore: number;
+  reason: string | null;
+  decision: string | null;
+  createdAt: string;
+}
+
+interface OracleCheckRecord {
+  riskLevel: string;
+  oracleSource: string | null;
+  resolutionCriteria: string | null;
+  ambiguousWording: boolean;
+  humanDiscretion: boolean;
+  appealProcess: boolean;
+  crossVenueMismatch: boolean;
+  oracleRiskReasons: string | null;
+  manualReviewRequired: boolean;
+  manualReviewStatus: string;
+  notes: string | null;
+  updatedAt: string;
+}
+
+interface EnsemblePredictionRecord {
+  id: string;
+  source: string;
+  predictedProb: number;
+  confidence: number | null;
+  weight: number;
+  brierScore: number | null;
+  category: string | null;
+  createdAt: string;
+}
+
+interface WalletClusterSignalRecord {
+  id: string;
+  side: string;
+  walletCount: number;
+  trustedWalletCount: number;
+  combinedSize: number;
+  averageEntryPrice: number;
+  priceAtDetection: number;
+  status: string;
+  detectedAt: string;
+}
+
+interface ClusterMarketLinkRecord {
+  id: string;
+  exposureWeight: number;
+  cluster: {
+    id: string;
+    clusterType: string;
+    clusterKey: string;
+    label: string | null;
+    exposureLimit: number | null;
+    currentExposure: number;
+    tailRiskLevel: string | null;
+  };
+}
+
+interface RelatedMarketRecord {
+  id: string;
+  relationshipType: string;
+  relationshipConfidence: number | null;
+  violationSeverity: string | null;
+  possibleEdge: number | null;
+  alertText: string | null;
+  explanation: string | null;
+  marketA?: RelatedMarketBrief;
+  marketB?: RelatedMarketBrief;
+}
+
+interface RelatedMarketBrief {
+  id: string;
+  title: string;
+  venue: string;
+  latestPrice: number | null;
+  status: string;
+}
+
+interface CausalTreeNodeRecord {
+  id: string;
+  parentId: string | null;
+  label: string;
+  probability: number | null;
+  importanceWeight: number;
+  evidence: string | null;
+  sourceQuality: number | null;
+  confidence: number | null;
+  contradictions: string | null;
+}
+
+interface OutcomeRecord {
+  id: string;
+  result: string;
+  resolvedProb: number | null;
+  resolvedAt: string;
+}
+
+interface PostmortemRecord {
+  id: string;
+  predictedProb: number | null;
+  actualOutcome: string | null;
+  pnl: number | null;
+  lessons: string | null;
+  failureTags: string | null;
+  createdAt: string;
 }
 
 interface MarketContextRecord {
@@ -151,6 +333,12 @@ interface MarketContextRecord {
   latestSpread: number | null;
   latestLiquidity: number | null;
   resolutionTime: string | null;
+  lastSnapshotAt: string | null;
+  lastResearchAt: string | null;
+  snapshots: MarketSnapshotRecord[];
+  orderbookSnapshots: OrderbookSnapshotRecord[];
+  tradeCandidates: TradeCandidateRecord[];
+  candidateRuns: CandidateRunRecord[];
   positions: Array<{
     id: string;
     side: string;
@@ -159,6 +347,14 @@ interface MarketContextRecord {
     status: string;
     unrealizedPnl: number;
   }>;
+  outcomes: OutcomeRecord[];
+  postmortems: PostmortemRecord[];
+  oracleCheck: OracleCheckRecord | null;
+  ensemblePredictions: EnsemblePredictionRecord[];
+  walletClusterSignals: WalletClusterSignalRecord[];
+  clusterMarketLinks: ClusterMarketLinkRecord[];
+  relatedAsA: RelatedMarketRecord[];
+  relatedAsB: RelatedMarketRecord[];
   decisions: DecisionRecord[];
   researchRuns: ResearchRunRecord[];
 }
@@ -168,6 +364,22 @@ interface AuditLogRecord {
   action: string;
   actor: string | null;
   details: string | null;
+  createdAt: string;
+}
+
+interface JobRecord {
+  id: string;
+  type: string;
+  status: string;
+  priority: number;
+  payload: string | null;
+  result: string | null;
+  retryCount: number;
+  progress: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  heartbeatAt: string | null;
+  error: string | null;
   createdAt: string;
 }
 
@@ -205,6 +417,7 @@ interface OrderDetailPayload {
   market: MarketContextRecord | null;
   strategyConfigVersion: StrategyConfigVersionBrief | null;
   auditLogs: AuditLogRecord[];
+  jobs: JobRecord[];
 }
 
 // ── Helpers ──
@@ -310,6 +523,15 @@ function researchStatusBadge(status: string) {
       {status}
     </Badge>
   );
+}
+
+function compactJson(value: string | null | undefined): string {
+  if (!value) return '—';
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2).slice(0, 900);
+  } catch {
+    return value.slice(0, 900);
+  }
 }
 
 // ── Timeline helpers ──
@@ -428,6 +650,17 @@ export default function PaperOrderDetailPage() {
   const fills = detail.fills ?? [];
   const researchRuns = market?.researchRuns ?? [];
   const auditLogs = detail.auditLogs ?? [];
+  const jobs = detail.jobs ?? [];
+  const latestSnapshot = market?.snapshots?.[0] ?? null;
+  const latestOrderbook = market?.orderbookSnapshots?.[0] ?? null;
+  const latestCandidate = market?.tradeCandidates?.[0] ?? null;
+  const sourceCount = researchRuns.reduce((total, run) => total + run.sources.length, 0);
+  const agentOutputCount = researchRuns.reduce((total, run) => total + run.agentOutputs.length, 0);
+  const causalNodes = researchRuns.flatMap((run) => run.causalTreeNodes ?? []);
+  const relatedMarkets = [
+    ...(market?.relatedAsA ?? []).map((item) => ({ ...item, relatedMarket: item.marketB })),
+    ...(market?.relatedAsB ?? []).map((item) => ({ ...item, relatedMarket: item.marketA })),
+  ];
   const pnlValue = paperBet?.pnl ?? null;
 
   return (
@@ -558,6 +791,81 @@ export default function PaperOrderDetailPage() {
             </CardContent>
           </Card>
         </section>
+
+        {/* ── Live market data ── */}
+        {market && (
+          <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+            <Card className="border-gray-800 bg-gray-900/90">
+              <CardHeader className="pb-4">
+                <CardTitle className="flex items-center gap-2 text-white">
+                  <Activity className="h-4 w-4 text-emerald-300" />
+                  Live Market Data
+                </CardTitle>
+                <CardDescription className="text-gray-500">
+                  Latest snapshot and orderbook values used by tracking.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {[
+                    { label: 'Latest price', value: formatPercent(market.latestPrice) },
+                    { label: 'Snapshot price', value: latestSnapshot?.price != null ? formatPercent(latestSnapshot.price) : formatPercent(latestSnapshot?.impliedProb) },
+                    { label: 'Best bid', value: latestOrderbook?.bestBid != null ? `$${latestOrderbook.bestBid.toFixed(4)}` : latestSnapshot?.bestBid != null ? `$${latestSnapshot.bestBid.toFixed(4)}` : '—' },
+                    { label: 'Best ask', value: latestOrderbook?.bestAsk != null ? `$${latestOrderbook.bestAsk.toFixed(4)}` : latestSnapshot?.bestAsk != null ? `$${latestSnapshot.bestAsk.toFixed(4)}` : '—' },
+                    { label: 'Spread', value: formatPercent(latestOrderbook?.spread ?? market.latestSpread) },
+                    { label: 'Liquidity', value: formatCurrency(latestSnapshot?.liquidity ?? market.latestLiquidity) },
+                    { label: 'Bid depth', value: formatCurrency(latestOrderbook?.bidDepth ?? latestSnapshot?.bidDepth) },
+                    { label: 'Ask depth', value: formatCurrency(latestOrderbook?.askDepth ?? latestSnapshot?.askDepth) },
+                  ].map((item) => (
+                    <div key={item.label} className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">{item.label}</p>
+                      <p className="mt-1 text-sm text-gray-200">{item.value}</p>
+                    </div>
+                  ))}
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">Orderbook source</p>
+                    <p className="mt-1 text-sm text-gray-300">{latestOrderbook?.orderbookSource || latestOrderbook?.spreadSource || latestSnapshot?.spreadSource || '—'}</p>
+                  </div>
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">Last capture</p>
+                    <p className="mt-1 text-sm text-gray-300">{formatDateTime(latestOrderbook?.capturedAt ?? latestSnapshot?.capturedAt ?? market.lastSnapshotAt)}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-gray-800 bg-gray-900/90">
+              <CardHeader className="pb-4">
+                <CardTitle className="flex items-center gap-2 text-white">
+                  <Gauge className="h-4 w-4 text-cyan-300" />
+                  Tracking State
+                </CardTitle>
+                <CardDescription className="text-gray-500">
+                  Fill probability, attempts, worker jobs, and expiration.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {[
+                  { label: 'Fill probability', value: formatPercent(latestOrderbook?.fillProbability ?? latestSnapshot?.fillProbability) },
+                  { label: 'Price impact', value: formatPercent(latestOrderbook?.priceImpact) },
+                  { label: 'Depth imbalance', value: latestOrderbook?.depthImbalance != null ? latestOrderbook.depthImbalance.toFixed(3) : '—' },
+                  { label: 'Thin book', value: latestOrderbook?.thinBookDanger ? 'YES' : 'NO' },
+                  { label: 'Last fill attempt', value: formatDateTime(detail.lastFillAttemptAt) },
+                  { label: 'Next expiry', value: formatDateTime(detail.orderExpiryAt) },
+                  { label: 'Tracked jobs', value: String(jobs.filter((job) => job.type === 'ORDER_TRACK').length) },
+                  { label: 'Job errors', value: String(jobs.filter((job) => job.status === 'FAILED').length) },
+                ].map((item) => (
+                  <div key={item.label} className="flex items-center justify-between rounded-2xl border border-gray-800 bg-gray-950/75 px-3 py-2 text-sm">
+                    <span className="text-gray-400">{item.label}</span>
+                    <span className="font-medium text-gray-200">{item.value}</span>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          </section>
+        )}
 
         {/* ── Order detail / costs ── */}
         <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
@@ -1014,6 +1322,137 @@ export default function PaperOrderDetailPage() {
           </section>
         )}
 
+        {/* ── Reasoner, candidate, and risk context ── */}
+        {market && (
+          <section className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+            <Card className="border-gray-800 bg-gray-900/90">
+              <CardHeader className="pb-4">
+                <CardTitle className="flex items-center gap-2 text-white">
+                  <Brain className="h-4 w-4 text-emerald-300" />
+                  Reasoner Snapshot
+                </CardTitle>
+                <CardDescription className="text-gray-500">
+                  Candidate scoring, triage, and latest agent counts.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {latestCandidate ? (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="outline" className="border-cyan-500/30 bg-cyan-500/10 text-[10px] text-cyan-300">
+                        {latestCandidate.stage}
+                      </Badge>
+                      {latestCandidate.triageStatus && (
+                        <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-300">
+                          {latestCandidate.triageStatus}
+                        </Badge>
+                      )}
+                      {latestCandidate.edgeDirection && (
+                        <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-[10px] text-amber-300">
+                          {latestCandidate.edgeDirection}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      {[
+                        { label: 'Candidate score', value: latestCandidate.candidateScore?.toFixed(3) ?? '—' },
+                        { label: 'Raw edge', value: formatPercent(latestCandidate.rawEdge) },
+                        { label: 'Adjusted edge', value: formatPercent(latestCandidate.adjustedEdge) },
+                        { label: 'Bias prob', value: formatPercent(latestCandidate.biasAdjustedProb) },
+                        { label: 'Wallet signal', value: latestCandidate.walletSignalScore?.toFixed(3) ?? '—' },
+                        { label: 'Related signal', value: latestCandidate.relatedMarketSignal?.toFixed(3) ?? '—' },
+                        { label: 'Retries', value: String(latestCandidate.retryCount) },
+                        { label: 'Updated', value: formatRelative(latestCandidate.updatedAt) },
+                      ].map((item) => (
+                        <div key={item.label} className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                          <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">{item.label}</p>
+                          <p className="mt-1 text-sm text-gray-200">{item.value}</p>
+                        </div>
+                      ))}
+                    </div>
+                    {(latestCandidate.triageReason || latestCandidate.walletSignalReason || latestCandidate.skipReason || latestCandidate.lastError) && (
+                      <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-4 text-sm leading-6 text-gray-400">
+                        {latestCandidate.triageReason && <p><span className="text-gray-300">Triage:</span> {latestCandidate.triageReason}</p>}
+                        {latestCandidate.walletSignalReason && <p><span className="text-gray-300">Wallet:</span> {latestCandidate.walletSignalReason}</p>}
+                        {latestCandidate.skipReason && <p><span className="text-gray-300">Skip:</span> {latestCandidate.skipReason}</p>}
+                        {latestCandidate.lastError && <p className="text-red-300"><span className="text-red-200">Error:</span> {latestCandidate.lastError}</p>}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-gray-800 bg-gray-950/60 p-6 text-sm text-gray-500">
+                    No candidate record linked to market.
+                  </div>
+                )}
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">Research runs</p>
+                    <p className="mt-1 text-sm text-gray-200">{researchRuns.length}</p>
+                  </div>
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">Agent outputs</p>
+                    <p className="mt-1 text-sm text-gray-200">{agentOutputCount}</p>
+                  </div>
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">Search sources</p>
+                    <p className="mt-1 text-sm text-gray-200">{sourceCount}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-gray-800 bg-gray-900/90">
+              <CardHeader className="pb-4">
+                <CardTitle className="flex items-center gap-2 text-white">
+                  <ShieldAlert className="h-4 w-4 text-amber-300" />
+                  Risk & Oracle
+                </CardTitle>
+                <CardDescription className="text-gray-500">
+                  Oracle, correlation, ensemble, and wallet signals.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {[
+                    { label: 'Oracle risk', value: market.oracleCheck?.riskLevel ?? '—' },
+                    { label: 'Manual review', value: market.oracleCheck?.manualReviewRequired ? market.oracleCheck.manualReviewStatus : 'NOT_REQUIRED' },
+                    { label: 'Ensemble sources', value: String(market.ensemblePredictions.length) },
+                    { label: 'Clusters', value: String(market.clusterMarketLinks.length) },
+                    { label: 'Wallet signals', value: String(market.walletClusterSignals.length) },
+                    { label: 'Related markets', value: String(relatedMarkets.length) },
+                  ].map((item) => (
+                    <div key={item.label} className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-gray-500">{item.label}</p>
+                      <p className="mt-1 text-sm text-gray-200">{item.value}</p>
+                    </div>
+                  ))}
+                </div>
+                {market.oracleCheck && (
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-4 text-sm leading-6 text-gray-400">
+                    <p><span className="text-gray-300">Source:</span> {market.oracleCheck.oracleSource || '—'}</p>
+                    {market.oracleCheck.resolutionCriteria && <p><span className="text-gray-300">Criteria:</span> {market.oracleCheck.resolutionCriteria}</p>}
+                    {market.oracleCheck.oracleRiskReasons && <p><span className="text-amber-300">Risk:</span> {market.oracleCheck.oracleRiskReasons}</p>}
+                    {market.oracleCheck.notes && <p><span className="text-gray-300">Notes:</span> {market.oracleCheck.notes}</p>}
+                  </div>
+                )}
+                {market.ensemblePredictions.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-gray-400">Ensemble Predictions</p>
+                    {market.ensemblePredictions.slice(0, 6).map((prediction) => (
+                      <div key={prediction.id} className="flex items-center justify-between rounded-2xl border border-gray-800 bg-gray-950/75 px-3 py-2 text-xs">
+                        <span className="text-gray-300">{prediction.source}</span>
+                        <span className="text-gray-500">
+                          {formatPercent(prediction.predictedProb)} · w {prediction.weight.toFixed(2)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </section>
+        )}
+
         {/* ── Research & Agent outputs ── */}
         <section>
           <Card className="border-gray-800 bg-gray-900/90">
@@ -1102,21 +1541,54 @@ export default function PaperOrderDetailPage() {
                       {/* Sources */}
                       {run.sources.length > 0 && (
                         <div className="mt-4">
-                          <p className="text-xs font-medium text-gray-400">Sources ({run.sources.length})</p>
+                          <p className="text-xs font-medium text-gray-400">Search Data & Sources ({run.sources.length})</p>
                           <div className="mt-2 space-y-2">
                             {run.sources.map((source) => (
-                              <div key={source.id} className="flex items-center gap-3 rounded-2xl border border-gray-800 bg-gray-900/70 px-3 py-2 text-xs">
-                                <Badge variant="outline" className="border-gray-700 bg-gray-800 text-[10px] text-gray-500">
-                                  {source.sourceType}
-                                </Badge>
-                                <a
-                                  href={source.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="truncate text-cyan-300 hover:underline"
-                                >
-                                  {source.title || source.url}
-                                </a>
+                              <div key={source.id} className="rounded-2xl border border-gray-800 bg-gray-900/70 p-3 text-xs">
+                                <div className="flex items-center gap-3">
+                                  <Badge variant="outline" className="border-gray-700 bg-gray-800 text-[10px] text-gray-500">
+                                    {source.sourceType}
+                                  </Badge>
+                                  <a
+                                    href={source.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="truncate text-cyan-300 hover:underline"
+                                  >
+                                    {source.title || source.url}
+                                  </a>
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-3 text-gray-600">
+                                  <span>Quality: {source.qualityScore != null ? source.qualityScore.toFixed(2) : '—'}</span>
+                                  <span>Recency: {source.recencyScore != null ? source.recencyScore.toFixed(2) : '—'}</span>
+                                  <span>{formatDateTime(source.extractedAt)}</span>
+                                </div>
+                                {source.content && (
+                                  <p className="mt-2 line-clamp-3 text-gray-500">{source.content}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {run.causalTreeNodes.length > 0 && (
+                        <div className="mt-4">
+                          <p className="text-xs font-medium text-gray-400">Causal Reasoner ({run.causalTreeNodes.length})</p>
+                          <div className="mt-2 grid gap-2 md:grid-cols-2">
+                            {run.causalTreeNodes.slice(0, 8).map((node) => (
+                              <div key={node.id} className="rounded-2xl border border-gray-800 bg-gray-900/70 p-3 text-xs">
+                                <div className="flex items-center justify-between gap-3">
+                                  <p className="font-medium text-gray-200">{node.label}</p>
+                                  <span className="text-gray-500">{formatPercent(node.probability)}</span>
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-3 text-gray-600">
+                                  <span>Weight: {node.importanceWeight.toFixed(2)}</span>
+                                  <span>Conf: {formatPercent(node.confidence)}</span>
+                                  <span>Quality: {node.sourceQuality != null ? node.sourceQuality.toFixed(2) : '—'}</span>
+                                </div>
+                                {node.evidence && <p className="mt-2 line-clamp-3 text-gray-500">{node.evidence}</p>}
+                                {node.contradictions && <p className="mt-2 line-clamp-2 text-red-300">{node.contradictions}</p>}
                               </div>
                             ))}
                           </div>
@@ -1208,6 +1680,89 @@ export default function PaperOrderDetailPage() {
                   );
                 })}
               </div>
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* ── Pipeline jobs and system logs ── */}
+        <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+          <Card className="border-gray-800 bg-gray-900/90">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center gap-2 text-white">
+                <Activity className="h-4 w-4 text-cyan-300" />
+                Pipeline Jobs
+                <span className="text-xs font-normal text-gray-500">({jobs.length} related)</span>
+              </CardTitle>
+              <CardDescription className="text-gray-500">
+                Scan, research, judge, risk, execute, and tracking jobs touching this market/order.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {jobs.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-gray-800 bg-gray-950/60 p-6 text-sm text-gray-500">
+                  No job records matched this order or market.
+                </div>
+              ) : (
+                <div className="max-h-[520px] overflow-y-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-gray-800 hover:bg-transparent">
+                        <TableHead className="text-gray-500">Job</TableHead>
+                        <TableHead className="text-gray-500">Status</TableHead>
+                        <TableHead className="text-right text-gray-500">Progress</TableHead>
+                        <TableHead className="text-right text-gray-500">Updated</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {jobs.slice(0, 30).map((job) => (
+                        <TableRow key={job.id} className="border-gray-800 hover:bg-gray-800/50">
+                          <TableCell>
+                            <p className="text-xs font-medium text-gray-200">{job.type}</p>
+                            {job.error && <p className="mt-1 max-w-[360px] truncate text-[11px] text-red-300">{job.error}</p>}
+                          </TableCell>
+                          <TableCell>{researchStatusBadge(job.status)}</TableCell>
+                          <TableCell className="text-right text-xs tabular-nums text-gray-400">
+                            {job.progress != null ? `${Math.round(job.progress * 100)}%` : `p${job.priority}`}
+                          </TableCell>
+                          <TableCell className="text-right text-xs text-gray-500">
+                            {formatRelative(job.completedAt ?? job.heartbeatAt ?? job.startedAt ?? job.createdAt)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-gray-800 bg-gray-900/90">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center gap-2 text-white">
+                <Database className="h-4 w-4 text-gray-400" />
+                Latest Job Payload
+              </CardTitle>
+              <CardDescription className="text-gray-500">
+                Raw payload/result for debugging tracking chain.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {jobs[0] ? (
+                <div className="space-y-3">
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                    <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-gray-500">Payload</p>
+                    <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-xs text-gray-400">{compactJson(jobs[0].payload)}</pre>
+                  </div>
+                  <div className="rounded-2xl border border-gray-800 bg-gray-950/75 p-3">
+                    <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-gray-500">Result</p>
+                    <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-xs text-gray-400">{compactJson(jobs[0].result)}</pre>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-gray-800 bg-gray-950/60 p-6 text-sm text-gray-500">
+                  No payload available.
+                </div>
+              )}
             </CardContent>
           </Card>
         </section>

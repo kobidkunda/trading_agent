@@ -80,6 +80,7 @@ interface MarketDetailData {
     agentReach: Array<{ title: string; url: string; snippet: string }>;
     searxng: Array<{ title: string; url: string; snippet: string }>;
   };
+  sourceErrors?: Record<string, Array<{ role: string; serviceName: string | null; message: string; modelUsed: string | null }>>;
   synthesis: {
     summary: string;
     finalAssessment: string;
@@ -238,9 +239,11 @@ function toneForMode(mode: string): string {
 function SourceList({
   title,
   items,
+  errors,
 }: {
   title: string;
   items: Array<{ title?: string; url?: string; snippet?: string; content?: string; subreddit?: string; author?: string }>;
+  errors?: Array<{ role: string; serviceName: string | null; message: string; modelUsed: string | null }>;
 }) {
   return (
     <Card className="border-gray-800 bg-gray-900/85">
@@ -259,7 +262,19 @@ function SourceList({
             </p>
           </div>
         ))}
-        {items.length === 0 && <p className="text-sm text-gray-500">No sources captured for this provider.</p>}
+        {items.length === 0 && (!errors || errors.length === 0) && (
+          <p className="text-sm text-gray-500">No sources captured for this provider.</p>
+        )}
+        {items.length === 0 && errors && errors.length > 0 && (
+          <div className="space-y-2">
+            {errors.slice(0, 3).map((err, index) => (
+              <div key={`${err.role}-${index}`} className="rounded-2xl border border-red-500/20 bg-red-500/5 p-3">
+                <p className="text-xs uppercase tracking-[0.18em] text-red-400">{err.role}</p>
+                <p className="mt-1 text-sm text-red-200">{err.message}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -806,11 +821,11 @@ export default function MarketDetailPage() {
         </section>
 
         <section className="grid gap-6 lg:grid-cols-2 xl:grid-cols-3">
-          <SourceList title="DeerFlow Sources" items={detail.sources.deerflow} />
-          <SourceList title="Reddit Sources" items={detail.sources.reddit} />
-          <SourceList title="X/Twitter Sources" items={detail.sources.twitter} />
-          <SourceList title="Agent Reach Sources" items={detail.sources.agentReach} />
-          <SourceList title="SearXNG Sources" items={detail.sources.searxng} />
+          <SourceList title="DeerFlow Sources" items={detail.sources.deerflow} errors={detail.sourceErrors?.deerflow} />
+          <SourceList title="Reddit Sources" items={detail.sources.reddit} errors={detail.sourceErrors?.reddit} />
+          <SourceList title="X/Twitter Sources" items={detail.sources.twitter} errors={detail.sourceErrors?.twitter} />
+          <SourceList title="Agent Reach Sources" items={detail.sources.agentReach} errors={detail.sourceErrors?.agentReach} />
+          <SourceList title="SearXNG Sources" items={detail.sources.searxng} errors={detail.sourceErrors?.searxng} />
 
           <Card className="border-gray-800 bg-gray-900/85">
             <CardHeader className="pb-3">

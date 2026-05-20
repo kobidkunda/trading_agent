@@ -307,19 +307,13 @@ async function saveAgentReachSources(
 // Loads market data, fresh venue snapshot, bias correction, config, routing.
 // Used by all stage functions and the compatibility wrapper.
 
-async function withVenueFetchTimeout<T>(label: string, fetcher: () => Promise<T>, timeoutMs = 2_500): Promise<T | null> {
-  try {
-    return await Promise.race([
-      fetcher(),
-      new Promise<null>((resolve) => setTimeout(() => {
-        console.warn(`[Pipeline] ${label} fetch timed out after ${timeoutMs}ms; using cached market data`);
-        resolve(null);
-      }, timeoutMs)),
-    ]);
-  } catch (error) {
-    console.warn(`[Pipeline] ${label} fetch failed; using cached market data:`, error);
-    return null;
-  }
+async function withVenueFetchTimeout<T>(label: string, fetcher: () => Promise<T>, timeoutMs = 12_000): Promise<T> {
+  return Promise.race([
+    fetcher(),
+    new Promise<never>((_, reject) => setTimeout(() => {
+      reject(new Error(`${label} fetch timed out after ${timeoutMs}ms`));
+    }, timeoutMs)),
+  ]);
 }
 
 export async function resolvePipelineContext(marketId: string): Promise<PipelineContext> {
@@ -351,28 +345,24 @@ export async function resolvePipelineContext(marketId: string): Promise<Pipeline
 
   if (market.venue === 'POLYMARKET') {
     const polymarketResult = await withVenueFetchTimeout('Fresh Polymarket', () => getPolymarketMarkets({ limit: 100 }));
-    if (polymarketResult) {
-      const fresh = polymarketResult.markets.find((m: { externalId: string }) => m.externalId === market.externalId);
-      if (fresh) {
-        impliedProb = fresh.impliedProb;
-        liquidity = fresh.liquidity;
-        await db.marketSnapshot.create({
-          data: { marketId, impliedProb, liquidity, spread: fresh.spread, volume24h: fresh.volume24h || 0, bestBid: fresh.bestBid ?? impliedProb - 0.01, bestAsk: fresh.bestAsk ?? impliedProb + 0.01 },
-        });
-      }
+    const fresh = polymarketResult.markets.find((m: { externalId: string }) => m.externalId === market.externalId);
+    if (fresh) {
+      impliedProb = fresh.impliedProb;
+      liquidity = fresh.liquidity;
+      await db.marketSnapshot.create({
+        data: { marketId, impliedProb, liquidity, spread: fresh.spread, volume24h: fresh.volume24h || 0, bestBid: fresh.bestBid ?? impliedProb - 0.01, bestAsk: fresh.bestAsk ?? impliedProb + 0.01 },
+      });
     }
   } else if (market.venue === 'KALSHI') {
     const kalshiResult = await withVenueFetchTimeout('Fresh Kalshi', () => getKalshiMarkets());
-    if (kalshiResult) {
-      const freshList = kalshiResult.markets;
-      const fresh = freshList.find((m: { ticker: string }) => m.ticker === market.externalId);
-      if (fresh) {
-        impliedProb = fresh.last_price / 100;
-        liquidity = fresh.volume;
-        await db.marketSnapshot.create({
-          data: { marketId, impliedProb, liquidity, spread: Math.max(0.01, (fresh.yes_ask - fresh.yes_bid) / 100), volume24h: fresh.volume, bestBid: fresh.yes_bid / 100, bestAsk: fresh.yes_ask / 100 },
-        });
-      }
+    const freshList = kalshiResult.markets;
+    const fresh = freshList.find((m: { ticker: string }) => m.ticker === market.externalId);
+    if (fresh) {
+      impliedProb = fresh.last_price / 100;
+      liquidity = fresh.volume;
+      await db.marketSnapshot.create({
+        data: { marketId, impliedProb, liquidity, spread: Math.max(0.01, (fresh.yes_ask - fresh.yes_bid) / 100), volume24h: fresh.volume, bestBid: fresh.yes_bid / 100, bestAsk: fresh.yes_ask / 100 },
+      });
     }
   }
 
@@ -495,87 +485,19 @@ export async function runResearchStage(
     const deerflowHealth = await canRunStage('DEERFLOW');
 
     if (!deerflowHealth.canRun) {
-      const fallbackUrl = process.env.DEERFLOW_URL || 'http://localhost:2026';
-      const reachable = await isServiceReachable('deerflow', fallbackUrl);
-
-      if (!reachable) {
-        console.warn(`[Pipeline] DeerFlow skipped: ${deerflowHealth.skipReason}`);
-        stages.push('DEERFLOW_SKIPPED');
-        await emitStage({
-          stage: 'DEERFLOW',
-          type: 'failed',
-          message: `Health check failed: ${deerflowHealth.skipReason}`,
-          provider: 'deerflow',
-          serviceName: 'deerflow',
-          failureReason: deerflowHealth.skipReason,
-        });
-
-        const researchProvider = await resolveResearchProvider();
-        if (researchProvider === 'firecrawl') {
-          stages.push('FIRECRAWL');
-          await emitStage({
-            stage: 'FIRECRAWL',
-            message: 'Falling back to Firecrawl for deep research',
-            provider: 'firecrawl',
-            serviceName: 'firecrawl',
-          });
-
-          try {
-            const firecrawlResult = await runFirecrawlResearch(market.title, researchContext, impliedProb);
-            researchContext = [
-              firecrawlResult.summary,
-              ...firecrawlResult.keyFindings.map((f) => `Finding: ${f}`),
-              ...firecrawlResult.contradictions.map((c) => `Contradiction: ${c}`),
-            ].join('\n');
-
-            await saveSearchSources(
-              researchRun.id,
-              firecrawlResult.allSearchResults.map((source) => ({
-                ...source,
-                sourceType: 'SEARCH',
-                recencyScore: 0.7,
-                qualityScore: 0.6,
-              })),
-            );
-            await Promise.all(
-              firecrawlResult.allExtractedContent.map((source) =>
-                createResearchSourceSafe({
-                  researchRunId: researchRun.id,
-                  url: source.url,
-                  title: source.title,
-                  content: source.content,
-                  sourceType: 'CRAWL',
-                  recencyScore: 0.8,
-                  qualityScore: 0.7,
-                }),
-              ),
-            );
-          } catch (e) {
-            console.error('[Pipeline] Firecrawl fallback failed:', e);
-            researchContext = 'Research unavailable: DeerFlow and Firecrawl both unavailable';
-          }
-        } else {
-          researchContext = 'Research unavailable: DeerFlow service is down';
-        }
-
-        if (candidate) {
-          await db.tradeCandidate.update({
-            where: { id: candidate.id },
-            data: { stage: 'RESEARCHING' },
-          });
-        }
-        // Mark research run as COMPLETED even when research is unavailable
-        try {
-          await db.researchRun.update({
-            where: { id: researchRun.id },
-            data: { status: 'COMPLETED', completedAt: new Date() },
-          });
-        } catch { /* non-fatal */ }
-
-        return { researchRunId: researchRun.id, researchContext, depth: actualDepth, stages, candidate };
-      }
-
-      console.warn('[Pipeline] DeerFlow health check failed but service is reachable, proceeding anyway');
+      await emitStage({
+        stage: 'DEERFLOW',
+        type: 'failed',
+        message: `Health check failed: ${deerflowHealth.skipReason}`,
+        provider: 'deerflow',
+        serviceName: 'deerflow',
+        failureReason: deerflowHealth.skipReason,
+      });
+      await db.researchRun.update({
+        where: { id: researchRun.id },
+        data: { status: 'FAILED', completedAt: new Date() },
+      });
+      throw new Error(`DeerFlow unavailable: ${deerflowHealth.skipReason}`);
     }
 
     await emitStage({
@@ -1216,6 +1138,18 @@ export async function runResearchStage(
 
   await retrieveSimilarMarkets(market.title, market.description || '');
 
+  // Quality gate: when research produces no usable context, still complete
+  // the run with a fallback indicator. The judge stage will build a
+  // market-data fallback context so the pipeline doesn't stall.
+  const failurePatterns = [
+    'Research unavailable: DeerFlow and Firecrawl both unavailable',
+    'Research unavailable: DeerFlow service is down',
+  ];
+  if (!researchContext || failurePatterns.includes(researchContext.trim())) {
+    console.warn(`[Pipeline] Research produced no usable context for ${marketId}, marking for fallback`);
+    // Don't throw — let judge stage build fallback from market data
+  }
+
   // Mark research run as COMPLETED so queued Judge can find it
   try {
     await db.researchRun.update({
@@ -1233,6 +1167,47 @@ export async function runResearchStage(
   };
 }
 
+// ── Fallback context builder: when ALL research sources return 0 ─────
+// Generates minimal market-data-based context so debate agents have
+// something to work with instead of stalling the pipeline.
+function buildMarketDataFallbackContext(
+  marketTitle: string,
+  marketDescription: string,
+  marketCategory: string,
+  marketVenue: string,
+  impliedProb: number,
+  liquidity: number,
+  spread: number,
+  volume24h: number,
+  bestBid: number,
+  bestAsk: number,
+  originalContext: string,
+): string {
+  const lines = [
+    `[FALLBACK_CONTEXT — NO RESEARCH SOURCES AVAILABLE]`,
+    `All research sources (DeerFlow, SearXNG, TradingAgents, Agent-Reach) returned 0 usable sources.`,
+    `Confidence estimates should be conservative (low confidence) due to research unavailability.`,
+    ``,
+    `--- MARKET DATA (for fallback analysis) ---`,
+    `Market Title: "${marketTitle}"`,
+    `Category: ${marketCategory}`,
+    `Venue: ${marketVenue}`,
+    `Description: ${marketDescription || '(none)'}`,
+    `Implied Probability: ${(impliedProb * 100).toFixed(1)}%`,
+    `Liquidity: $${liquidity.toLocaleString()}`,
+    `Spread: ${(spread * 100).toFixed(2)}% (Bid ${(bestBid * 100).toFixed(1)}% / Ask ${(bestAsk * 100).toFixed(1)}%)`,
+    `24h Volume: $${volume24h.toLocaleString()}`,
+    ``,
+    `--- ORIGINAL RESEARCH OUTPUT (all failures) ---`,
+    originalContext || '(empty — no research ran)',
+    ``,
+    `INSTRUCTIONS: You MUST produce a fallback bull/bear analysis based on market microstructure`,
+    `(price, liquidity, spread, volume, category) alone. Confidence should be capped at 0.4 due to`,
+    `research unavailability. Mark your analysis clearly as fallback-based.`,
+  ];
+  return lines.join('\n');
+}
+
 // ── Stage 3: JUDGE ──────────────────────────────────────────────────
 
 export async function runJudgeStage(
@@ -1248,12 +1223,40 @@ export async function runJudgeStage(
 
   const stages: string[] = [];
   const ctx = await resolvePipelineContext(marketId);
-  const { market, candidate, impliedProb, routing } = ctx;
+  const { market, candidate, impliedProb, routing, liquidity } = ctx;
   const actualDepth: ResearchDepth = depth ?? getResearchDepth(routing);
 
-  let judgeProbability: number;
-  let judgeConfidence: number;
-  let judgeUncertainty: number;
+  // Quality gate: when ALL research sources return 0 usable results,
+  // build a fallback context from market data so debate agents can
+  // still produce predictions instead of stalling the pipeline.
+  const researchIsBare =
+    !researchContext ||
+    researchContext.trim().length < 50 ||
+    /^\[(WEB\s*SEARCH|ANALYSTS|DEERFLOW|TRADINGAGENTS|AGENT\s*REACH)\]\s*\n?\s*FAILED/.test(researchContext.trim());
+
+  const effectiveResearchContext = researchIsBare
+    ? buildMarketDataFallbackContext(
+        market.title,
+        market.description || '',
+        market.category,
+        market.venue,
+        impliedProb,
+        liquidity,
+        (market.snapshots[0] as any)?.spread ?? 0.05,
+        (market.snapshots[0] as any)?.volume24h ?? 0,
+        (market.snapshots[0] as any)?.bestBid ?? impliedProb - 0.01,
+        (market.snapshots[0] as any)?.bestAsk ?? impliedProb + 0.01,
+        researchContext,
+      )
+    : researchContext;
+
+  if (researchIsBare) {
+    console.log(`[Pipeline] Research context is bare for ${marketId}, using market-data fallback`);
+  }
+
+  let judgeProbability = 0.5;
+  let judgeConfidence = 0.3;
+  let judgeUncertainty = 0.5;
   let debateResult: import('@/lib/engine/debate-arena').DebateArenaResult | null = null;
   let postDebatePrediction: import('@/lib/engine/post-debate-prediction').PostDebatePredictionResult | null = null;
   let ensembleUncertaintyBoost = 0;
@@ -1288,7 +1291,7 @@ export async function runJudgeStage(
       });
 
       if (rootNode) {
-        const evidenceSections = researchContext.split('\n\n').slice(0, rootNode.children.length * 2 || 6);
+        const evidenceSections = effectiveResearchContext.split('\n\n').slice(0, rootNode.children.length * 2 || 6);
         for (let i = 0; i < rootNode.children.length && i < evidenceSections.length; i++) {
           await causalTreeEngine.researchNode(
             rootNode.children[i].id,
@@ -1352,106 +1355,150 @@ export async function runJudgeStage(
       serviceName: 'debate-arena',
       model: judgeModel,
     });
-    debateResult = await runDebateArena(market.title, impliedProb, researchContext, routing);
-
-    for (const round of debateResult.rounds) {
+    try {
+      debateResult = await runDebateArena(market.title, impliedProb, effectiveResearchContext, routing);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       await db.agentOutput.create({
         data: {
           researchRunId,
-          role: `DEBATE_ROUND_${round.round}_BULL`,
+          role: 'DEBATE_FAILED',
           stage: 'JUDGE',
           serviceName: 'debate-arena',
           provider: 'system',
-          modelUsed: round.bullModel,
-          output: JSON.stringify({ argument: round.bullArgument, probability: round.bullProbability, confidence: round.bullConfidence }),
-          rawOutput: round.bullArgument,
-          summary: round.bullArgument.slice(0, 4000),
+          modelUsed: judgeModel,
+          output: JSON.stringify({ error: message }),
+          rawOutput: message,
+          summary: message.slice(0, 4000),
+          failureReason: message,
         },
       });
+      await db.researchRun.update({
+        where: { id: researchRunId },
+        data: { status: 'FAILED', completedAt: new Date() },
+      });
+      await emitStage({
+        stage: 'JUDGE',
+        type: 'failed',
+        message: `Debate failed: ${message}`,
+        provider: 'system',
+        serviceName: 'debate-arena',
+        failureReason: message,
+      });
+      judgeProbability = impliedProb;
+      judgeConfidence = 0.3;
+      judgeUncertainty = 0.7;
+    }
+
+    if (debateResult) {
+      for (const round of debateResult.rounds) {
+        await db.agentOutput.create({
+          data: {
+            researchRunId,
+            role: `DEBATE_ROUND_${round.round}_BULL`,
+            stage: 'JUDGE',
+            serviceName: 'debate-arena',
+            provider: 'system',
+            modelUsed: round.bullModel,
+            output: JSON.stringify({ argument: round.bullArgument, probability: round.bullProbability, confidence: round.bullConfidence }),
+            rawOutput: round.bullArgument,
+            summary: round.bullArgument.slice(0, 4000),
+          },
+        });
+        await db.agentOutput.create({
+          data: {
+            researchRunId,
+            role: `DEBATE_ROUND_${round.round}_BEAR`,
+            stage: 'JUDGE',
+            serviceName: 'debate-arena',
+            provider: 'system',
+            modelUsed: round.bearModel,
+            output: JSON.stringify({ argument: round.bearArgument, probability: round.bearProbability, confidence: round.bearConfidence }),
+            rawOutput: round.bearArgument,
+            summary: round.bearArgument.slice(0, 4000),
+          },
+        });
+      }
+
+      const debateArbiterModel = getModelForStage('judge', routing) || 'paper_proglm';
       await db.agentOutput.create({
         data: {
           researchRunId,
-          role: `DEBATE_ROUND_${round.round}_BEAR`,
+          role: 'DEBATE_ARBITER',
           stage: 'JUDGE',
           serviceName: 'debate-arena',
           provider: 'system',
-          modelUsed: round.bearModel,
-          output: JSON.stringify({ argument: round.bearArgument, probability: round.bearProbability, confidence: round.bearConfidence }),
-          rawOutput: round.bearArgument,
-          summary: round.bearArgument.slice(0, 4000),
+          modelUsed: debateArbiterModel,
+          output: JSON.stringify({
+            debateOutcome: debateResult.debateOutcome,
+            finalProbability: debateResult.finalProbability,
+            finalConfidence: debateResult.finalConfidence,
+            finalUncertainty: debateResult.finalUncertainty,
+            pointsOfAgreement: debateResult.pointsOfAgreement,
+            pointsOfDisagreement: debateResult.pointsOfDisagreement,
+            proEvidence: debateResult.proEvidence,
+            antiEvidence: debateResult.antiEvidence,
+            recommendation: debateResult.recommendation,
+            recommendationReason: debateResult.recommendationReason,
+          }),
+          rawOutput: debateResult.recommendationReason,
+          summary: debateResult.recommendationReason?.slice(0, 4000) ?? null,
+          referencesJson: JSON.stringify(debateResult.proEvidence?.slice(0, 20) ?? []),
         },
       });
     }
-
-    const debateArbiterModel = getModelForStage('judge', routing) || 'paper_proglm';
-    await db.agentOutput.create({
-      data: {
-        researchRunId,
-        role: 'DEBATE_ARBITER',
-        stage: 'JUDGE',
-        serviceName: 'debate-arena',
-        provider: 'system',
-        modelUsed: debateArbiterModel,
-        output: JSON.stringify({
-          debateOutcome: debateResult.debateOutcome,
-          finalProbability: debateResult.finalProbability,
-          finalConfidence: debateResult.finalConfidence,
-          finalUncertainty: debateResult.finalUncertainty,
-          pointsOfAgreement: debateResult.pointsOfAgreement,
-          pointsOfDisagreement: debateResult.pointsOfDisagreement,
-          proEvidence: debateResult.proEvidence,
-          antiEvidence: debateResult.antiEvidence,
-          recommendation: debateResult.recommendation,
-          recommendationReason: debateResult.recommendationReason,
-        }),
-        rawOutput: debateResult.recommendationReason,
-        summary: debateResult.recommendationReason?.slice(0, 4000) ?? null,
-        referencesJson: JSON.stringify(debateResult.proEvidence?.slice(0, 20) ?? []),
-      },
-    });
 
     // ── POST-DEBATE PREDICTION: Final synthesis via MiroFish ──
-    stages.push('MIROFISH_PREDICT');
-    const mirofishModel = routing.mirofishPredictionModel || 'free_ling';
-    await emitStage({
-      stage: 'MIROFISH_PREDICT',
-      message: `Running post-debate prediction via MiroFish (${mirofishModel})`,
-      provider: 'system',
-      serviceName: 'mirofish-predict',
-      model: mirofishModel,
-    });
-
-    try {
-      postDebatePrediction = await runPostDebatePrediction(debateResult, researchContext, mirofishModel);
-
-      await db.agentOutput.create({
-        data: {
-          researchRunId,
-          role: 'MIROFISH_PREDICT',
-          stage: 'MIROFISH_PREDICT',
-          serviceName: 'mirofish-predict',
-          provider: 'mirofish',
-          modelUsed: postDebatePrediction.modelUsed,
-          output: JSON.stringify(postDebatePrediction),
-          rawOutput: postDebatePrediction.summary,
-          summary: postDebatePrediction.summary?.slice(0, 4000) ?? null,
-          referencesJson: JSON.stringify(postDebatePrediction.keyInsights?.slice(0, 20) ?? []),
-        },
-      });
-    } catch (e) {
-      console.error('[Pipeline] Post-debate prediction failed:', e);
+    if (debateResult) {
+      stages.push('MIROFISH_PREDICT');
+      const mirofishModel = routing.mirofishPredictionModel || 'free_ling';
       await emitStage({
         stage: 'MIROFISH_PREDICT',
-        message: `Post-debate prediction failed: ${String(e)}`,
+        message: `Running post-debate prediction via MiroFish (${mirofishModel})`,
         provider: 'system',
         serviceName: 'mirofish-predict',
-        failureReason: String(e),
+        model: mirofishModel,
       });
+
+      try {
+        postDebatePrediction = await runPostDebatePrediction(debateResult, effectiveResearchContext, mirofishModel);
+
+        await db.agentOutput.create({
+          data: {
+            researchRunId,
+            role: 'MIROFISH_PREDICT',
+            stage: 'MIROFISH_PREDICT',
+            serviceName: 'mirofish-predict',
+            provider: 'mirofish',
+            modelUsed: postDebatePrediction.modelUsed,
+            output: JSON.stringify(postDebatePrediction),
+            rawOutput: postDebatePrediction.summary,
+            summary: postDebatePrediction.summary?.slice(0, 4000) ?? null,
+            referencesJson: JSON.stringify(postDebatePrediction.keyInsights?.slice(0, 20) ?? []),
+          },
+        });
+      } catch (e) {
+        console.error('[Pipeline] Post-debate prediction failed:', e);
+        await emitStage({
+          stage: 'MIROFISH_PREDICT',
+          message: `Post-debate prediction failed: ${String(e)}`,
+          provider: 'system',
+          serviceName: 'mirofish-predict',
+          failureReason: String(e),
+        });
+      }
     }
 
-    judgeProbability = debateResult.finalProbability;
-    judgeConfidence = debateResult.finalConfidence;
-    judgeUncertainty = debateResult.finalUncertainty;
+    if (debateResult) {
+      judgeProbability = debateResult.finalProbability;
+      judgeConfidence = debateResult.finalConfidence;
+      judgeUncertainty = debateResult.finalUncertainty;
+    }
+    
+    // Quality gate: fail if judge confidence is below minimum threshold
+    if (judgeConfidence < 0.20) {
+      throw new Error(`Research quality insufficient: confidence ${(judgeConfidence * 100).toFixed(0)}% below minimum 20%`);
+    }
   }
 
   // Mark research run as completed only AFTER all judgment outputs are created
@@ -2047,6 +2094,8 @@ export async function runPipelineForMarket(
     stages: [],
   };
 
+  const MAX_RESEARCH_RETRIES = 3;
+
   try {
     // Stage 1: TRIAGE
     const triageOut = await runTriageStage(marketId, { onStage: emitStage });
@@ -2058,27 +2107,87 @@ export async function runPipelineForMarket(
       return result;
     }
 
-    // Stage 2: RESEARCH
-    const researchOut = await runResearchStage(marketId, undefined, { onStage: emitStage });
-    result.stages.push(...researchOut.stages);
+    // ── Stage 2-3: RESEARCH + JUDGE (with retry on failure) ──
+    let judgeProbability = 0;
+    let judgeConfidence = 0;
+    let judgeUncertainty = 0;
+    let ensembleUncertaintyBoost = 0;
+    let modelDisagreement = 0;
+    let disagreementLevel: 'LOW' | 'MODERATE' | 'HIGH' = 'LOW';
+    let finalResearchContext = '';
+    let finalDepth: ResearchDepth = 'STANDARD';
 
-    // Stage 3: JUDGE
-    const judgeOut = await runJudgeStage(marketId, researchOut.researchRunId, researchOut.researchContext, researchOut.depth, { onStage: emitStage });
-    result.stages.push(...judgeOut.stages);
-    result.debateResult = judgeOut.debateResult;
-    result.postDebatePrediction = judgeOut.postDebatePrediction;
-    result.ensembleResult = judgeOut.ensembleResult as any;
-    result.ensembleDisagreement = judgeOut.ensembleDisagreement as any;
+    // ── Retry loop: if debate/research fails, retry up to MAX_RESEARCH_RETRIES times ──
+    let judgeSucceeded = false;
+    let lastJudgeError: string | null = null;
+
+    for (let attempt = 0; attempt < MAX_RESEARCH_RETRIES; attempt++) {
+      try {
+        const researchOut = await runResearchStage(marketId, undefined, { onStage: emitStage });
+        if (attempt === 0) {
+          result.stages.push(...researchOut.stages);
+        } else {
+          result.stages.push(`RESEARCH_RETRY_${attempt}`);
+        }
+
+        const judgeOut = await runJudgeStage(
+          marketId, researchOut.researchRunId, researchOut.researchContext,
+          researchOut.depth, { onStage: emitStage },
+        );
+        if (attempt === 0) {
+          result.stages.push(...judgeOut.stages);
+        } else {
+          result.stages.push(`JUDGE_RETRY_${attempt}`);
+        }
+
+        judgeProbability = judgeOut.judgeProbability;
+        judgeConfidence = judgeOut.judgeConfidence;
+        judgeUncertainty = judgeOut.judgeUncertainty;
+        ensembleUncertaintyBoost = judgeOut.ensembleUncertaintyBoost;
+        modelDisagreement = judgeOut.modelDisagreement;
+        disagreementLevel = judgeOut.disagreementLevel;
+        finalResearchContext = researchOut.researchContext;
+        finalDepth = researchOut.depth;
+        result.debateResult = judgeOut.debateResult;
+        result.postDebatePrediction = judgeOut.postDebatePrediction;
+        result.ensembleResult = judgeOut.ensembleResult as any;
+        result.ensembleDisagreement = judgeOut.ensembleDisagreement as any;
+        judgeSucceeded = true;
+        break;
+      } catch (err) {
+        lastJudgeError = String(err);
+        console.warn(`[Pipeline] Research/Judge attempt ${attempt + 1}/${MAX_RESEARCH_RETRIES} failed for ${marketId}: ${lastJudgeError}`);
+        await emitStage({
+          stage: 'JUDGE',
+          type: 'failed' as const,
+          message: `Attempt ${attempt + 1}/${MAX_RESEARCH_RETRIES} failed: ${lastJudgeError}`,
+          provider: 'system',
+          serviceName: 'debate-arena',
+          failureReason: lastJudgeError,
+        });
+        // Exponential backoff: 2s, 4s, 8s
+        if (attempt < MAX_RESEARCH_RETRIES - 1) {
+          const delay = Math.min(2000 * Math.pow(2, attempt), 10000);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    if (!judgeSucceeded) {
+      result.error = `Research/Judge failed after ${MAX_RESEARCH_RETRIES} retries: ${lastJudgeError}`;
+      result.stages.push('JUDGE_EXHAUSTED');
+      return result;
+    }
 
     // Stage 4: RISK
     const riskOut = await runRiskStage(
       marketId,
-      judgeOut.judgeProbability,
-      judgeOut.judgeConfidence,
-      judgeOut.judgeUncertainty,
-      judgeOut.ensembleUncertaintyBoost,
-      judgeOut.modelDisagreement,
-      judgeOut.disagreementLevel,
+      judgeProbability,
+      judgeConfidence,
+      judgeUncertainty,
+      ensembleUncertaintyBoost,
+      modelDisagreement,
+      disagreementLevel,
       { onStage: emitStage },
     );
     result.stages.push(...riskOut.stages);
@@ -2090,9 +2199,9 @@ export async function runPipelineForMarket(
       riskOut.decisionId,
       riskOut.gatedRiskResult,
       riskOut.aPlusGatePassed,
-      judgeOut.judgeProbability,
-      judgeOut.judgeConfidence,
-      judgeOut.judgeUncertainty,
+      judgeProbability,
+      judgeConfidence,
+      judgeUncertainty,
       { onStage: emitStage },
     );
     result.stages.push(...executeOut.stages);
@@ -2101,9 +2210,9 @@ export async function runPipelineForMarket(
     // Qdrant writeback (non-fatal)
     try {
       const ctxForWriteback = await resolvePipelineContext(marketId);
-      await writeResearchToQdrant(marketId, ctxForWriteback.market.title, researchOut.researchContext, {
-        judgeProbability: judgeOut.judgeProbability,
-        confidence: judgeOut.judgeConfidence,
+      await writeResearchToQdrant(marketId, ctxForWriteback.market.title, finalResearchContext, {
+        judgeProbability,
+        confidence: judgeConfidence,
         action: riskOut.riskAction ?? undefined,
         side: riskOut.gatedRiskResult.side,
         category: ctxForWriteback.market.category,

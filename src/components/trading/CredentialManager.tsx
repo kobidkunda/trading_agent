@@ -24,6 +24,8 @@ import {
   Database,
   Search,
   ChevronUp,
+  Network,
+  Save,
 } from 'lucide-react';
 import {
   Card,
@@ -91,6 +93,19 @@ interface ServiceDef {
 }
 
 const SERVICES: ServiceDef[] = [
+  {
+    id: 'venue_proxy',
+    label: 'Venue Proxy',
+    color: 'text-emerald-400',
+    iconBg: 'bg-emerald-500/10',
+    type: 'self-hosted',
+    defaultUrl: '',
+    description: 'Reusable Netlify, Vercel, or edge proxy for market venue APIs',
+    urlPlaceholder: 'https://your-proxy.netlify.app',
+    credentialLabel: 'Proxy Token (optional)',
+    credentialPlaceholder: 'Leave blank unless PROXY_TOKEN is set',
+    testEndpoint: '/health',
+  },
   {
     id: 'qdrant',
     label: 'Qdrant',
@@ -375,6 +390,39 @@ interface Credential {
   testDetails: string | null;
 }
 
+type ProxyVenue = 'polymarket' | 'kalshi' | 'sxBet' | 'manifold';
+
+interface VenueProxyProfile {
+  id: string;
+  label: string;
+  baseUrl?: string;
+  token?: string;
+  urls: Partial<Record<ProxyVenue, string>>;
+  isActive: boolean;
+}
+
+interface VenueProxySettings {
+  activeProfileId: string | null;
+  profiles: VenueProxyProfile[];
+}
+
+const PROXY_VENUES: Array<{ key: ProxyVenue; label: string; path: string; placeholder: string }> = [
+  { key: 'polymarket', label: 'Polymarket', path: 'clob', placeholder: 'https://proxy.example.com/clob' },
+  { key: 'kalshi', label: 'Kalshi', path: 'kalshi', placeholder: 'https://proxy.example.com/kalshi' },
+  { key: 'sxBet', label: 'SX Bet', path: 'sx-bet', placeholder: 'https://proxy.example.com/sx-bet' },
+  { key: 'manifold', label: 'Manifold', path: 'manifold', placeholder: 'https://proxy.example.com/manifold' },
+];
+
+function adminFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  return fetch(input, {
+    ...init,
+    headers: {
+      'x-role': 'Admin',
+      ...(init.headers || {}),
+    },
+  });
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function formatTime(iso: string | null): string {
@@ -480,7 +528,7 @@ function AddCredentialDialog({
     if (!canSave || !serviceDef) return;
     setSaving(true);
     try {
-      const res = await fetch('/api/credentials', {
+      const res = await adminFetch('/api/credentials', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -550,6 +598,21 @@ function AddCredentialDialog({
                     </div>
                   </SelectItem>
                 ))}
+                {/* Proxy Apps section */}
+                <div className="px-2 pt-2 pb-1">
+                  <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-400/70">
+                    <Link2 className="h-3 w-3" />
+                    Proxy Apps (Netlify / Vercel)
+                  </p>
+                </div>
+                {SERVICES.filter((s) => s.type === 'cloud' && s.id.includes('proxy')).map((s) => (
+                  <SelectItem key={s.id} value={s.id} className="py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className={cn('text-xs font-medium', s.color)}>{s.label}</span>
+                      <span className="text-[10px] text-gray-600">{s.description}</span>
+                    </div>
+                  </SelectItem>
+                ))}
                 {/* Cloud section */}
                 <div className="px-2 pt-2 pb-1">
                   <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-blue-400/70">
@@ -557,7 +620,7 @@ function AddCredentialDialog({
                     Cloud APIs
                   </p>
                 </div>
-                {SERVICES.filter((s) => s.type === 'cloud').map((s) => (
+                {SERVICES.filter((s) => s.type === 'cloud' && !s.id.includes('proxy')).map((s) => (
                   <SelectItem key={s.id} value={s.id} className="py-2.5">
                     <div className="flex items-center gap-2">
                       <span className={cn('text-xs font-medium', s.color)}>{s.label}</span>
@@ -600,9 +663,12 @@ function AddCredentialDialog({
           <div className="space-y-2">
             <Label className="text-gray-300 flex items-center gap-1.5">
               <Globe className="h-3.5 w-3.5 text-gray-500" />
-              Service URL
+              {serviceDef?.id.includes('proxy') ? 'Proxy URL' : 'Service URL'}
               {serviceDef?.type === 'self-hosted' && (
                 <span className="text-[10px] text-orange-400">(required for self-hosted)</span>
+              )}
+              {serviceDef?.id.includes('proxy') && (
+                <span className="text-[10px] text-emerald-400">(deployed proxy base URL)</span>
               )}
             </Label>
             <Input
@@ -614,6 +680,13 @@ function AddCredentialDialog({
             {serviceDef?.defaultPort && (
               <p className="text-[10px] text-gray-600">
                 Default port: {serviceDef.defaultPort}
+              </p>
+            )}
+            {serviceDef?.id.includes('proxy') && (
+              <p className="flex items-center gap-1 text-[10px] text-gray-500">
+                <Info className="h-3 w-3 shrink-0" />
+                Deploy <code className="text-emerald-400 mx-0.5">apps/proxyapp</code> to Netlify or Vercel, then paste the URL here. See{' '}
+                <span className="text-gray-400 font-mono">apps/proxyapp/HELP.md</span> for one-command deploy.
               </p>
             )}
           </div>
@@ -683,6 +756,15 @@ export function CredentialManager() {
   const [autoSetupCredId, setAutoSetupCredId] = useState<string | null>(null);
   const [autoSetupRunning, setAutoSetupRunning] = useState(false);
   const [autoSetupResults, setAutoSetupResults] = useState<Array<{ key: string; name: string; created: boolean; skipped: boolean; error: string | null }> | null>(null);
+  const [proxySettings, setProxySettings] = useState<VenueProxySettings>({ activeProfileId: null, profiles: [] });
+  const [proxyDraft, setProxyDraft] = useState<VenueProxyProfile>({
+    id: '',
+    label: 'Netlify Proxy',
+    baseUrl: '',
+    urls: {},
+    isActive: true,
+  });
+  const [savingProxy, setSavingProxy] = useState(false);
 
   // Search state
   const [search, setSearch] = useState('');
@@ -717,7 +799,7 @@ export function CredentialManager() {
       });
       if (debouncedSearch.trim()) query.set('search', debouncedSearch.trim());
 
-      const res = await fetch(`/api/credentials?${query}`);
+      const res = await adminFetch(`/api/credentials?${query}`);
       if (!res.ok) throw new Error('Failed to fetch credentials');
       return res.json();
     },
@@ -728,7 +810,7 @@ export function CredentialManager() {
   useEffect(() => {
     async function fetchQdrantLinks() {
       try {
-        const res = await fetch('/api/settings');
+        const res = await adminFetch('/api/settings');
         if (res.ok) {
           const data = await res.json();
           const linkMap: Record<string, Record<string, string>> = {};
@@ -750,7 +832,7 @@ export function CredentialManager() {
   const testConnection = useCallback(async (cred: Credential) => {
     setTestingId(cred.id);
     try {
-      const res = await fetch(`/api/credentials/test?id=${cred.id}`, { method: 'POST' });
+      const res = await adminFetch(`/api/credentials/test?id=${cred.id}`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         fetchData();
@@ -781,7 +863,7 @@ export function CredentialManager() {
     setAutoSetupRunning(true);
     setAutoSetupResults(null);
     try {
-      const res = await fetch('/api/qdrant/auto-setup', {
+      const res = await adminFetch('/api/qdrant/auto-setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credentialId: credId }),
@@ -816,7 +898,7 @@ export function CredentialManager() {
 
   const deleteCredential = useCallback(async (cred: Credential) => {
     try {
-      await fetch(`/api/credentials?id=${cred.id}`, { method: 'DELETE' });
+      await adminFetch(`/api/credentials?id=${cred.id}`, { method: 'DELETE' });
       fetchData();
     } catch {
       // ignore
@@ -824,6 +906,67 @@ export function CredentialManager() {
     setDeleteTarget(null);
     toast.success(`${cred.service} credential removed`);
   }, [fetchData]);
+
+  useEffect(() => {
+    async function fetchProxySettings() {
+      try {
+        const res = await adminFetch('/api/proxy-settings');
+        if (!res.ok) return;
+        const data = await res.json() as VenueProxySettings;
+        setProxySettings(data);
+        const active = data.profiles.find((profile) => profile.id === data.activeProfileId) || data.profiles[0];
+        if (active) {
+          setProxyDraft(active);
+        }
+      } catch {}
+    }
+    fetchProxySettings();
+  }, []);
+
+  const updateProxyBaseUrl = useCallback((value: string) => {
+    const baseUrl = value.trim().replace(/\/$/, '');
+    setProxyDraft((prev) => ({
+      ...prev,
+      baseUrl,
+      urls: baseUrl
+        ? Object.fromEntries(PROXY_VENUES.map((venue) => [venue.key, `${baseUrl}/${venue.path}`])) as Partial<Record<ProxyVenue, string>>
+        : prev.urls,
+    }));
+  }, []);
+
+  const saveProxyProfile = useCallback(async () => {
+    const id = proxyDraft.id || `proxy-${Date.now()}`;
+    const profile: VenueProxyProfile = {
+      ...proxyDraft,
+      id,
+      label: proxyDraft.label.trim() || 'Venue Proxy',
+      isActive: true,
+      urls: Object.fromEntries(
+        PROXY_VENUES.map((venue) => [venue.key, (proxyDraft.urls[venue.key] || '').trim().replace(/\/$/, '')]),
+      ) as Partial<Record<ProxyVenue, string>>,
+    };
+    const profiles = [
+      profile,
+      ...proxySettings.profiles.filter((item) => item.id !== id).map((item) => ({ ...item, isActive: false })),
+    ];
+    setSavingProxy(true);
+    try {
+      const res = await adminFetch('/api/proxy-settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activeProfileId: id, profiles }),
+      });
+      if (!res.ok) throw new Error('Save failed');
+      const saved = await res.json() as VenueProxySettings;
+      setProxySettings(saved);
+      setProxyDraft(saved.profiles.find((item) => item.id === saved.activeProfileId) || profile);
+      toast.success('Venue proxy settings saved');
+    } catch {
+      toast.error('Failed to save venue proxy settings');
+    } finally {
+      setSavingProxy(false);
+    }
+  }, [proxyDraft, proxySettings.profiles]);
 
   if (loading && credentials.length === 0) {
     return (
@@ -944,6 +1087,85 @@ export function CredentialManager() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="border-gray-800 bg-gray-900">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base text-white">
+            <Network className="h-4 w-4 text-emerald-400" />
+            Venue Proxy URLs
+          </CardTitle>
+          <CardDescription className="text-xs text-gray-500">
+            Active proxy profile used by Polymarket, Kalshi, SX Bet, and Manifold adapters
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-[1fr_2fr_auto]">
+            <div className="space-y-1.5">
+              <Label className="text-xs text-gray-400">Profile</Label>
+              <Input
+                value={proxyDraft.label}
+                onChange={(e) => setProxyDraft((prev) => ({ ...prev, label: e.target.value }))}
+                className="h-8 border-gray-700 bg-gray-800 text-sm text-white"
+                placeholder="Netlify Proxy"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs text-gray-400">Base URL</Label>
+              <Input
+                value={proxyDraft.baseUrl || ''}
+                onChange={(e) => updateProxyBaseUrl(e.target.value)}
+                className="h-8 border-gray-700 bg-gray-800 font-mono text-xs text-white"
+                placeholder="https://your-proxy.netlify.app"
+              />
+            </div>
+            <div className="flex items-end">
+              <Button
+                onClick={saveProxyProfile}
+                disabled={savingProxy}
+                className="h-8 gap-2 bg-emerald-600 text-white hover:bg-emerald-700"
+              >
+                {savingProxy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                Save
+              </Button>
+            </div>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2">
+            {PROXY_VENUES.map((venue) => (
+              <div key={venue.key} className="space-y-1.5">
+                <Label className="text-xs text-gray-400">{venue.label}</Label>
+                <Input
+                  value={proxyDraft.urls[venue.key] || ''}
+                  onChange={(e) => setProxyDraft((prev) => ({
+                    ...prev,
+                    urls: { ...prev.urls, [venue.key]: e.target.value },
+                  }))}
+                  className="h-8 border-gray-700 bg-gray-800 font-mono text-xs text-white"
+                  placeholder={venue.placeholder}
+                />
+              </div>
+            ))}
+          </div>
+          {proxySettings.profiles.length > 0 && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {proxySettings.profiles.map((profile) => (
+                <Button
+                  key={profile.id}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setProxyDraft(profile)}
+                  className={cn(
+                    'h-7 border-gray-700 px-2 text-xs text-gray-400 hover:bg-gray-800',
+                    profile.id === proxySettings.activeProfileId && 'border-emerald-500/40 text-emerald-400',
+                  )}
+                >
+                  {profile.label}
+                </Button>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Available self-hosted services (quick add) */}
       {credentials.length === 0 && (
@@ -1290,7 +1512,7 @@ export function CredentialManager() {
           credentialId={wizardCredId}
           onCollectionsLinked={async () => {
             try {
-              const res = await fetch('/api/settings');
+              const res = await adminFetch('/api/settings');
               if (res.ok) {
                 const data = await res.json();
                 const linkMap: Record<string, Record<string, string>> = {};

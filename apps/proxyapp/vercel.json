@@ -1,7 +1,23 @@
 {
+  "version": 2,
+  "functions": {
+    "api/proxy/[...proxy].js": {
+      "maxDuration": 30
+    }
+  },
   "rewrites": [
-    { "source": "/api/health", "destination": "/api/proxy/health" },
-    { "source": "/api/:provider/:path*", "destination": "/api/proxy/:provider/:path*" },
-    { "source": "/api/:provider", "destination": "/api/proxy/:provider" }
+    { "source": "/api/health",             "destination": "/api/proxy/health" },
+    { "source": "/api/proxy/:path*",       "destination": "/api/proxy/:path*" },
+    { "source": "/api/:provider/:path*",   "destination": "/api/proxy/:provider/:path*" },
+    { "source": "/api/:provider",          "destination": "/api/proxy/:provider" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Frame-Options",         "value": "DENY" },
+        { "key": "X-Content-Type-Options",  "value": "nosniff" }
+      ]
+    }
   ]
 }

@@ -1,9 +1,12 @@
 import { NextResponse } from 'next/server';
 import { fetchTradingAgentsMetadata } from '@/lib/engine/research/tradingagents-api';
+import { db } from '@/lib/db';
+import { isEncrypted, decrypt } from '@/lib/engine/crypto';
 import type { MetadataOption, TradingAgentsMetadataResponse } from '@/lib/types';
 
 interface LlmModelsResponse {
   models: MetadataOption[];
+  data?: MetadataOption[];
   provider?: string;
   error?: string;
 }
@@ -24,12 +27,36 @@ export async function GET(): Promise<NextResponse> {
     return NextResponse.json(nativeMetadata);
   }
 
-  // Fallback to LLM models endpoint
+  // Fallback to configured LLM models. Avoid self-fetching localhost:3000 from a dev server on port 6500.
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-    const res = await fetch(`${baseUrl}/api/llm/models`, {
+    const llmCred = await db.credential.findFirst({
+      where: { service: { in: ['llm', 'LLM Provider', 'OpenAI', 'openai'] }, isActive: true },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!llmCred?.serviceUrl) {
+      return NextResponse.json({
+        providers: [],
+        models: [],
+        source: 'llm-fallback',
+        error: 'No TradingAgents service or LLM credential configured',
+      } satisfies TradingAgentsMetadataResponse);
+    }
+
+    let parsedData: Record<string, unknown> = {};
+    try {
+      if (llmCred.encryptedData) {
+        const rawData = isEncrypted(llmCred.encryptedData) ? decrypt(llmCred.encryptedData) : llmCred.encryptedData;
+        parsedData = JSON.parse(rawData);
+      }
+    } catch {}
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    if (parsedData.apiKey) headers.Authorization = `Bearer ${parsedData.apiKey}`;
+    const baseUrl = llmCred.serviceUrl.replace(/\/$/, '');
+    const res = await fetch(`${baseUrl}/models`, {
       method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       signal: AbortSignal.timeout(10000),
     });
 
@@ -46,7 +73,7 @@ export async function GET(): Promise<NextResponse> {
     const llmData: LlmModelsResponse = await res.json();
 
     // Normalize LLM models response into TradingAgentsMetadataResponse shape
-    const normalizedModels: MetadataOption[] = (llmData.models || []).map((m: unknown) => {
+    const normalizedModels: MetadataOption[] = (llmData.models || llmData.data || []).map((m: unknown) => {
       if (typeof m === 'string') return { id: m, label: m };
       const obj = m as Record<string, unknown>;
       return {

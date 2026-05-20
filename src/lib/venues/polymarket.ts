@@ -3,12 +3,15 @@
 import { db } from '@/lib/db';
 import { orderbookEngine, type OrderbookPriceLevel } from '@/lib/engine/orderbook-microstructure';
 import { getCredentialForService } from '@/lib/engine/research/search';
+import { getActiveVenueProxyUrl } from '@/lib/engine/venue-proxy-settings';
 
 const POLYMARKET_DIRECT_URL = 'https://clob.polymarket.com';
 const POLYMARKET_DEFAULT_URL = POLYMARKET_DIRECT_URL;
 
 async function getPolymarketBaseUrl(): Promise<string> {
   try {
+    const activeProxyUrl = await getActiveVenueProxyUrl('polymarket');
+    if (activeProxyUrl) return activeProxyUrl;
     const proxyCredential = await getCredentialForService('polymarket_proxy') ?? await getCredentialForService('proxy');
     if (proxyCredential?.baseUrl) return proxyCredential.baseUrl.replace(/\/$/, '');
     const setting = await db.settings.findUnique({ where: { key: 'polymarket_proxy_url' } });

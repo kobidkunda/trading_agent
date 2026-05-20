@@ -1,26 +1,59 @@
 [build]
-  publish = "public"
+  publish   = "public"
   functions = "netlify/functions"
 
 [functions]
-  node_bundler = "esbuild"
+  node_bundler    = "esbuild"
+  included_files  = ["src/**"]
 
+# ── Headers: applied to every response ────────────────────────────────────────
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+
+# ── Route table (order matters — first match wins) ────────────────────────────
 [[redirects]]
-  from = "/api/health"
-  to = "/.netlify/functions/proxy/health"
+  from   = "/api/health"
+  to     = "/.netlify/functions/proxy/health"
   status = 200
 
 [[redirects]]
-  from = "/api/proxy/*"
-  to = "/.netlify/functions/proxy/proxy/:splat"
+  from   = "/health"
+  to     = "/.netlify/functions/proxy/health"
+  status = 200
+
+# Explicit proxy mode: /api/proxy?target=polymarket&path=/markets
+[[redirects]]
+  from   = "/api/proxy"
+  to     = "/.netlify/functions/proxy/proxy"
+  status = 200
+
+# Splat mode: /api/proxy/<provider>/<path>
+[[redirects]]
+  from   = "/api/proxy/*"
+  to     = "/.netlify/functions/proxy/proxy/:splat"
+  status = 200
+
+# Shorthand: /api/<provider>/<path>
+[[redirects]]
+  from   = "/api/:provider/*"
+  to     = "/.netlify/functions/proxy/:provider/:splat"
+  status = 200
+
+# Shorthand no-path: /api/<provider>
+[[redirects]]
+  from   = "/api/:provider"
+  to     = "/.netlify/functions/proxy/:provider"
   status = 200
 
 [[redirects]]
-  from = "/api/:provider/*"
-  to = "/.netlify/functions/proxy/:provider/:splat"
+  from   = "/:provider/*"
+  to     = "/.netlify/functions/proxy/:provider/:splat"
   status = 200
 
 [[redirects]]
-  from = "/api/:provider"
-  to = "/.netlify/functions/proxy/:provider"
+  from   = "/:provider"
+  to     = "/.netlify/functions/proxy/:provider"
   status = 200

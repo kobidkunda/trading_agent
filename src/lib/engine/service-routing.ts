@@ -21,7 +21,9 @@ export async function getStageRouting(): Promise<StageServiceMapping> {
         return { ...DEFAULT_STAGE_ROUTING, ...parsed.stageRouting };
       }
     }
-  } catch {}
+  } catch (error) {
+    throw new Error(`Failed to load stage routing: ${error instanceof Error ? error.message : String(error)}`);
+  }
   return { ...DEFAULT_STAGE_ROUTING };
 }
 
@@ -63,50 +65,12 @@ export async function getVectorConfig(routing: StageServiceMapping): Promise<{ b
 export type ResearchProvider = 'deerflow' | 'firecrawl' | 'tradingagents' | 'agent_reach';
 
 export async function resolveResearchProvider(): Promise<ResearchProvider> {
-  try {
-    const setting = await db.settings.findUnique({ where: { key: 'strategy_settings' } });
-    let fallbackProvider: string | undefined;
-
-    if (setting) {
-      const parsed = JSON.parse(setting.value);
-      fallbackProvider = parsed.stageRouting?.researchFallbackProvider;
-    }
-
-    const deerflowHealth = await checkServiceHealth('deerflow');
-    if (deerflowHealth.status === 'UP') {
-      return 'deerflow';
-    }
-
-    console.log('[ServiceRouting] DeerFlow is DOWN, checking fallbacks...');
-
-    const fallbackCandidates: ResearchProvider[] = [];
-    const normalizedFallback = fallbackProvider?.trim().toLowerCase().replace(/[-\s]+/g, '_');
-    if (normalizedFallback === 'firecrawl') fallbackCandidates.push('firecrawl');
-    if (normalizedFallback === 'tradingagents') fallbackCandidates.push('tradingagents');
-    if (normalizedFallback === 'agent_reach' || normalizedFallback === 'agentreach') {
-      fallbackCandidates.push('agent_reach');
-    }
-
-    for (const candidate of ['tradingagents', 'agent_reach', 'firecrawl'] as ResearchProvider[]) {
-      if (!fallbackCandidates.includes(candidate)) {
-        fallbackCandidates.push(candidate);
-      }
-    }
-
-    for (const candidate of fallbackCandidates) {
-      const health = await checkServiceHealth(candidate);
-      if (health.status === 'UP') {
-        console.log(`[ServiceRouting] Routing research to ${candidate} fallback`);
-        return candidate;
-      }
-    }
-
-    console.log('[ServiceRouting] All research providers unavailable, defaulting to deerflow');
-    return 'deerflow';
-  } catch (error) {
-    console.log('[ServiceRouting] Error resolving research provider:', error);
+  const deerflowHealth = await checkServiceHealth('deerflow');
+  if (deerflowHealth.status === 'UP') {
     return 'deerflow';
   }
+
+  throw new Error(`DeerFlow unavailable: ${deerflowHealth.error || deerflowHealth.status}`);
 }
 
 export async function getAvailableResearchProviders(): Promise<ResearchProvider[]> {

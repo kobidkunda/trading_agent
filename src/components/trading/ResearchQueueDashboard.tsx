@@ -185,6 +185,13 @@ export function ResearchQueueDashboard() {
     return () => { cancelled = true; };
   }, []);
 
+  const isStuck = (job: ResearchJob) =>
+    job.status === 'RUNNING' &&
+    job.startedAt !== null &&
+    (Date.now() - new Date(job.startedAt).getTime()) > 30 * 60 * 1000;
+
+  const isDead = (job: ResearchJob) => job.status === 'FAILED' || job.status === 'STUCK';
+
   // Compute stuck/dead from current page data (stats based on full dataset count)
   const stuckCount = useMemo(() =>
     jobs.filter((j) => isStuck(j)).length,
@@ -203,13 +210,6 @@ export function ResearchQueueDashboard() {
     }
     return groups;
   }, [jobs]);
-
-  const isStuck = (job: ResearchJob) =>
-    job.status === 'RUNNING' &&
-    job.startedAt !== null &&
-    (Date.now() - new Date(job.startedAt).getTime()) > 30 * 60 * 1000;
-
-  const isDead = (job: ResearchJob) => job.status === 'FAILED' || job.status === 'STUCK';
 
   const handleSort = (field: string) => {
     if (sortBy === field) {

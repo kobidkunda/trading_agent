@@ -88,6 +88,19 @@ export interface ProcessedJobResult {
   error: string | null;
 }
 
+export interface WorkerFlowResult {
+  marketLoop: WorkerState['lastMarketLoopResult'];
+  processedJobs: ProcessedJobResult[];
+  jobsProcessed: number;
+  completed: boolean;
+}
+
+export interface WorkerFlowOptions {
+  maxJobs?: number;
+  runMarketLoop?: boolean;
+  failOnNoWork?: boolean;
+}
+
 function extractMarketId(payload: string | null): string | null {
   if (!payload) return null;
   try {
@@ -357,7 +370,9 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
             }).catch(() => {});
           }
         }
-      } catch {}
+      } catch (cleanupErr) {
+        console.error('[Worker] Failed to release candidate lock after job failure:', cleanupErr);
+      }
     }
 
     return {
@@ -368,6 +383,60 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
       error: errorMessage,
     };
   }
+}
+
+export async function runWorkerFlowUntilIdle(options: WorkerFlowOptions = {}): Promise<WorkerFlowResult> {
+  const maxJobs = Math.max(1, Number(options.maxJobs ?? 50));
+  const shouldRunMarketLoop = options.runMarketLoop ?? true;
+  const processedJobs: ProcessedJobResult[] = [];
+  let marketLoop: WorkerState['lastMarketLoopResult'] = null;
+
+  await releaseAllStaleLocks();
+
+  if (shouldRunMarketLoop) {
+    const loopResult = await runMarketLoopOnce();
+    marketLoop = {
+      scanned: loopResult.scanned,
+      candidatesCreated: loopResult.candidatesCreated,
+      candidatesSkipped: loopResult.candidatesSkipped,
+      jobsCreated: loopResult.jobsCreated,
+    };
+    state.lastMarketLoopResult = marketLoop;
+    state.lastActivity = new Date().toISOString();
+
+    if (options.failOnNoWork && loopResult.jobsCreated === 0) {
+      throw new Error(
+        `Market loop completed with no queued jobs: scanned=${loopResult.scanned}, candidatesCreated=${loopResult.candidatesCreated}, candidatesSkipped=${loopResult.candidatesSkipped}`,
+      );
+    }
+  }
+
+  for (let i = 0; i < maxJobs; i++) {
+    const processedJob = await processNextQueuedJobOnce();
+    if (!processedJob) {
+      return {
+        marketLoop,
+        processedJobs,
+        jobsProcessed: processedJobs.length,
+        completed: true,
+      };
+    }
+
+    processedJobs.push(processedJob);
+    state.lastActivity = new Date().toISOString();
+
+    if (processedJob.status !== 'COMPLETED') {
+      state.errors++;
+      state.error = processedJob.error;
+      throw new Error(
+        `Job ${processedJob.jobId} (${processedJob.jobType}) ${processedJob.status}: ${processedJob.error ?? 'unknown error'}`,
+      );
+    }
+
+    state.jobsProcessed++;
+  }
+
+  throw new Error(`Worker flow did not become idle after ${maxJobs} jobs`);
 }
 
 async function tick() {
@@ -603,7 +672,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
     case 'TRIAGE': {
       const marketId = String(data.marketId);
       if (!(await validateMarket(marketId))) {
-        return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
+        throw new Error(`Market not found: ${marketId}`);
       }
       const result = await runTriageStage(marketId) as unknown as Record<string, unknown>;
       if (jobId) {
@@ -622,7 +691,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
         if (!existingResearchJob) {
           await db.job.create({
             data: { type: 'STANDARD_RESEARCH', status: 'PENDING', priority: 7, payload: JSON.stringify({ marketId, candidateId: data.candidateId, trigger: 'triage_chain', triageStatus: result.triageStatus }) },
-          }).catch(err => console.error('[Worker] Failed to enqueue STANDARD_RESEARCH from triage:', err));
+          });
         }
       }
       return result;
@@ -635,7 +704,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
     case 'DEEP_RESEARCH': {
       const marketId = String(data.marketId);
       if (!(await validateMarket(marketId))) {
-        return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
+        throw new Error(`Market not found: ${marketId}`);
       }
       const depth = resolveDepthFromType(jobType);
 
@@ -674,7 +743,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
             priority: 8,
             payload: JSON.stringify({ marketId, researchRunId: result.researchRunId }),
           },
-        }).catch((err) => console.error('[Worker] Failed to enqueue JUDGE_MARKET:', err));
+        });
       }
       return result;
     }
@@ -683,11 +752,11 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
     case 'JUDGE': {
       const marketId = String(data.marketId);
       if (!(await validateMarket(marketId))) {
-        return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
+        throw new Error(`Market not found: ${marketId}`);
       }
       const research = await lookupResearchRunForMarket(marketId, data.researchRunId as string | undefined);
       if (!research) {
-        return { status: 'NO_RESEARCH_RUN', marketId, skipped: true, message: 'No completed ResearchRun found for market' };
+        throw new Error(`No completed ResearchRun found for market: ${marketId}`);
       }
       const result = await runJudgeStage(marketId, research.researchRunId, research.researchContext, research.depth) as unknown as Record<string, unknown>;
       if (jobId) {
@@ -716,7 +785,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
               disagreementLevel: (result.disagreementLevel as string) ?? 'LOW',
             }),
           },
-        }).catch((err) => console.error('[Worker] Failed to enqueue RISK_CHECK:', err));
+        });
       }
       return result;
     }
@@ -725,11 +794,11 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
     case 'RISK': {
       const marketId = String(data.marketId);
       if (!(await validateMarket(marketId))) {
-        return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
+        throw new Error(`Market not found: ${marketId}`);
       }
       const judge = resolveJudgeParamsFromPayload(data) ?? await lookupJudgeParams(marketId);
       if (!judge) {
-        return { status: 'NO_JUDGE_PARAMS', marketId, skipped: true, message: 'No judge/decision data found for market' };
+        throw new Error(`No judge/decision data found for market: ${marketId}`);
       }
       const result = await runRiskStage(
         marketId,
@@ -776,7 +845,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
               gatedSlippage: gatedRisk?.slippage ?? 0,
             }),
           },
-        }).catch((err) => console.error('[Worker] Failed to enqueue PAPER_EXECUTE:', err));
+        });
       }
       return result;
     }
@@ -785,7 +854,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
     case 'EXECUTE': {
       const marketId = String(data.marketId);
       if (!(await validateMarket(marketId))) {
-        return { status: 'MARKET_NOT_FOUND', marketId, skipped: true };
+        throw new Error(`Market not found: ${marketId}`);
       }
       let decisionId = typeof data.decisionId === 'string' ? data.decisionId : undefined;
       let judgeProb = typeof data.judgeProbability === 'number' ? data.judgeProbability : 0.5;
@@ -810,7 +879,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       if (!decisionId || !data.judgeProbability) {
         const decision = await lookupDecisionForMarket(marketId);
         if (!decision) {
-          return { status: 'NO_DECISION', marketId, skipped: true, message: 'No Decision found for market' };
+          throw new Error(`No Decision found for market: ${marketId}`);
         }
         decisionId = decisionId || decision.decisionId;
         judgeProb = data.judgeProbability != null ? judgeProb : decision.judgeProbability;

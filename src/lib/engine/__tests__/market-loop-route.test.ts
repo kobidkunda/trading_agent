@@ -18,6 +18,13 @@ const stopWorkerMock = mock(() => ({
   status: 'STOPPED',
 }));
 
+const runWorkerFlowUntilIdleMock = mock(async () => ({
+  marketLoop: { scanned: 3, candidatesCreated: 1, candidatesSkipped: 0, jobsCreated: 1 },
+  processedJobs: [{ jobId: 'job-1', jobType: 'TRIAGE_MARKET', marketId: 'market-1', status: 'COMPLETED', error: null }],
+  jobsProcessed: 1,
+  completed: true,
+}));
+
 const findUniqueMock = mock(async ({ where }: { where: { key: string } }) => {
   if (where.key === 'strategy_settings') {
     return { key: 'strategy_settings', value: JSON.stringify({ enabledVenues: ['POLYMARKET'] }) };
@@ -43,6 +50,8 @@ mock.module('@/lib/engine/worker', () => ({
   getWorkerState: getWorkerStateMock,
   startWorker: startWorkerMock,
   stopWorker: stopWorkerMock,
+  processNextQueuedJobOnce: mock(async () => null),
+  runWorkerFlowUntilIdle: runWorkerFlowUntilIdleMock,
 }));
 
 describe('market loop route', () => {
@@ -50,6 +59,7 @@ describe('market loop route', () => {
     getWorkerStateMock.mockClear();
     startWorkerMock.mockClear();
     stopWorkerMock.mockClear();
+    runWorkerFlowUntilIdleMock.mockClear();
     findUniqueMock.mockClear();
   });
 
@@ -76,5 +86,25 @@ describe('market loop route', () => {
 
     expect(payload.intervalMs).toBe(180000);
     expect(startWorkerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('can run synchronously until the flow completes', async () => {
+    const { POST } = await import('../../../app/api/trading/market-loop/route');
+    const res = await POST(
+      new Request('http://localhost/api/trading/market-loop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'start', waitUntilComplete: true, maxJobs: 12 }),
+      }) as never,
+    );
+    const payload = await res.json();
+
+    expect(payload.action).toBe('completed');
+    expect(payload.completed).toBe(true);
+    expect(payload.jobsProcessed).toBe(1);
+    expect(runWorkerFlowUntilIdleMock).toHaveBeenCalledWith({
+      maxJobs: 12,
+      failOnNoWork: true,
+    });
   });
 });

@@ -37,6 +37,8 @@ mock.module('@/lib/engine/worker', () => ({
   getWorkerState: getWorkerStateMock,
   startWorker: startWorkerMock,
   stopWorker: stopWorkerMock,
+  processNextQueuedJobOnce: mock(async () => null),
+  runWorkerFlowUntilIdle: mock(async () => ({ marketLoop: null, processedJobs: [], jobsProcessed: 0, completed: true })),
 }));
 
 describe('market loop wrapper routes', () => {

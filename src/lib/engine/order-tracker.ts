@@ -1,7 +1,8 @@
 import { db } from '@/lib/db';
 import { updateOrderCompat } from '@/lib/engine/prisma-runtime-compat';
 import { normalizeFillModel } from '@/lib/engine/paper-execution';
-import type { FillModelInput, PaperBetExecutionStatus } from '@/lib/types';
+import { computeRisk } from '@/lib/engine/risk';
+import type { FillModelInput, PaperBetExecutionStatus, Venue } from '@/lib/types';
 
 export type OrderTrackerLifecycle = 'PLANNED' | 'SUBMITTED' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'FAILED' | 'EXPIRED';
 
@@ -85,6 +86,65 @@ export async function processPaperOrderFill(params: {
       isFullyFilled: false,
       orderStatus: 'EXPIRED',
     };
+  }
+
+// Risk re-evaluation gate: check if market still meets BID criteria
+  const [latestMarketSnapshot, latestDecision] = await Promise.all([
+    db.marketSnapshot.findFirst({
+      where: { marketId: params.marketId },
+      orderBy: { timestamp: 'desc' },
+    }),
+    db.decision.findFirst({
+      where: { marketId: params.marketId },
+      include: { market: { select: { venue: true, category: true } } },
+      orderBy: { createdAt: 'desc' },
+    }),
+  ]);
+
+  if (
+    latestMarketSnapshot &&
+    latestDecision &&
+    latestDecision.judgeProbability != null &&
+    latestDecision.confidence != null &&
+    latestDecision.uncertainty != null
+  ) {
+    const riskInput = {
+      impliedProbability: latestMarketSnapshot.impliedProb,
+      judgeProbability: latestDecision.judgeProbability,
+      confidence: latestDecision.confidence,
+      uncertainty: latestDecision.uncertainty,
+      fees: 0,
+      slippage: 0,
+      venue: latestDecision.market.venue as Venue,
+      category: latestDecision.market.category,
+      dailyExposure: 0,
+      categoryExposure: 0,
+      openPositions: 0,
+      marketLiquidity: latestMarketSnapshot.liquidity,
+      marketSpread: latestMarketSnapshot.spread,
+      catalystTiming: undefined,
+    };
+
+    const riskResult = computeRisk(riskInput);
+    if (riskResult.action !== 'BID') {
+      await updateOrderCompat(params.orderId, {
+        lifecycleStatus: 'CANCELLED',
+        status: 'CANCELLED',
+        lastFillAttemptAt: new Date(),
+        fillAttemptCount: { increment: 1 },
+        failureReason: `Risk re-evaluation failed: ${riskResult.reason}`,
+      });
+      await db.paperBet.updateMany({
+        where: { orderId: params.orderId },
+        data: { executionStatus: 'CANCELLED' },
+      });
+      return {
+        filledSize: 0,
+        avgFillPrice: 0,
+        isFullyFilled: false,
+        orderStatus: 'CANCELLED',
+      };
+    }
   }
 
   const { resolvePaperFill } = await import('./paper-execution');

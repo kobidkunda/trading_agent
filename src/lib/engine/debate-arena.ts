@@ -102,6 +102,70 @@ interface ArbiterResponse {
   recommendationReason: string;
 }
 
+function requireText(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Debate response missing required text field "${field}"`);
+  }
+  return value.trim();
+}
+
+function requireProbability(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`Debate response missing valid probability field "${field}"`);
+  }
+  return value;
+}
+
+function requireStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Debate response missing required array field "${field}"`);
+  }
+  return value.map((item) => String(item)).filter((item) => item.trim().length > 0);
+}
+
+function validateBullResponse(data: BullResponse, model: string, round: number): BullResponse {
+  return {
+    argument: requireText(data.argument, `bull.argument (${model}, round ${round})`),
+    estimatedProbability: requireProbability(data.estimatedProbability, `bull.estimatedProbability (${model}, round ${round})`),
+    confidence: requireProbability(data.confidence, `bull.confidence (${model}, round ${round})`),
+    concededPoints: requireStringArray(data.concededPoints, `bull.concededPoints (${model}, round ${round})`),
+    newArguments: requireStringArray(data.newArguments, `bull.newArguments (${model}, round ${round})`),
+  };
+}
+
+function validateBearResponse(data: BearResponse, model: string, round: number): BearResponse {
+  return {
+    argument: requireText(data.argument, `bear.argument (${model}, round ${round})`),
+    estimatedProbability: requireProbability(data.estimatedProbability, `bear.estimatedProbability (${model}, round ${round})`),
+    confidence: requireProbability(data.confidence, `bear.confidence (${model}, round ${round})`),
+    concededPoints: requireStringArray(data.concededPoints, `bear.concededPoints (${model}, round ${round})`),
+    newArguments: requireStringArray(data.newArguments, `bear.newArguments (${model}, round ${round})`),
+  };
+}
+
+function validateArbiterResponse(data: ArbiterResponse, model: string): ArbiterResponse {
+  const outcome = data.debateOutcome;
+  if (!['BULL_WINS', 'BEAR_WINS', 'SPLIT', 'INCONCLUSIVE'].includes(outcome)) {
+    throw new Error(`Arbiter response missing valid debateOutcome (${model})`);
+  }
+  const recommendation = data.recommendation;
+  if (!['BID', 'SKIP', 'WATCH'].includes(recommendation)) {
+    throw new Error(`Arbiter response missing valid recommendation (${model})`);
+  }
+  return {
+    pointsOfAgreement: requireStringArray(data.pointsOfAgreement, `arbiter.pointsOfAgreement (${model})`),
+    pointsOfDisagreement: requireStringArray(data.pointsOfDisagreement, `arbiter.pointsOfDisagreement (${model})`),
+    debateOutcome: outcome,
+    finalProbability: requireProbability(data.finalProbability, `arbiter.finalProbability (${model})`),
+    finalConfidence: requireProbability(data.finalConfidence, `arbiter.finalConfidence (${model})`),
+    finalUncertainty: requireProbability(data.finalUncertainty, `arbiter.finalUncertainty (${model})`),
+    proEvidence: requireStringArray(data.proEvidence, `arbiter.proEvidence (${model})`),
+    antiEvidence: requireStringArray(data.antiEvidence, `arbiter.antiEvidence (${model})`),
+    recommendation,
+    recommendationReason: requireText(data.recommendationReason, `arbiter.recommendationReason (${model})`),
+  };
+}
+
 export async function runDebateArena(
   marketTitle: string,
   impliedProbability: number,
@@ -167,18 +231,20 @@ Respond in JSON:
     const bullStart = Date.now();
     const bearStart = Date.now();
     const [bullResp, bearResp] = await Promise.all([
-      callLLMJson<BullResponse>(bullPrompt, BULL_SYSTEM, bullModel).catch(() => ({
-        data: { argument: 'Bull analysis unavailable', estimatedProbability: impliedProbability + 0.05, confidence: 0.4, concededPoints: [], newArguments: [] } as BullResponse,
-        meta: { model: bullModel, tokenCount: 0, latencyMs: Date.now() - bullStart },
-      })),
-      callLLMJson<BearResponse>(bearPrompt, BEAR_SYSTEM, bearModel).catch(() => ({
-        data: { argument: 'Bear analysis unavailable', estimatedProbability: impliedProbability - 0.05, confidence: 0.4, concededPoints: [], newArguments: [] } as BearResponse,
-        meta: { model: bearModel, tokenCount: 0, latencyMs: Date.now() - bearStart },
-      })),
+      callLLMJson<BullResponse>(bullPrompt, BULL_SYSTEM, bullModel).catch((err) => {
+        const msg = `Bull agent (${bullModel}) failed round ${round}: ${String(err)}`;
+        console.error(`[DebateArena] ${msg}`);
+        throw new Error(msg);
+      }),
+      callLLMJson<BearResponse>(bearPrompt, BEAR_SYSTEM, bearModel).catch((err) => {
+        const msg = `Bear agent (${bearModel}) failed round ${round}: ${String(err)}`;
+        console.error(`[DebateArena] ${msg}`);
+        throw new Error(msg);
+      }),
     ]);
 
-    const bull = bullResp.data;
-    const bear = bearResp.data;
+    const bull = validateBullResponse(bullResp.data, bullModel, round);
+    const bear = validateBearResponse(bearResp.data, bearModel, round);
 
     prevBullArg = bull.argument;
     prevBearArg = bear.argument;
@@ -192,10 +258,10 @@ Respond in JSON:
       bearModel,
       bullArgument: bull.argument,
       bearArgument: bear.argument,
-      bullProbability: typeof bull.estimatedProbability === 'number' ? bull.estimatedProbability : impliedProbability + 0.05,
-      bearProbability: typeof bear.estimatedProbability === 'number' ? bear.estimatedProbability : impliedProbability - 0.05,
-      bullConfidence: typeof bull.confidence === 'number' ? bull.confidence : 0.4,
-      bearConfidence: typeof bear.confidence === 'number' ? bear.confidence : 0.4,
+      bullProbability: bull.estimatedProbability,
+      bearProbability: bear.estimatedProbability,
+      bullConfidence: bull.confidence,
+      bearConfidence: bear.confidence,
     });
 
     const convergence = Math.abs(bull.estimatedProbability - bear.estimatedProbability);
@@ -241,23 +307,9 @@ Respond in JSON:
   let arbiter: ArbiterResponse;
   try {
     const { data } = await callLLMJson<ArbiterResponse>(arbiterPrompt, ARBITER_SYSTEM, judgeModel);
-    arbiter = data;
-  } catch {
-    const w = finalBullConf + finalBearConf || 1;
-    const blendedProb = (finalBullProb * finalBullConf + finalBearProb * finalBearConf) / w;
-    const edge = Math.abs(blendedProb - impliedProbability);
-    arbiter = {
-      pointsOfAgreement: [],
-      pointsOfDisagreement: ['Bull and bear could not reach consensus'],
-      debateOutcome: 'INCONCLUSIVE',
-      finalProbability: Math.max(0.05, Math.min(0.95, blendedProb)),
-      finalConfidence: 0.3,
-      finalUncertainty: 0.5,
-      proEvidence: [],
-      antiEvidence: [],
-      recommendation: edge > 0.05 ? 'WATCH' : 'SKIP',
-      recommendationReason: 'Arbiter analysis failed — using blended estimate as fallback',
-    };
+    arbiter = validateArbiterResponse(data, judgeModel);
+  } catch (err) {
+    throw new Error(`Arbiter agent (${judgeModel}) failed: ${String(err)}`);
   }
 
   return {
@@ -272,15 +324,15 @@ Respond in JSON:
       confidence: finalBearConf,
       keyArguments: rounds.map((r) => r.bearArgument),
     },
-    pointsOfAgreement: arbiter.pointsOfAgreement || [],
-    pointsOfDisagreement: arbiter.pointsOfDisagreement || [],
-    debateOutcome: arbiter.debateOutcome || 'INCONCLUSIVE',
-    finalProbability: typeof arbiter.finalProbability === 'number' ? arbiter.finalProbability : impliedProbability,
-    finalConfidence: typeof arbiter.finalConfidence === 'number' ? arbiter.finalConfidence : 0.5,
-    finalUncertainty: typeof arbiter.finalUncertainty === 'number' ? arbiter.finalUncertainty : 0.3,
-    proEvidence: arbiter.proEvidence || [],
-    antiEvidence: arbiter.antiEvidence || [],
-    recommendation: arbiter.recommendation || 'SKIP',
-    recommendationReason: arbiter.recommendationReason || 'No reason provided',
+    pointsOfAgreement: arbiter.pointsOfAgreement,
+    pointsOfDisagreement: arbiter.pointsOfDisagreement,
+    debateOutcome: arbiter.debateOutcome,
+    finalProbability: arbiter.finalProbability,
+    finalConfidence: arbiter.finalConfidence,
+    finalUncertainty: arbiter.finalUncertainty,
+    proEvidence: arbiter.proEvidence,
+    antiEvidence: arbiter.antiEvidence,
+    recommendation: arbiter.recommendation,
+    recommendationReason: arbiter.recommendationReason,
   };
 }

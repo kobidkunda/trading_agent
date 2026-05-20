@@ -65,6 +65,11 @@ mock.module('@/lib/engine/worker', () => ({
   processNextQueuedJobOnce: processNextQueuedJobOnceMock,
 }));
 
+mock.module('../worker', () => ({
+  processNextQueuedJobOnce: processNextQueuedJobOnceMock,
+  runWorkerFlowUntilIdle: mock(async () => ({ marketLoop: null, processedJobs: [], jobsProcessed: 0, completed: true })),
+}));
+
 mock.module('@/lib/engine/resolution-poller', () => ({
   runResolutionCycle: resolutionCycleMock,
 }));

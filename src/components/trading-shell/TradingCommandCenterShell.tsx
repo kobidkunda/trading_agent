@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   Settings,
@@ -133,6 +133,7 @@ function TopBar() {
   } = useTradingStore();
   const [currentTime, setCurrentTime] = useState('');
   const [mounted, setMounted] = useState(false);
+  const killSwitchManualOverride = useRef(false);
 
   useEffect(() => {
     const tick = () => {
@@ -162,11 +163,15 @@ function TopBar() {
 
     const syncSimulationStatus = async () => {
       try {
+        if (killSwitchManualOverride.current) return;
+
         const response = await fetch('/api/simulation', { cache: 'no-store' });
         if (!response.ok || cancelled) return;
 
         const payload = (await response.json()) as { status?: string };
-        setGlobalKillSwitch(payload.status !== 'RUNNING');
+        const simRunning = payload.status === 'RUNNING';
+        setGlobalKillSwitch(!simRunning);
+        killSwitchManualOverride.current = false;
       } catch {
         // keep current UI state when simulation status is temporarily unavailable
       }
@@ -268,7 +273,10 @@ function TopBar() {
                     ? 'bg-red-600 text-white hover:bg-red-700'
                     : 'text-red-400 hover:bg-red-500/10 hover:text-red-300'
                 )}
-                onClick={() => setGlobalKillSwitch(!globalKillSwitch)}
+                onClick={() => {
+                  killSwitchManualOverride.current = true;
+                  setGlobalKillSwitch(!globalKillSwitch);
+                }}
               >
                 <OctagonX className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">{globalKillSwitch ? 'STOPPED' : 'E-STOP'}</span>

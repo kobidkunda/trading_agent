@@ -41,9 +41,16 @@ export async function POST(request: NextRequest) {
     const action = body.action as string;
 
     if (action === 'start') {
-      const { startWorker } = await import('@/lib/engine/worker');
+      const { startWorker, runWorkerFlowUntilIdle } = await import('@/lib/engine/worker');
       const intervalMs = Math.max(1, Number(body.intervalMinutes ?? 5)) * 60 * 1000;
-      return NextResponse.json(startWorker(intervalMs));
+      if (body.waitUntilComplete === true) {
+        const result = await runWorkerFlowUntilIdle({
+          maxJobs: Number(body.maxJobs ?? 50),
+          failOnNoWork: body.failOnNoWork !== false,
+        });
+        return NextResponse.json({ action: 'completed', ...result });
+      }
+      return NextResponse.json(await startWorker(intervalMs));
     }
 
     if (action === 'stop') {
@@ -52,7 +59,10 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({ error: 'Unknown action. Use start or stop.' }, { status: 400 });
-  } catch {
-    return NextResponse.json({ error: 'Failed to update market loop state' }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 },
+    );
   }
 }

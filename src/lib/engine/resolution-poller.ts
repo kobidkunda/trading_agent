@@ -1,9 +1,10 @@
 import { db } from '@/lib/db';
 import { resolveAllPaperBetsForMarket } from '@/lib/engine/paper-bets';
 import { BrierCalibrationEngine } from '@/lib/engine/brier-calibration';
+import { getActiveVenueProxyUrl } from '@/lib/engine/venue-proxy-settings';
 
-const POLYMARKET_API = 'https://clob.polymarket.com';
-const KALSHI_API = 'https://api.elections.kalshi.com/trade-api/v2';
+const POLYMARKET_DIRECT_API = 'https://clob.polymarket.com';
+const KALSHI_DIRECT_API = 'https://api.elections.kalshi.com/trade-api/v2';
 
 interface ResolutionResult {
   marketId: string;
@@ -15,10 +16,11 @@ interface ResolutionResult {
 
 export async function pollPolymarketResolutions(externalIds: string[]): Promise<ResolutionResult[]> {
   const results: ResolutionResult[] = [];
+  const baseUrl = (await getActiveVenueProxyUrl('polymarket')) || POLYMARKET_DIRECT_API;
 
   for (const conditionId of externalIds) {
     try {
-      const response = await fetch(`${POLYMARKET_API}/markets/${conditionId}`, {
+      const response = await fetch(`${baseUrl}/markets/${conditionId}`, {
         headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(10000),
       });
@@ -72,10 +74,11 @@ export async function pollPolymarketResolutions(externalIds: string[]): Promise<
 
 export async function pollKalshiResolutions(tickers: string[]): Promise<ResolutionResult[]> {
   const results: ResolutionResult[] = [];
+  const baseUrl = (await getActiveVenueProxyUrl('kalshi')) || KALSHI_DIRECT_API;
 
   for (const ticker of tickers) {
     try {
-      const response = await fetch(`${KALSHI_API}/markets/${ticker}`, {
+      const response = await fetch(`${baseUrl}/markets/${ticker}`, {
         signal: AbortSignal.timeout(10000),
       });
 

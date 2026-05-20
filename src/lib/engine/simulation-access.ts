@@ -14,8 +14,9 @@ export function getSimulationAccess(mode: TradingMode): SimulationAccessResult {
     };
   }
 
-  // PAPER: real scanner, simulated execution → allowed (engine supports runPaperLoop)
   if (mode === 'PAPER') {
+    // PAPER mode runs through runPaperLoop() which uses real scanner + pipeline.
+    // Allowed for autonomous paper trading — orders are SIMULATED execution only.
     return {
       allowed: true,
       reason: null,

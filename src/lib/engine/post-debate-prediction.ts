@@ -294,9 +294,8 @@ export async function runPostDebatePrediction(
     if (fallbackResult) return fallbackResult;
   }
 
-  // Ultimate fallback: synthesize from debate data
-  console.warn('[PostDebatePrediction] All MiroFish models failed. Using fallback synthesis.');
-  return synthesizeFromDebate(debateResult, researchContext);
+  // All MiroFish models failed — throw so caller can retry
+  throw new Error(`Post-debate prediction failed: all MiroFish models exhausted (${model}, ${FALLBACK_MODELS.join(', ')})`);
 }
 
 function isValidRecommendation(value: string): value is PostDebatePredictionResult['recommendation'] {

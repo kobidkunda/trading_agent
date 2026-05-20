@@ -2,11 +2,14 @@
 
 import { db } from '@/lib/db';
 import { getCredentialForService } from '@/lib/engine/research/search';
+import { getActiveVenueProxyUrl } from '@/lib/engine/venue-proxy-settings';
 
 const KALSHI_DIRECT_URL = 'https://external-api.kalshi.com/trade-api/v2';
 
 async function getKalshiBaseUrl(): Promise<string> {
   try {
+    const activeProxyUrl = await getActiveVenueProxyUrl('kalshi');
+    if (activeProxyUrl) return activeProxyUrl;
     const proxyCredential = await getCredentialForService('kalshi_proxy') ?? await getCredentialForService('proxy');
     if (proxyCredential?.baseUrl) return proxyCredential.baseUrl.replace(/\/$/, '');
     const setting = await db.settings.findUnique({ where: { key: 'kalshi_proxy_url' } });
@@ -69,7 +72,8 @@ export async function getKalshiMarkets(limit: number = 100, cursor?: string): Pr
     })
 
     if (!response.ok) {
-      throw new Error(`Kalshi API error: ${response.status}`)
+      console.warn(`Kalshi API error: ${response.status} from ${baseUrl}/markets`);
+      return { markets: [], cursor: '' }
     }
 
     const data: KalshiMarketsResponse = await response.json()

@@ -1,6 +1,7 @@
 import { db } from '@/lib/db';
 import { updateOrderCompat } from '@/lib/engine/prisma-runtime-compat';
-import { resolvePaperFill } from '@/lib/engine/paper-execution';
+import { normalizeFillModel } from '@/lib/engine/paper-execution';
+import { processPaperOrderFill } from '@/lib/engine/order-tracker';
 import { derivePaperBetExecutionStatus } from '@/lib/engine/order-tracker';
 import type { FillModelInput, PaperBetExecutionStatus } from '@/lib/types';
 
@@ -34,8 +35,6 @@ const state: PaperLoopState = {
 
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 const PROCESSING_LOCK = new Set<string>();
-const IDLE_CYCLE_THRESHOLD = 5;
-const ALLOW_SYNTHETIC_TEST_ORDERS = process.env.ALLOW_SYNTHETIC_PAPER_TEST_ORDERS === 'true';
 
 // True when paper loop should own order filling (worker ORDER_TRACK backs off)
 let _paperLoopActive = false;
@@ -120,6 +119,12 @@ async function ensurePaperBetExists(params: {
       });
       return;
     }
+    // Guard: verify market exists before creating paper bet (prevents FK violation)
+    const marketExists = await db.market.findUnique({ where: { id: params.marketId }, select: { id: true } });
+    if (!marketExists) {
+      console.error(`[PaperLoop] FK guard: market ${params.marketId} not found, skipping paper bet creation for order ${params.orderId}`);
+      return;
+    }
     await db.paperBet.create({
       data: {
         marketId: params.marketId,
@@ -144,6 +149,11 @@ async function ensurePaperBetExists(params: {
   }
 
   // No decision — create a minimal one first
+  const marketExists2 = await db.market.findUnique({ where: { id: params.marketId }, select: { id: true } });
+  if (!marketExists2) {
+    console.error(`[PaperLoop] FK guard: market ${params.marketId} not found, skipping decision+bet creation for order ${params.orderId}`);
+    return;
+  }
   const newDecision = await db.decision.create({
     data: {
       marketId: params.marketId,
@@ -176,81 +186,6 @@ async function ensurePaperBetExists(params: {
     },
   });
   console.log(`[PaperLoop] Created Decision+PaperBet for order ${params.orderId} (no existing decision found)`);
-}
-
-async function ensureTestMarketExists(): Promise<string | null> {
-  const existing = await db.market.findFirst({
-    where: { externalId: 'PAPER_TEST_MARKET' },
-  });
-  if (existing) return existing.id;
-
-  try {
-    const market = await db.market.create({
-      data: {
-        id: `paper-test-${Date.now()}`,
-        externalId: 'PAPER_TEST_MARKET',
-        venue: 'PAPER',
-        title: 'Test V2: Paper Orders should work in paper mode',
-        description: 'Auto-generated paper test market for continuous order loop demo',
-        category: 'test',
-        status: 'ACTIVE',
-        dataSource: 'REAL' as any,
-      },
-    });
-    console.log('[PaperLoop] Created test market:', market.id);
-    return market.id;
-  } catch {
-    return null;
-  }
-}
-
-async function generateTestOrder(): Promise<string | null> {
-  const marketId = await ensureTestMarketExists();
-  if (!marketId) return null;
-
-  const venueOrderId = `PAPER_TEST_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const price = 0.6;
-  const size = 100;
-
-  try {
-    const order = await db.order.create({
-      data: {
-        marketId,
-        venueOrderId,
-        executionMode: 'SIMULATED' as any,
-        dataSource: 'MOCK' as any,
-        lifecycleStatus: 'SUBMITTED' as any,
-        side: 'YES',
-        price,
-        size,
-        filledSize: 0,
-        remainingSize: size,
-        status: 'SUBMITTED',
-        fillAttemptCount: 0,
-        fillModel: 'DEMO_INSTANT',
-        submittedAt: new Date(),
-        orderExpiryAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      } as any,
-    });
-
-    // Ensure paperBet exists for the new order
-    await ensurePaperBetExists({
-      orderId: order.id,
-      marketId,
-      fillTimestamp: new Date(),
-      side: 'YES',
-      price,
-      size,
-      avgFillPrice: price,
-      executionStatus: 'SUBMITTED',
-    });
-
-    console.log(`[PaperLoop] Generated test order: ${order.id}`);
-    return order.id;
-  } catch (err) {
-    console.error('[PaperLoop] Failed to generate test order:', err);
-    return null;
-  }
 }
 
 export async function fillPaperOrder(orderId: string): Promise<PaperFillResult> {
@@ -328,111 +263,37 @@ export async function fillPaperOrder(orderId: string): Promise<PaperFillResult> 
       };
     }
 
-    const fillResult = resolvePaperFill({
-      size: order.remainingSize ?? order.size,
-      price: order.price,
-      fillModel: 'DEMO_INSTANT' as FillModelInput,
-      liquidity: 999999,
-    });
-
-    const fillTimestamp = new Date();
-    const currentAttempt = (order.fillAttemptCount ?? 0) + 1;
-    const prevFilledSize = order.filledSize ?? 0;
-    const incrementalFill = Math.max(0, fillResult.filledSize);
-    const nextFilledSize = Math.min(order.size, prevFilledSize + incrementalFill);
-    const nextRemainingSize = Math.max(0, order.size - nextFilledSize);
-    const nextAvgFillPrice =
-      nextFilledSize > 0
-        ? (((order.avgFillPrice ?? 0) * prevFilledSize) + (fillResult.avgFillPrice * incrementalFill)) / Math.max(nextFilledSize, 1)
-        : order.avgFillPrice;
-
-    const isFullFill = nextFilledSize >= order.size * 0.999;
-    const newLifecycleStatus = isFullFill ? 'FILLED' : 'PARTIALLY_FILLED';
-    const paperBetExecutionStatus = derivePaperBetExecutionStatus({
-      lifecycleStatus: newLifecycleStatus as any,
-      filledSize: nextFilledSize,
-    });
-
-    await updateOrderCompat(orderId, {
-      lifecycleStatus: newLifecycleStatus,
-      filledSize: nextFilledSize,
-      remainingSize: nextRemainingSize,
-      avgFillPrice: nextAvgFillPrice,
-      filledAt: newLifecycleStatus === 'FILLED' ? fillTimestamp : null,
-      lastFillAttemptAt: fillTimestamp,
-      fillAttemptCount: { increment: 1 },
-      status: newLifecycleStatus === 'FILLED' ? 'FILLED' : 'PARTIALLY_FILLED',
-      failureReason: null,
-    });
-
-    if (incrementalFill > 0) {
-      await db.fill.create({
-        data: {
-          orderId,
-          price: fillResult.avgFillPrice,
-          size: incrementalFill,
-          fee: 0,
-          fillModel: 'DEMO_INSTANT',
-          metadataJson: JSON.stringify({
-            mode: 'PAPER_LOOP',
-            liquidity: 999999,
-            fillProbability: 1.0,
-            fillAttempt: currentAttempt,
-          }),
-          fillTime: fillTimestamp,
-        },
-      });
-
-      // Always ensure PaperBet exists (creates if missing)
-      await ensurePaperBetExists({
-        orderId,
-        marketId: order.marketId,
-        fillTimestamp,
-        side: order.side,
-        price: order.price,
-        size: nextFilledSize,
-        avgFillPrice: nextAvgFillPrice ?? order.price,
-        executionStatus: paperBetExecutionStatus,
-      });
-
-      const existingPosition = await db.position.findFirst({
-        where: { marketId: order.marketId, status: { in: ['OPEN', 'WATCH'] } },
-      });
-
-      if (!existingPosition) {
-        await db.position.create({
-          data: {
-            marketId: order.marketId,
-            side: order.side,
-            entryPrice: fillResult.avgFillPrice,
-            currentSize: incrementalFill,
-            avgEntryPrice: fillResult.avgFillPrice,
-            unrealizedPnl: 0,
-            realizedPnl: 0,
-            status: 'OPEN',
-            openedAt: fillTimestamp,
-          },
-        });
-      } else {
-        const newSize = existingPosition.currentSize + incrementalFill;
-        const newAvgPrice = ((existingPosition.avgEntryPrice * existingPosition.currentSize) + (fillResult.avgFillPrice * incrementalFill)) / newSize;
-        await db.position.update({
-          where: { id: existingPosition.id },
-          data: {
-            currentSize: newSize,
-            avgEntryPrice: newAvgPrice,
-            status: 'OPEN',
-          },
-        });
-      }
-    }
-
-    if (newLifecycleStatus === 'FILLED') {
-      await db.tradeCandidate.updateMany({
+    const [latestOrderbook, marketSnapshot] = await Promise.all([
+      db.orderbookSnapshot.findFirst({
         where: { marketId: order.marketId },
-        data: { stage: 'EXECUTED', lastExecutionAt: fillTimestamp },
-      });
-    }
+        orderBy: { capturedAt: 'desc' },
+      }),
+      db.marketSnapshot.findFirst({
+        where: { marketId: order.marketId },
+        orderBy: { capturedAt: 'desc' },
+      }),
+    ]);
+
+    const previousFilledSize = order.filledSize ?? 0;
+    const result = await processPaperOrderFill({
+      orderId,
+      marketId: order.marketId,
+      fillModel: normalizeFillModel(order.fillModel as FillModelInput),
+      liquidity: marketSnapshot?.liquidity ?? 0,
+      fillProbability: latestOrderbook?.fillProbability ?? marketSnapshot?.fillProbability ?? null,
+      priceImpact: latestOrderbook?.priceImpact ?? marketSnapshot?.priceImpact ?? null,
+      bidDepth: latestOrderbook?.bidDepth ?? marketSnapshot?.bidDepth ?? null,
+      askDepth: latestOrderbook?.askDepth ?? marketSnapshot?.askDepth ?? null,
+      spread: latestOrderbook?.spread ?? marketSnapshot?.spread ?? null,
+    });
+
+    const updatedOrder = await db.order.findUnique({ where: { id: orderId } });
+    const filledSize = Math.max(0, (updatedOrder?.filledSize ?? previousFilledSize) - previousFilledSize);
+    const lifecycleStatus = updatedOrder?.lifecycleStatus ?? result.orderStatus;
+    const paperBetStatus = derivePaperBetExecutionStatus({
+      lifecycleStatus: lifecycleStatus as any,
+      filledSize: updatedOrder?.filledSize ?? 0,
+    });
 
     return {
       orderId,
@@ -441,13 +302,13 @@ export async function fillPaperOrder(orderId: string): Promise<PaperFillResult> 
       side: order.side,
       price: order.price,
       size: order.size,
-      filledSize: incrementalFill,
-      avgFillPrice: fillResult.avgFillPrice,
-      remainingSize: nextRemainingSize,
-      isFullyFilled: newLifecycleStatus === 'FILLED',
-      lifecycleStatus: newLifecycleStatus,
-      paperBetStatus: paperBetExecutionStatus,
-      attemptNumber: currentAttempt,
+      filledSize,
+      avgFillPrice: updatedOrder?.avgFillPrice ?? result.avgFillPrice,
+      remainingSize: updatedOrder?.remainingSize ?? Math.max(0, order.size - (updatedOrder?.filledSize ?? 0)),
+      isFullyFilled: lifecycleStatus === 'FILLED',
+      lifecycleStatus,
+      paperBetStatus,
+      attemptNumber: updatedOrder?.fillAttemptCount ?? ((order.fillAttemptCount ?? 0) + 1),
     };
   } finally {
     PROCESSING_LOCK.delete(orderId);
@@ -466,8 +327,6 @@ export interface PaperLoopCycleResult {
   generated: number;
   results: PaperFillResult[];
 }
-
-let _idleCycleCount = 0;
 
 export async function runPaperLoopCycle(): Promise<PaperLoopCycleResult> {
   state.currentCycle++;
@@ -488,25 +347,7 @@ export async function runPaperLoopCycle(): Promise<PaperLoopCycleResult> {
     let failed = 0;
     let generated = 0;
 
-    if (orders.length === 0) {
-      _idleCycleCount++;
-      if (ALLOW_SYNTHETIC_TEST_ORDERS && _idleCycleCount >= IDLE_CYCLE_THRESHOLD) {
-        const newOrderId = await generateTestOrder();
-        if (newOrderId) {
-          _idleCycleCount = 0;
-          generated = 1;
-          // Fill it immediately
-          try {
-            const fillResult = await fillPaperOrder(newOrderId);
-            results.push(fillResult);
-            if (fillResult.lifecycleStatus === 'FILLED') filled++;
-          } catch {
-            failed++;
-          }
-        }
-      }
-    } else {
-      _idleCycleCount = 0;
+    if (orders.length > 0) {
       for (const order of orders) {
         try {
           const result = await fillPaperOrder(order.id);
@@ -555,7 +396,6 @@ export function startPaperLoop(intervalMs: number = 3000): PaperLoopState {
   state.intervalMs = intervalMs;
   state.lastError = null;
   _paperLoopActive = true;
-  _idleCycleCount = 0;
 
   runPaperLoopCycle().catch((err) => {
     console.error('[PaperLoop] Initial cycle error:', err);
@@ -591,7 +431,6 @@ export function resetPaperLoopStats(): PaperLoopState {
   state.currentCycle = 0;
   state.errors = 0;
   state.lastError = null;
-  _idleCycleCount = 0;
   return { ...state };
 }
 

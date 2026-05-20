@@ -75,7 +75,7 @@ export function PaginationBar({ page, totalPages, limit, onPageChange, onLimitCh
       </div>
       <Pagination>
         <PaginationContent>
-          <PaginationItem>
+          <PaginationItem key="prev">
             <PaginationPrevious
               onClick={(e) => {
                 e.preventDefault();
@@ -105,7 +105,7 @@ export function PaginationBar({ page, totalPages, limit, onPageChange, onLimitCh
               </PaginationItem>
             ),
           )}
-          <PaginationItem>
+          <PaginationItem key="next">
             <PaginationNext
               onClick={(e) => {
                 e.preventDefault();

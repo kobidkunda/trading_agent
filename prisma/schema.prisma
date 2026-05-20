@@ -59,6 +59,7 @@ model Market {
   isClosed      Boolean  @default(false)
   isResolved    Boolean  @default(false)
   dataSource    DataSource @default(REAL)
+  mode          TradingMode @default(PAPER)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
