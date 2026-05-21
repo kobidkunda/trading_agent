@@ -30,7 +30,7 @@
       ],
       "enabled": true,
       "environment": {
-        "NETLIFY_PERSONAL_ACCESS_TOKEN": "REPLACE_WITH_YOUR_NETLIFY_TOKEN"
+        "NETLIFY_PERSONAL_ACCESS_TOKEN": "nfp_gZFz8pbf6NRNdU8xksJLESJKLsEfiMdP92bb"
       },
       "type": "local"
     },
@@ -54,7 +54,7 @@
     "stitch": {
       "enabled": true,
       "headers": {
-        "X-Goog-Api-Key": "REPLACE_WITH_YOUR_GCP_API_KEY"
+        "X-Goog-Api-Key": "AQ.Ab8RN6KXJoOMUFbj8TAWMxx-qK_0YkcV_9A1_xJDYwr3RuI1Aw"
       },
       "type": "remote",
       "url": "https://stitch.googleapis.com/mcp"
