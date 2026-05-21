@@ -23,9 +23,25 @@ export function resolvePaperExecutionSize(params: {
   adjustedSize?: number | null;
   maxSize?: number | null;
   fallbackSize?: number | null;
+  edge?: number | null;
+  confidence?: number | null;
+  uncertainty?: number | null;
 }): number | null {
-  const candidate =
+  let candidate =
     params.adjustedSize ?? params.maxSize ?? params.fallbackSize ?? null;
+
+  if ((candidate == null || candidate <= 0) && params.edge != null && params.edge > 0) {
+    const conf = params.confidence ?? 0.3;
+    const unc = params.uncertainty ?? 0.5;
+    const riskFallback = (() => {
+      try {
+        const { computePositionSize } = require('./risk');
+        return computePositionSize(params.edge, conf, unc);
+      } catch { return 100; }
+    })();
+    if (riskFallback > 0) return riskFallback;
+    if (conf >= 0.1) return 100;
+  }
 
   if (candidate == null || candidate <= 0) {
     return null;

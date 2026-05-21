@@ -1874,6 +1874,9 @@ export async function runExecuteStage(
       adjustedSize: gatedRiskResult.adjustedSize,
       maxSize: gatedRiskResult.maxSize,
       fallbackSize: computePositionSize(gatedRiskResult.edge, judgeConfidence, judgeUncertainty),
+      edge: gatedRiskResult.edge,
+      confidence: judgeConfidence,
+      uncertainty: judgeUncertainty,
     });
 
     if (orderSize == null) {

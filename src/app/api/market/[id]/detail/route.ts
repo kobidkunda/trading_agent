@@ -103,7 +103,7 @@ export async function GET(
         inferredProvider = 'TWITTER';
       } else if (url.includes('deerflow') || type === 'CRAWL') {
         inferredProvider = 'DEERFLOW';
-      } else if (url.includes('agent-reach') || url.includes('agentreach')) {
+      } else if (type === 'AGENT_REACH' || url.includes('agent-reach') || url.includes('agentreach')) {
         inferredProvider = 'AGENT_REACH';
       } else if (type === 'SEARCH' || type === 'WEB') {
         inferredProvider = 'SEARXNG';
@@ -125,7 +125,7 @@ export async function GET(
       s.provider === 'AGENT_REACH' || s.sourceType === 'AGENT_REACH'
     );
     const searxngSources = sourcesWithProvider.filter(s => 
-      s.provider === 'SEARXNG' || s.sourceType === 'SEARXNG' || s.provider === 'WEB' || s.sourceType === 'SEARCH'
+      s.provider === 'SEARXNG' || s.sourceType === 'SEARXNG' || s.provider === 'WEB' || s.sourceType === 'SEARCH' || s.sourceType === 'WEB'
     );
 
     if (latestResearch?.agentOutputs?.length) {

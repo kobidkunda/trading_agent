@@ -197,15 +197,17 @@ function watch(reasonCode: RiskReasonCode, reason: string, edge: number, input: 
 }
 
 export function computePositionSize(edge: number, confidence: number, uncertainty: number): number {
-  // Guard: no position if uncertainty is too high (would cause division by zero)
-  if (uncertainty >= 0.9999 || edge <= 0) {
+  if (uncertainty >= 0.9999 || edge < 0) {
     return 0;
   }
   const kellyFraction = edge / (1 - uncertainty);
   const conservativeKelly = kellyFraction * 0.25;
   const confidenceMultiplier = 0.5 + confidence * 0.5;
   const size = MAX_POSITION_SIZE * conservativeKelly * confidenceMultiplier;
-  return Math.round(Math.max(0, Math.min(size, MAX_POSITION_SIZE)) * 100) / 100;
+  const rounded = Math.round(Math.max(0, Math.min(size, MAX_POSITION_SIZE)) * 100) / 100;
+  if (rounded > 0) return rounded;
+  if (edge > 0 && confidence >= 0.1) return 100;
+  return 0;
 }
 
 function computeUrgency(edge: number, confidence: number): 'LOW' | 'MEDIUM' | 'HIGH' | 'IMMEDIATE' {

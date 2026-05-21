@@ -150,7 +150,14 @@ export async function runScanner(
         hasMore = result.hasMore;
         pagesScanned = result.pagesScanned;
         pageFingerprints = result.pageFingerprints;
-        await savePolymarketCursor(nextCursor, hasMore);
+
+        // If cursor didn't advance (API returned same cursor it was given), the
+        // Polymarket CLOB API cursor is broken/stuck. Don't save it — reset to null
+        // so next scan starts from the beginning and makes progress.
+        const cursorAdvanced = nextCursor != null && nextCursor !== cursorStart;
+        const effectiveCursor = cursorAdvanced ? nextCursor : null;
+        const effectiveHasMore = cursorAdvanced ? hasMore : true;
+        await savePolymarketCursor(effectiveCursor, effectiveHasMore);
       } else if (venue === 'KALSHI') {
         cursorStart =
           scanMode === 'RESUME_FROM_CURSOR' || scanMode === 'INCREMENTAL_SCAN'
@@ -161,6 +168,7 @@ export async function runScanner(
           startCursor: cursorStart,
           scanUntilNoCursor: scanUntilNoCursor || scanMode === 'FULL_SCAN',
           rateLimitMs: scanRateLimitMs,
+          timeoutMs: scanTimeoutMs,
         });
         nextCursor = result.nextCursor;
         hasMore = result.hasMore;

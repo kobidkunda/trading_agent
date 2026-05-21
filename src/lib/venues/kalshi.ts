@@ -25,6 +25,7 @@ export interface GetAllKalshiMarketsOptions {
   startCursor?: string | null;
   scanUntilNoCursor?: boolean;
   rateLimitMs?: number;
+  timeoutMs?: number;
 }
 
 export interface KalshiMarket {
@@ -63,12 +64,13 @@ function kalshiParse(value: string | number | undefined | null): number {
   return 0;
 }
 
-export async function getKalshiMarkets(limit: number = 100, cursor?: string): Promise<KalshiMarketsResponse> {
+export async function getKalshiMarkets(limit: number = 100, cursor?: string, timeoutMs: number = 15000): Promise<KalshiMarketsResponse> {
   try {
     const cursorParam = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
     const baseUrl = await getKalshiBaseUrl();
     const response = await fetch(`${baseUrl}/markets?limit=${limit}${cursorParam}`, {
-      cache: 'no-store'
+      cache: 'no-store',
+      signal: AbortSignal.timeout(timeoutMs),
     })
 
     if (!response.ok) {
@@ -103,11 +105,12 @@ export async function getAllKalshiMarkets(
   const maxPages = options.maxPages ?? 3;
   const scanUntilNoCursor = options.scanUntilNoCursor ?? false;
   const rateLimitMs = options.rateLimitMs ?? 300;
+  const timeoutMs = options.timeoutMs ?? 15000;
   let cursor: string | undefined = options.startCursor ?? undefined;
   let pageCount = 0;
 
   while (pageCount < maxPages || scanUntilNoCursor) {
-    const result = await getKalshiMarkets(100, cursor);
+    const result = await getKalshiMarkets(100, cursor, timeoutMs);
     if (!result.markets || result.markets.length === 0) break;
     const pageIds = result.markets.map((m) => m.ticker);
     pageFingerprints.push(fingerprintPage(pageIds));

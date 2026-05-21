@@ -594,6 +594,11 @@ async function lookupDecisionForMarket(marketId: string): Promise<{
   judgeProbability: number;
   judgeConfidence: number;
   judgeUncertainty: number;
+  action: string;
+  side: string;
+  maxSize: number;
+  urgency: string;
+  edge: number;
 } | null> {
   const decision = await db.decision.findFirst({
     where: { marketId },
@@ -606,6 +611,11 @@ async function lookupDecisionForMarket(marketId: string): Promise<{
     judgeProbability: decision.judgeProbability ?? 0.5,
     judgeConfidence: decision.confidence ?? 0.5,
     judgeUncertainty: decision.uncertainty ?? 0.3,
+    action: decision.action ?? 'BID',
+    side: decision.side ?? 'YES',
+    maxSize: decision.maxSize ?? 0,
+    urgency: decision.urgency ?? 'MEDIUM',
+    edge: decision.edge ?? 0,
   };
 }
 
@@ -887,21 +897,9 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       const aPlusGatePassed = typeof data.aPlusGatePassed === 'boolean' ? data.aPlusGatePassed : false;
 
       // Reconstruct gatedRiskResult from job payload (passed through RISK_CHECK chain)
-      const gatedRiskResult = {
-        action: (data.gatedAction as 'BID' | 'WATCH' | 'SKIP') || 'BID',
-        side: (data.gatedSide as 'YES' | 'NO') || 'YES',
-        maxSize: Number(data.gatedMaxSize ?? 0),
-        adjustedSize: Number(data.gatedAdjustedSize ?? data.gatedMaxSize ?? 0),
-        urgency: (data.gatedUrgency as string) || 'MEDIUM',
-        reasonCode: String(data.gatedReasonCode ?? ''),
-        reason: String(data.gatedReason ?? ''),
-        edge: Number(data.gatedEdge ?? 0),
-        fees: Number(data.gatedFees ?? 0),
-        slippage: Number(data.gatedSlippage ?? 0),
-      };
+      const decision = await lookupDecisionForMarket(marketId).catch(() => null);
 
       if (!decisionId || !data.judgeProbability) {
-        const decision = await lookupDecisionForMarket(marketId);
         if (!decision) {
           throw new Error(`No Decision found for market: ${marketId}`);
         }
@@ -910,6 +908,21 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
         judgeConf = data.judgeConfidence != null ? judgeConf : decision.judgeConfidence;
         judgeUnc = data.judgeUncertainty != null ? judgeUnc : decision.judgeUncertainty;
       }
+
+      const hasGatedData = data.gatedEdge != null || data.gatedAdjustedSize != null || data.gatedMaxSize != null;
+
+      const gatedRiskResult = {
+        action: (data.gatedAction as 'BID' | 'WATCH' | 'SKIP') || decision?.action || 'BID',
+        side: (data.gatedSide as 'YES' | 'NO') || decision?.side || 'YES',
+        maxSize: Number(hasGatedData ? (data.gatedMaxSize ?? 0) : (decision?.maxSize ?? 0)),
+        adjustedSize: Number(hasGatedData ? (data.gatedAdjustedSize ?? data.gatedMaxSize ?? 0) : (decision?.maxSize ?? 0)),
+        urgency: (data.gatedUrgency as string) || decision?.urgency || 'MEDIUM',
+        reasonCode: String(data.gatedReasonCode ?? ''),
+        reason: String(data.gatedReason ?? ''),
+        edge: Number(hasGatedData ? (data.gatedEdge ?? 0) : (decision?.edge ?? 0)),
+        fees: Number(data.gatedFees ?? 0),
+        slippage: Number(data.gatedSlippage ?? 0),
+      };
 
       const result = await runExecuteStage(marketId, decisionId!, gatedRiskResult as any, aPlusGatePassed, judgeProb, judgeConf, judgeUnc) as unknown as Record<string, unknown>;
       if (jobId) {
