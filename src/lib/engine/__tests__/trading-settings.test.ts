@@ -31,7 +31,7 @@ describe('trading settings helpers', () => {
       tradingConfig: { enabledVenues: ['POLYMARKET'], mode: 'DEMO' },
     });
 
-    expect(config.enabledVenues).toEqual(['POLYMARKET']);
+    expect(config.enabledVenues).toEqual(['KALSHI']);
     expect(config.mode).toBe('DEMO');
     expect(config.dataSource).toBe('MOCK');
   });

@@ -45,7 +45,7 @@ describe('simulation route mode gating', () => {
     runSimulationMock.mockClear();
   });
 
-  it('blocks simulation start outside demo mode', async () => {
+  it('allows simulation start in paper mode', async () => {
     const { POST } = await import('../../../app/api/simulation/route');
 
     const response = await POST(
@@ -56,11 +56,8 @@ describe('simulation route mode gating', () => {
       }) as never,
     );
 
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({
-      error: 'SimulationLab mock templates are restricted to DEMO mode. Use PAPER mode through the trading market loop.',
-    });
-    expect(startSimulationMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(startSimulationMock).toHaveBeenCalled();
   });
 
   it('allows simulation start in demo mode', async () => {

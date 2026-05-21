@@ -64,12 +64,26 @@ export async function POST(request: NextRequest) {
       }),
     ]);
 
+    const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
+      db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_MODE_KEY } }),
+    ]);
+
+    const config = getEffectiveTradingConfig({
+      strategySettings: strategySetting ? JSON.parse(strategySetting.value) : null,
+      tradingConfig: tradingConfigSetting ? JSON.parse(tradingConfigSetting.value) : null,
+      tradingMode: tradingModeSetting?.value ?? null,
+    });
+
     return NextResponse.json({
-      mode: update.modeValue,
-      dataSource: update.tradingConfig.dataSource,
-      executionMode: update.tradingConfig.executionMode,
-      globalKillSwitch: update.tradingConfig.globalKillSwitch,
-      liveExecutionEnabled: update.tradingConfig.liveExecutionEnabled,
+      mode: config.mode,
+      dataSource: config.dataSource,
+      executionMode: config.executionMode,
+      globalKillSwitch: config.globalKillSwitch,
+      liveExecutionEnabled: config.liveExecutionEnabled,
+      scanIntervalMinutes: config.scanIntervalMinutes,
+      candidateThreshold: config.candidateThreshold,
     });
   } catch {
     return NextResponse.json({ error: 'Failed to update trading mode' }, { status: 500 });

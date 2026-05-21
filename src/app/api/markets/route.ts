@@ -3,11 +3,17 @@ import { db } from '@/lib/db';
 import { Prisma } from '@prisma/client';
 import { getKalshiMarkets } from '@/lib/venues/kalshi';
 import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
-import { filterMarketsForMode } from '@/lib/engine/market-triage-mode-filter';
 import { runScanner } from '@/lib/engine/scanner';
 import { upsertScannedMarket } from '@/lib/engine/scanner-upsert';
 import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
 import type { ScannerMarketInput } from '@/lib/engine/scanner-upsert';
+
+type MarketListRecord = Prisma.MarketGetPayload<{
+  include: {
+    snapshots: { orderBy: { timestamp: 'desc' }, take: 1 },
+    tradeCandidates: { orderBy: [{ candidateScore: 'desc' }, { updatedAt: 'desc' }], take: 1 },
+  },
+}>;
 
 export async function GET(request: NextRequest) {
   try {
@@ -16,6 +22,8 @@ export async function GET(request: NextRequest) {
 
     const venue = searchParams.get('venue');
     const status = searchParams.get('status');
+    const triageStatusParam = searchParams.get('triageStatus');
+    const candidateStage = searchParams.get('candidateStage');
     const category = searchParams.get('category');
     const onlyNew = searchParams.get('onlyNew') === 'true';
     const onlyChanged = searchParams.get('onlyChanged') === 'true';
@@ -25,17 +33,21 @@ export async function GET(request: NextRequest) {
     const excludeRecentlyResearched = searchParams.get('excludeRecentlyResearched') === 'true';
     const minCandidateScore = parseInt(searchParams.get('minCandidateScore') || '0');
     const sortPriority = searchParams.get('sortPriority') === 'score';
-
-    // Use sortBy from pagination params; fall back to existing sortBy param for backward compat
-    const effectiveSortBy = searchParams.get('sortBy') || pagination.sortBy || 'updatedAt';
+    const requestedSortBy = searchParams.get('sortBy') || pagination.sortBy || 'updatedAt';
+    const effectiveSortBy = requestedSortBy === 'score' ? 'candidateScore' : requestedSortBy;
+    const allowedSortFields = new Set(['updatedAt', 'firstSeen', 'candidateScore']);
+    const safeSortBy = allowedSortFields.has(effectiveSortBy) ? effectiveSortBy : 'updatedAt';
     const effectiveSortOrder = (searchParams.get('sortOrder') as 'asc' | 'desc') || pagination.sortOrder || 'desc';
+    const triageStatus =
+      triageStatusParam ??
+      (status && !['ACTIVE', 'CLOSED', 'RESOLVED', 'INACTIVE'].includes(status) ? status : null);
 
     const now = new Date();
     const freshThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     const where: Prisma.MarketWhereInput = {};
     if (venue) where.venue = venue;
-    if (status) where.status = status;
+    if (status && ['ACTIVE', 'CLOSED', 'RESOLVED', 'INACTIVE'].includes(status)) where.status = status;
     if (category) where.category = category;
     if (pagination.search) {
       where.OR = [
@@ -47,7 +59,7 @@ export async function GET(request: NextRequest) {
 
     // Build candidate-level filters
     const candidateWhere: Prisma.TradeCandidateWhereInput | undefined =
-      onlyNew || onlyChanged || onlyAPlus || excludeCooldown || excludeExecuted || excludeRecentlyResearched || minCandidateScore > 0
+      onlyNew || onlyChanged || onlyAPlus || excludeCooldown || excludeExecuted || excludeRecentlyResearched || minCandidateScore > 0 || !!triageStatus || !!candidateStage
         ? {}
         : undefined;
 
@@ -138,6 +150,12 @@ export async function GET(request: NextRequest) {
           candidateWhere.candidateScore = { gte: minCandidateScore };
         }
       }
+      if (triageStatus) {
+        candidateWhere.triageStatus = triageStatus;
+      }
+      if (candidateStage) {
+        candidateWhere.stage = candidateStage;
+      }
 
       where.tradeCandidates = { some: candidateWhere };
     }
@@ -159,35 +177,67 @@ export async function GET(request: NextRequest) {
       tradingMode: tradingModeSetting?.value ?? null,
     });
 
-    // Determine sort order — sortPriority=score overrides pagination.sortBy
-    let orderBy: Prisma.MarketOrderByWithRelationInput;
-    if (sortPriority) {
-      orderBy = { tradeCandidates: { _count: 'desc' } };
-    } else if (effectiveSortBy === 'score' || effectiveSortBy === 'candidateScore') {
-      orderBy = { tradeCandidates: { _count: 'desc' } };
-    } else if (effectiveSortBy === 'firstSeen') {
-      orderBy = { firstSeenAt: 'desc' };
-    } else {
-      orderBy = { updatedAt: effectiveSortOrder };
+    if (tradingConfig.mode !== 'DEMO') {
+      where.NOT = {
+        OR: [
+          { externalId: { startsWith: 'live_' } },
+          { externalId: { startsWith: 'sim_' } },
+        ],
+      };
     }
 
-    const [markets, totalCount] = await Promise.all([
-      db.market.findMany({
-        where,
-        include: {
-          snapshots: { orderBy: { timestamp: 'desc' }, take: 1 },
-          tradeCandidates: { orderBy: { updatedAt: 'desc' }, take: 1 },
-        },
-        orderBy,
-        skip: (pagination.page - 1) * pagination.limit,
-        take: pagination.limit,
-      }),
-      db.market.count({ where }),
-    ]);
+    const needsCandidateScoreSort = sortPriority || safeSortBy === 'candidateScore';
+    const totalBeforeFilters = await db.market.count({});
+    let markets: MarketListRecord[] = [];
+    let totalCount = 0;
 
-    const visibleMarkets = filterMarketsForMode(markets, tradingConfig.mode);
+    if (needsCandidateScoreSort) {
+      const candidateScoreWhere: Prisma.TradeCandidateWhereInput = {
+        ...(candidateWhere ?? {}),
+        market: where,
+      };
+      const [rankedCandidates, candidateTotal] = await Promise.all([
+        db.tradeCandidate.findMany({
+          where: candidateScoreWhere,
+          include: {
+            market: {
+              include: {
+                snapshots: { orderBy: { timestamp: 'desc' }, take: 1 },
+                tradeCandidates: { orderBy: [{ candidateScore: 'desc' }, { updatedAt: 'desc' }], take: 1 },
+              },
+            },
+          },
+          orderBy: [{ candidateScore: effectiveSortOrder }, { updatedAt: 'desc' }],
+          skip: (pagination.page - 1) * pagination.limit,
+          take: pagination.limit,
+        }),
+        db.tradeCandidate.count({ where: candidateScoreWhere }),
+      ]);
+      markets = rankedCandidates.map((candidate) => candidate.market);
+      totalCount = candidateTotal;
+    } else {
+      const orderBy: Prisma.MarketOrderByWithRelationInput =
+        safeSortBy === 'firstSeen'
+          ? { firstSeenAt: effectiveSortOrder }
+          : { updatedAt: effectiveSortOrder };
+      const [marketRows, marketTotal] = await Promise.all([
+        db.market.findMany({
+          where,
+          include: {
+            snapshots: { orderBy: { timestamp: 'desc' }, take: 1 },
+            tradeCandidates: { orderBy: [{ candidateScore: 'desc' }, { updatedAt: 'desc' }], take: 1 },
+          },
+          orderBy,
+          skip: (pagination.page - 1) * pagination.limit,
+          take: pagination.limit,
+        }),
+        db.market.count({ where }),
+      ]);
+      markets = marketRows;
+      totalCount = marketTotal;
+    }
 
-    const enrichedMarkets = visibleMarkets.map((market) => {
+    const enrichedMarkets = markets.map((market) => {
       const candidate = market.tradeCandidates[0];
       const now = new Date();
       const isCooldown =
@@ -223,10 +273,34 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    return NextResponse.json(
-      buildPaginatedResponse(enrichedMarkets, totalCount, pagination),
-    );
-  } catch {
+    const payload = buildPaginatedResponse(enrichedMarkets, totalCount, pagination);
+    return NextResponse.json({
+      ...payload,
+      markets: payload.data,
+      diagnostics: {
+        appliedFilters: {
+          venue,
+          status,
+          triageStatus,
+          candidateStage,
+          category,
+          onlyNew,
+          onlyChanged,
+          onlyAPlus,
+          excludeCooldown,
+          excludeExecuted,
+          excludeRecentlyResearched,
+          minCandidateScore,
+          sortPriority,
+        },
+        mode: tradingConfig.mode,
+        dataSource: tradingConfig.dataSource,
+        totalBeforeFilters,
+        totalAfterFilters: totalCount,
+      },
+    });
+  } catch (error) {
+    console.error('[Markets API] GET error:', error);
     return NextResponse.json({ error: 'Failed to fetch markets' }, { status: 500 });
   }
 }

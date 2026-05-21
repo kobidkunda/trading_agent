@@ -46,10 +46,6 @@ describe('isExecutedPaperBetStatus filtering', () => {
 
 describe('executed status set integrity', () => {
   it('contains exactly FILLED and PARTIAL', () => {
-    // Import the constant from the source file for comparison
-    const { default: mod } = require('../paper-bets') as { default: any } | any;
-    // The EXECUTED_PAPER_BET_STATUSES array is not exported,
-    // so we verify via the exported guard.
     const valid = ['FILLED', 'PARTIAL'] as const;
     for (const s of valid) {
       expect(isExecutedPaperBetStatus(s)).toBe(true);

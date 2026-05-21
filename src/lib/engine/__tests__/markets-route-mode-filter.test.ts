@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
-const findManyMock = mock(async () => ([
+const baseMarkets = [
   {
     id: 'market-1',
     externalId: 'live_1778786747451_h0zs3j',
@@ -29,7 +29,14 @@ const findManyMock = mock(async () => ([
     snapshots: [],
     tradeCandidates: [],
   },
-]));
+];
+
+const findManyMock = mock(async ({ where }: { where?: { NOT?: { OR?: Array<{ externalId?: { startsWith?: string } }> } } }) => {
+  const blockedPrefixes = where?.NOT?.OR
+    ?.map((entry) => entry.externalId?.startsWith)
+    .filter((value): value is string => Boolean(value)) ?? [];
+  return baseMarkets.filter((market) => !blockedPrefixes.some((prefix) => market.externalId.startsWith(prefix)));
+});
 
 const countMock = mock(async () => 2);
 
@@ -39,6 +46,9 @@ const findUniqueMock = mock(async ({ where }: { where: { key: string } }) => {
   }
   if (where.key === 'strategy_settings') {
     return { key: 'strategy_settings', value: JSON.stringify({ enabledVenues: ['POLYMARKET'] }) };
+  }
+  if (where.key === 'trading_config') {
+    return { key: 'trading_config', value: JSON.stringify({ mode: 'PAPER', dataSource: 'REAL', executionMode: 'SIMULATED' }) };
   }
   return null;
 });

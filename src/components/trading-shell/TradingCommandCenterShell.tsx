@@ -49,7 +49,7 @@ import {
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { getModeDisplayCopy, getModeToggleTarget } from '@/lib/engine/trading-view-model';
-import { syncTradingModeFromBackend } from '@/lib/engine/trading-mode-client';
+import { syncTradingModeFromBackend, updateTradingModeOnBackend } from '@/lib/engine/trading-mode-client';
 import { StrategyHub } from '@/components/trading/StrategyHub';
 import { CredentialManager } from '@/components/trading/CredentialManager';
 import { MarketTriage } from '@/components/trading/MarketTriage';
@@ -197,7 +197,9 @@ function TopBar() {
       return;
     }
 
-    setTradingMode(nextMode);
+    updateTradingModeOnBackend(nextMode).catch(() => {
+      setTradingMode(nextMode);
+    });
   }, [nextMode, setDryRunMode, setTradingMode, tradingMode]);
 
   return (

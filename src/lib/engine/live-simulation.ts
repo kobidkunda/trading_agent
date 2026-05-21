@@ -464,12 +464,12 @@ function startEngine(): void {
   if (state.mode === 'DEMO') {
     console.log('[LiveSim] Starting in DEMO mode (mock templates)');
     state.dataSource = 'MOCK';
-    setSimulationTimeout(setTimeout(runDemoLoop, 2000));
+    void runDemoLoop();
   } else {
     // PAPER or LIVE — use real scanner
     state.dataSource = 'REAL';
     console.log(`[LiveSim] Starting in ${state.mode} mode (real scanner)`);
-    setSimulationTimeout(setTimeout(runPaperLoop, 2000));
+    void runPaperLoop();
     // Auto-start dedicated paper order fill loop for PAPER mode
     if (state.mode === 'PAPER') {
       ensurePaperLoopRunning().catch((err) => {

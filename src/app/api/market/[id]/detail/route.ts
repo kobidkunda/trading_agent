@@ -85,17 +85,23 @@ export async function GET(
     const latestDecision = marketAny.decisions[0] as Record<string, any> | undefined;
     const latestOutcome = marketAny.outcomes[0] as Record<string, any> | undefined;
 
+    const researchRuns = (marketAny.researchRuns || []) as Array<Record<string, any> & {
+      sources?: LegacySource[];
+      agentOutputs?: LegacyAgentOutput[];
+    }>;
+
     // Group sources by provider (handle both provider field and sourceType field)
-    const sources = (latestResearch?.sources || []) as LegacySource[];
+    const sources = researchRuns.flatMap((run) => (run.sources || []) as LegacySource[]);
+    const allAgentOutputs = researchRuns.flatMap((run) => (run.agentOutputs || []) as LegacyAgentOutput[]);
     
     // If provider is null, infer from sourceType or URL
     const sourcesWithProvider = sources.map((s) => {
-      if (s.provider) return s;
+      if (s.provider) return { ...s, provider: String(s.provider).toUpperCase() };
       
       // Infer provider from sourceType or URL patterns
       let inferredProvider = s.provider;
       const url = s.url || '';
-      const type = s.sourceType || '';
+      const type = (s.sourceType || '').toUpperCase();
       
       if (type === 'REDDIT' || url.includes('reddit.com')) {
         inferredProvider = 'REDDIT';
@@ -109,7 +115,7 @@ export async function GET(
         inferredProvider = 'SEARXNG';
       }
       
-      return { ...s, provider: inferredProvider };
+      return { ...s, provider: inferredProvider ? String(inferredProvider).toUpperCase() : inferredProvider };
     });
     
     let deerflowSources = sourcesWithProvider.filter(s => 
@@ -128,8 +134,8 @@ export async function GET(
       s.provider === 'SEARXNG' || s.sourceType === 'SEARXNG' || s.provider === 'WEB' || s.sourceType === 'SEARCH' || s.sourceType === 'WEB'
     );
 
-    if (latestResearch?.agentOutputs?.length) {
-      for (const output of latestResearch.agentOutputs) {
+    if (allAgentOutputs.length) {
+      for (const output of allAgentOutputs) {
         if (output.role === 'DEERFLOW') {
           const parsed = safeJsonParse<{ allSearchResults?: Array<{ title: string; url: string; snippet?: string }>; allExtractedContent?: Array<{ title: string; url: string; content?: string }> }>(output.output);
           if (parsed?.allSearchResults?.length) {
@@ -242,7 +248,7 @@ export async function GET(
       return null;
     };
 
-    for (const output of latestResearch?.agentOutputs || []) {
+    for (const output of allAgentOutputs) {
       const key = providerKeyForOutput(output);
       if (!key) continue;
       const text = output.failureReason || output.summary || output.rawOutput || output.output || '';

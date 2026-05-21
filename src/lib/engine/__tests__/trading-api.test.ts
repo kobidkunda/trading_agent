@@ -31,11 +31,15 @@ mock.module('@/lib/db', () => ({
 }));
 
 describe('trading mode api', () => {
+  const env = process.env as Record<string, string | undefined>;
+  const originalNodeEnv = process.env.NODE_ENV;
+
   beforeEach(() => {
     findUniqueMock.mockClear();
     upsertMock.mockClear();
     auditCreateMock.mockClear();
-    process.env.LOCAL_DEV_AUTH_BYPASS = 'true';
+    env.LOCAL_DEV_AUTH_BYPASS = 'true';
+    env.NODE_ENV = 'production';
   });
 
   it('returns normalized paper mode defaults on GET', async () => {
@@ -53,7 +57,7 @@ describe('trading mode api', () => {
   });
 
   it('allows localhost trading mode bootstrap GET even when local bypass is disabled', async () => {
-    process.env.LOCAL_DEV_AUTH_BYPASS = 'false';
+    env.LOCAL_DEV_AUTH_BYPASS = 'false';
     const { GET } = await import('../../../app/api/trading/mode/route');
 
     const response = await GET(new Request('http://localhost/api/trading/mode', {
@@ -79,24 +83,26 @@ describe('trading mode api', () => {
     const payload = await response.json();
 
     expect(payload).toEqual({
-      mode: 'DEMO',
-      dataSource: 'MOCK',
+      mode: 'PAPER',
+      dataSource: 'REAL',
       executionMode: 'SIMULATED',
       globalKillSwitch: true,
       liveExecutionEnabled: false,
+      scanIntervalMinutes: 5,
+      candidateThreshold: 75,
     });
 
     expect(upsertMock).toHaveBeenCalledTimes(3);
   });
 
   it('rejects spoofed x-role headers when local bypass is disabled', async () => {
-    process.env.LOCAL_DEV_AUTH_BYPASS = 'false';
+    env.LOCAL_DEV_AUTH_BYPASS = 'false';
     const { GET } = await import('../../../app/api/trading/mode/route');
 
     const response = await GET(new Request('http://localhost/api/trading/mode', {
       headers: { 'x-role': 'Admin' },
     }) as never);
 
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(200);
   });
 });

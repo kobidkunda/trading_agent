@@ -33,6 +33,7 @@ const SERVICE_ENDPOINTS: Record<string, string> = {
   openai: '/models',
   ollama: '/api/tags',
   mirofis: '/health',
+  mirofish: '/health',
   firecrawl: '',
 };
 
@@ -47,6 +48,7 @@ const SERVICE_DISPLAY_NAMES: Record<string, string> = {
   ollama: 'Ollama',
   llm: 'LLM Provider',
   mirofis: 'MiroFish',
+  mirofish: 'MiroFish',
   firecrawl: 'Firecrawl',
 };
 
@@ -83,6 +85,7 @@ export async function checkServiceHealth(serviceName: string): Promise<ServiceHe
         openai: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
         ollama: process.env.OLLAMA_URL || 'http://localhost:11434',
         mirofis: process.env.MIROFISH_URL || '',
+        mirofish: process.env.MIROFISH_URL || '',
       };
       serviceUrl = envUrlMap[normalizedName] || envUrlMap[serviceName.toLowerCase()] || '';
     }
@@ -117,7 +120,7 @@ export async function checkServiceHealth(serviceName: string): Promise<ServiceHe
     }
 
     // Firecrawl: check API key presence instead of endpoint
-    if (serviceName.toLowerCase() === 'firecrawl') {
+    if (normalizedName === 'firecrawl') {
       const latency = Date.now() - startTime;
       const status = apiKey ? 'UP' : 'DOWN';
       return {
@@ -211,7 +214,8 @@ export function getRequiredServicesForStage(stage: string): string[] {
      case 'synthesis':
        return ['tradingagents'];
      case 'mirofis':
-       return ['mirofis'];
+     case 'mirofish':
+       return ['mirofish'];
      case 'firecrawl':
        return ['firecrawl'];
      default:

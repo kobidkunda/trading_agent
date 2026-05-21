@@ -38,7 +38,7 @@ interface ProviderDef {
 }
 
 interface ProviderState {
-  status: 'UP' | 'DOWN' | 'DEGRADED' | 'UNKNOWN';
+  status: 'OK' | 'DEGRADED' | 'DOWN' | 'CONFIG_MISSING' | 'DISABLED' | 'ERROR' | 'UNKNOWN';
   latency?: number;
   error?: string;
   lastChecked?: string;
@@ -67,6 +67,13 @@ const PROVIDER_DEFS: ProviderDef[] = [
     name: 'TradingAgents',
     description: 'Multi-analyst team (News, Sentiment, Technical) with structured debate and synthesis',
     icon: Network,
+    fallback: null,
+  },
+  {
+    key: 'mirofish',
+    name: 'MiroFish',
+    description: 'Post-debate synthesis and prediction provider',
+    icon: Brain,
     fallback: null,
   },
   {
@@ -100,24 +107,23 @@ export function ResearchProvider() {
   const fetchHealth = useCallback(async (showToast = false) => {
     setRefreshing(true);
     try {
-      const res = await fetch('/api/health');
+      const res = await fetch('/api/research/providers/health');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
-      const apiHealth: Record<string, string> = data.apiHealth || {};
-      const resolved = typeof data.researchProvider === 'string' ? data.researchProvider : null;
+      const apiHealth = data.providers || {};
+      const resolved = typeof data.resolvedProvider === 'string' ? data.resolvedProvider : null;
 
       setProviders((prev) => {
         const next: ProviderMap = {};
         for (const def of PROVIDER_DEFS) {
-          const raw = apiHealth[def.key] || apiHealth[def.name];
-          const status: ProviderState['status'] =
-            raw === 'UP' ? 'UP' : raw === 'DOWN' ? 'DOWN' : raw === 'DEGRADED' ? 'DEGRADED' : 'UNKNOWN';
+          const raw = apiHealth[def.key];
+          const status: ProviderState['status'] = raw?.status || 'UNKNOWN';
           next[def.key] = {
             status,
-            latency: prev[def.key]?.latency,
-            error: prev[def.key]?.error,
-            lastChecked: data.checkedAt || null,
+            latency: raw?.latency ?? prev[def.key]?.latency,
+            error: raw?.error ?? prev[def.key]?.error,
+            lastChecked: raw?.lastChecked || data.checkedAt || null,
             isActive: def.key === resolved,
           };
         }
@@ -145,14 +151,17 @@ export function ResearchProvider() {
     return () => clearInterval(interval);
   }, [fetchHealth]);
 
-  const activeCount = Object.values(providers).filter((p) => p.status === 'UP').length;
+  const activeCount = Object.values(providers).filter((p) => p.status === 'OK').length;
   const downCount = Object.values(providers).filter((p) => p.status === 'DOWN').length;
 
   const statusBadge = (status: ProviderState['status']) => {
     const colors: Record<string, string> = {
-      UP: 'border-emerald-700 text-emerald-400 bg-emerald-500/10',
+      OK: 'border-emerald-700 text-emerald-400 bg-emerald-500/10',
       DOWN: 'border-red-700 text-red-400 bg-red-500/10',
       DEGRADED: 'border-amber-700 text-amber-400 bg-amber-500/10',
+      CONFIG_MISSING: 'border-orange-700 text-orange-400 bg-orange-500/10',
+      ERROR: 'border-red-700 text-red-400 bg-red-500/10',
+      DISABLED: 'border-gray-700 text-gray-400 bg-gray-500/10',
       UNKNOWN: 'border-gray-700 text-gray-500',
     };
     return (
@@ -164,16 +173,18 @@ export function ResearchProvider() {
 
   const statusIconColor = (status: ProviderState['status']) => {
     switch (status) {
-      case 'UP': return 'bg-emerald-500/20';
+      case 'OK': return 'bg-emerald-500/20';
       case 'DOWN': return 'bg-red-500/20';
+      case 'CONFIG_MISSING': return 'bg-orange-500/20';
       default: return 'bg-gray-800';
     }
   };
 
   const iconColor = (status: ProviderState['status']) => {
     switch (status) {
-      case 'UP': return 'text-emerald-400';
+      case 'OK': return 'text-emerald-400';
       case 'DOWN': return 'text-red-400';
+      case 'CONFIG_MISSING': return 'text-orange-400';
       default: return 'text-gray-500';
     }
   };

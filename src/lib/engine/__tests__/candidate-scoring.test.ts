@@ -62,7 +62,7 @@ describe('candidate scoring', () => {
 
     const result = computeCandidateScore(elite);
     expect(result.totalScore).toBeGreaterThanOrEqual(85);
-    expect(classifyCandidateScore(result.totalScore)).toBe('TRIAGE_AND_RESEARCH');
+    expect(classifyCandidateScore(result.totalScore)).toBe('TRIAGE');
     expect(result.skipReason).toBe('');
     expect(result.rejectedCriteria).not.toContain('ORACLE_RISK');
   });

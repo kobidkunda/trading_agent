@@ -58,8 +58,6 @@ import { toast } from 'sonner';
 import type { Venue, TriageStatus, CandidateStage } from '@/lib/types';
 import { VENUE_OPTIONS, STAGE_COLORS } from '@/lib/constants';
 import { buildMarketTriageDetails } from '@/lib/engine/market-triage-view-model';
-import { filterMarketsForMode } from '@/lib/engine/market-triage-mode-filter';
-import { useTradingStore } from '@/store/trading-store';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -968,11 +966,10 @@ const PRIORITY_CONFIG: Record<PriorityFilter, { label: string; icon: React.Eleme
 };
 
 export function MarketTriage() {
-  const { tradingMode } = useTradingStore();
   const [search, setSearch] = useState('');
   const [venueFilter, setVenueFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
-  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('aplus');
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const {
@@ -992,16 +989,20 @@ export function MarketTriage() {
       query.set('limit', String(params.limit));
       if (search.trim()) query.set('search', search.trim());
       if (venueFilter !== 'ALL') query.set('venue', venueFilter);
-      if (statusFilter !== 'ALL') query.set('status', statusFilter);
+      if (statusFilter !== 'ALL') query.set('triageStatus', statusFilter);
       const res = await fetch(`/api/markets?${query}`);
       if (!res.ok) throw new Error('Failed to fetch markets');
       const data = await res.json();
-      const rows = (data.data ?? []).map(flattenMarketRecord);
-      return { ...data, data: filterMarketsForMode(rows, tradingMode) };
+      const rows = (data.data ?? data.markets ?? []).map(flattenMarketRecord);
+      return { ...data, data: rows };
     },
-    [search, venueFilter, statusFilter, priorityFilter, tradingMode],
+    [search, venueFilter, statusFilter, priorityFilter],
     { defaultSortBy: PRIORITY_CONFIG[priorityFilter].params.includes('sortPriority=score') ? 'candidateScore' : 'updatedAt', defaultSortOrder: 'desc' },
   );
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, venueFilter, statusFilter, priorityFilter, setPage]);
 
   const summaryStats = useMemo(() => ({
     total,

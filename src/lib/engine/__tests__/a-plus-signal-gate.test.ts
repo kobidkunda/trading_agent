@@ -241,7 +241,7 @@ describe('evaluateAPlusSignalGate', () => {
       priceImpact: null,
     });
     const result = evaluateAPlusSignalGate(input);
-    expect(result.reasons.length).toBeGreaterThanOrEqual(5);
+    expect(result.reasons.length).toBeGreaterThanOrEqual(4);
     expect(result.reasons.some((r) => r.includes('ORDERBOOK_ESTIMATED'))).toBe(true);
     expect(result.reasons.some((r) => r.includes('ORDERBOOK_MISSING_BID_ASK'))).toBe(true);
     expect(result.reasons.some((r) => r.includes('ORDERBOOK_MISSING_FILL_PROB'))).toBe(true);

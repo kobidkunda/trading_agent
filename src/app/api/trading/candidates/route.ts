@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { Prisma } from '@prisma/client';
 import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
-import { filterMarketsForMode } from '@/lib/engine/market-triage-mode-filter';
 import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
 
 export async function GET(request: NextRequest) {
@@ -16,6 +15,9 @@ export async function GET(request: NextRequest) {
     const aplusOnly = searchParams.get('aplus') === 'true';
     const excludeCooldown = searchParams.get('excludeCooldown') === 'true';
     const excludeExecuted = searchParams.get('excludeExecuted') === 'true';
+    const allowedSortFields = new Set(['candidateScore', 'biasAdjustedProb', 'adjustedEdge', 'createdAt', 'updatedAt']);
+    const sortBy = allowedSortFields.has(pagination.sortBy ?? '') ? pagination.sortBy ?? 'candidateScore' : 'candidateScore';
+    const sortOrder = pagination.sortOrder || 'desc';
 
     const where: Prisma.TradeCandidateWhereInput = {};
     if (stage) {
@@ -34,21 +36,17 @@ export async function GET(request: NextRequest) {
       where.stage = { notIn: ['EXECUTED', 'EXECUTION_PENDING'] };
     }
 
-    // Server-side search across market title, category, venue
-    const search = pagination.search;
-    if (search) {
-      where.market = {
+    const marketFilters: Prisma.MarketWhereInput[] = [];
+    if (pagination.search) {
+      marketFilters.push({
         OR: [
-          { title: { contains: search } },
-          { category: { contains: search } },
-          { venue: { contains: search } },
+          { title: { contains: pagination.search } },
+          { category: { contains: pagination.search } },
+          { venue: { contains: pagination.search } },
         ],
-      };
+      });
     }
 
-    // Server-side sort
-    const sortBy = pagination.sortBy || 'candidateScore';
-    const sortOrder = pagination.sortOrder || 'desc';
     let orderBy: Prisma.TradeCandidateOrderByWithRelationInput;
     if (sortBy === 'candidateScore') {
       orderBy = { candidateScore: sortOrder };
@@ -76,7 +74,20 @@ export async function GET(request: NextRequest) {
       tradingMode: tradingModeSetting?.value ?? null,
     });
 
-    // Count total for pagination BEFORE mode filtering, fetch candidates in parallel
+    if (tradingConfig.mode !== 'DEMO') {
+      marketFilters.push({
+        NOT: {
+          OR: [
+            { externalId: { startsWith: 'live_' } },
+            { externalId: { startsWith: 'sim_' } },
+          ],
+        },
+      });
+    }
+    if (marketFilters.length > 0) {
+      where.market = marketFilters.length === 1 ? marketFilters[0] : { AND: marketFilters };
+    }
+
     const [totalCount, candidates] = await Promise.all([
       db.tradeCandidate.count({ where }),
       db.tradeCandidate.findMany({
@@ -99,23 +110,17 @@ export async function GET(request: NextRequest) {
       }),
     ]);
 
-    const visibleCandidates = filterMarketsForMode(
-      candidates.map((candidate) => ({
-        ...candidate,
-        externalId: candidate.market.id,
-      })),
-      tradingConfig.mode,
-    ).map(({ externalId: _externalId, ...candidate }) => candidate);
-
-    const enriched = visibleCandidates.map(c => ({
+    const enriched = candidates.map(c => ({
       ...c,
       riskFlags: (c.rejectedCriteria ? c.rejectedCriteria.split(';').filter(Boolean) : []) as string[],
       modelDisagreement: ((c.contradictionPenalty ?? 0) + (c.uncertaintyPenalty ?? 0)) > 0.5 ? 0.4 : 0,
     }));
 
-    return NextResponse.json(
-      buildPaginatedResponse(enriched, totalCount, pagination),
-    );
+    const payload = buildPaginatedResponse(enriched, totalCount, pagination);
+    return NextResponse.json({
+      ...payload,
+      candidates: payload.data,
+    });
   } catch (error) {
     console.error('[Candidates API] Error:', error);
     return NextResponse.json({ error: 'Failed to fetch candidates', details: error instanceof Error ? error.message : String(error) }, { status: 500 });

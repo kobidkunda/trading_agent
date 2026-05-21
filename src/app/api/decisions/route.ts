@@ -1,36 +1,86 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { computeRisk } from '@/lib/engine/risk';
-import { RiskEngineInput } from '@/lib/types';
+import { buildPaginatedResponse, parsePaginationParams, RiskEngineInput } from '@/lib/types';
 import { Prisma } from '@prisma/client';
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const marketId = searchParams.get('marketId');
+    const candidateId = searchParams.get('candidateId');
     const action = searchParams.get('action');
-    const limit = parseInt(searchParams.get('limit') || '50');
-    const offset = parseInt(searchParams.get('offset') || '0');
+    const venue = searchParams.get('venue');
+    const mode = searchParams.get('mode');
+    const dataSource = searchParams.get('dataSource');
+    const pagination = parsePaginationParams(searchParams);
+    const allowedSortFields = new Set([
+      'createdAt',
+      'judgeProbability',
+      'impliedProb',
+      'edge',
+      'confidence',
+      'maxSize',
+    ]);
+    const sortBy = allowedSortFields.has(pagination.sortBy ?? '') ? pagination.sortBy ?? 'createdAt' : 'createdAt';
+    const sortOrder = pagination.sortOrder ?? 'desc';
 
     const where: Prisma.DecisionWhereInput = {};
     if (marketId) where.marketId = marketId;
+    if (candidateId) where.candidateId = candidateId;
     if (action) where.action = action;
+    if (mode) where.mode = mode as Prisma.EnumTradingModeFilter<'Decision'>;
+    if (dataSource) where.dataSource = dataSource as Prisma.EnumDataSourceFilter<'Decision'>;
+    if (venue || pagination.search) {
+      where.market = {};
+      if (venue) where.market.venue = venue;
+      if (pagination.search) {
+        where.market.OR = [
+          { title: { contains: pagination.search } },
+          { category: { contains: pagination.search } },
+          { venue: { contains: pagination.search } },
+        ];
+      }
+    }
 
-    const decisions = await db.decision.findMany({
-      where,
-      include: {
-        market: { select: { id: true, title: true, venue: true, category: true, status: true } },
-        candidate: { select: { id: true, stage: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      skip: offset,
+    const [decisions, total, summary] = await Promise.all([
+      db.decision.findMany({
+        where,
+        include: {
+          market: { select: { id: true, title: true, venue: true, category: true, status: true } },
+          candidate: { select: { id: true, stage: true } },
+        },
+        orderBy: { [sortBy]: sortOrder },
+        take: pagination.limit,
+        skip: (pagination.page - 1) * pagination.limit,
+      }),
+      db.decision.count({ where }),
+      db.decision.groupBy({
+        by: ['action'],
+        where,
+        _count: { _all: true },
+        _avg: { edge: true },
+        _sum: { maxSize: true },
+      }),
+    ]);
+
+    const bids = summary.find((row) => row.action === 'BID')?._count._all ?? 0;
+    const watches = summary.find((row) => row.action === 'WATCH')?._count._all ?? 0;
+    const skips = summary.find((row) => row.action === 'SKIP')?._count._all ?? 0;
+    const totalSize = summary.reduce((sum, row) => sum + (row._sum.maxSize ?? 0), 0);
+    const totalActions = summary.reduce((sum, row) => sum + row._count._all, 0);
+    const avgEdge = totalActions > 0
+      ? summary.reduce((sum, row) => sum + (row._avg.edge ?? 0) * row._count._all, 0) / totalActions
+      : 0;
+    const payload = buildPaginatedResponse(decisions, total, pagination);
+
+    return NextResponse.json({
+      ...payload,
+      decisions: payload.data,
+      summaryStats: { total, bids, watches, skips, avgEdge, totalSize },
     });
-
-    const total = await db.decision.count({ where });
-
-    return NextResponse.json({ decisions, total, limit, offset });
   } catch (error) {
+    console.error('[Decisions API] GET error:', error);
     return NextResponse.json({ error: 'Failed to fetch decisions' }, { status: 500 });
   }
 }
@@ -114,6 +164,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(decision, { status: 201 });
   } catch (error) {
+    console.error('[Decisions API] POST error:', error);
     return NextResponse.json({ error: 'Failed to create decision' }, { status: 500 });
   }
 }

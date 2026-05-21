@@ -144,6 +144,7 @@ interface ResearchRunData {
 }
 
 interface DecisionsApiResponse extends PaginatedResponse<DecisionApiRecord> {
+  decisions?: DecisionApiRecord[];
   summaryStats?: {
     total: number;
     bids: number;
@@ -291,7 +292,7 @@ export function ResearchLedger() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: DecisionsApiResponse = await res.json();
 
-      const raw = json.data ?? [];
+      const raw = json.data ?? json.decisions ?? [];
       const rows = raw.map(flattenDecision);
 
       if (json.summaryStats) {
@@ -315,6 +316,10 @@ export function ResearchLedger() {
     [debouncedSearch, venueFilter, actionFilter],
     { defaultSortBy: 'createdAt', defaultSortOrder: 'desc' },
   );
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, venueFilter, actionFilter, setPage]);
 
   const handleSort = (field: string) => {
     if (sortBy === field) {
@@ -485,6 +490,11 @@ export function ResearchLedger() {
           {/* Data Table */}
           <Card className="border-gray-800 bg-gray-900">
             <CardContent className="p-0">
+              {total > 0 && decisions.length === 0 && !loading && (
+                <div className="border-b border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs text-amber-300">
+                  Data exists, but the current page/filter returned no rows.
+                </div>
+              )}
               <div className="max-h-[500px] overflow-y-auto">
                 <Table>
                   <TableHeader>

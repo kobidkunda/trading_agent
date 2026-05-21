@@ -16,7 +16,9 @@ if (tsconfig.compilerOptions && tsconfig.compilerOptions.paths) {
 }
 
 // Set up environment
-process.env.DATABASE_URL = 'file:./db/custom.db';
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL must be set in .env');
+}
 process.env.SEARXNG_URL = 'http://localhost:8888';
 process.env.DEERFLOW_URL = 'http://192.168.88.97:2026';
 process.env.TRADINGAGENTS_URL = 'http://localhost:6503';

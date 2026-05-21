@@ -63,7 +63,7 @@ interface CandidatePick {
 }
 
 const AUTONOMOUS_STRATEGY_OVERRIDES = {
-  enabledVenues: ['POLYMARKET', 'KALSHI'],
+  enabledVenues: ['POLYMARKET', 'KALSHI'] as Array<'POLYMARKET' | 'KALSHI'>,
   stageRouting: {
     triageModel: 'frontier_flash',
     bullModel: 'frontier_flash',

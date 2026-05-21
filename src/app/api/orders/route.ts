@@ -14,6 +14,13 @@ export async function GET(request: NextRequest) {
 
     if (status === 'open') {
       where.lifecycleStatus = { in: [OrderLifecycle.PLANNED, OrderLifecycle.SUBMITTED, OrderLifecycle.PARTIALLY_FILLED] };
+      where.NOT = [
+        { status: 'WATCH' },
+        { status: 'FILLED' },
+        { lifecycleStatus: OrderLifecycle.FILLED },
+        { lifecycleStatus: OrderLifecycle.CANCELLED },
+        { lifecycleStatus: OrderLifecycle.EXPIRED },
+      ];
     } else if (status) {
       where.lifecycleStatus = status as OrderLifecycle;
     }
@@ -28,6 +35,7 @@ export async function GET(request: NextRequest) {
           OR: [
             { externalId: 'PAPER_TEST_MARKET' },
             { title: 'Test V2: Paper Orders should work in paper mode' },
+            { title: 'Paper-loop test market' },
             { venue: 'PAPER', category: 'test' },
           ],
         },
@@ -63,6 +71,7 @@ export async function GET(request: NextRequest) {
                 OR: [
                   { externalId: 'PAPER_TEST_MARKET' },
                   { title: 'Test V2: Paper Orders should work in paper mode' },
+                  { title: 'Paper-loop test market' },
                   { venue: 'PAPER', category: 'test' },
                 ],
               },

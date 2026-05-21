@@ -1,10 +1,19 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { enforcePathPermission } from '@/lib/engine/auth';
 import { canAccessRoute, findApiPermission } from '@/lib/types';
 
 describe('api permission matrix', () => {
+  const env = process.env as Record<string, string | undefined>;
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalBypass = process.env.LOCAL_DEV_AUTH_BYPASS;
+
+  afterEach(() => {
+    env.NODE_ENV = originalNodeEnv;
+    env.LOCAL_DEV_AUTH_BYPASS = originalBypass;
+  });
+
   it('matches dynamic route patterns', () => {
     const permission = findApiPermission('/api/market/abc/detail', 'GET');
     expect(permission?.route).toBe('/api/market/[id]/detail');
@@ -21,13 +30,15 @@ describe('api permission matrix', () => {
   });
 
   it('requires authentication for non-public api routes', async () => {
+    env.NODE_ENV = 'production';
+    env.LOCAL_DEV_AUTH_BYPASS = 'false';
     const request = new Request('http://localhost/api/jobs', { method: 'GET' });
     const denied = enforcePathPermission(request, '/api/jobs', 'GET');
     expect(denied?.status).toBe(401);
   });
 
   it('rejects spoofed x-role headers when local bypass is disabled', () => {
-    process.env.LOCAL_DEV_AUTH_BYPASS = 'false';
+    env.LOCAL_DEV_AUTH_BYPASS = 'false';
     const request = new Request('http://localhost/api/jobs', {
       method: 'GET',
       headers: { 'x-role': 'Admin' },
@@ -38,7 +49,7 @@ describe('api permission matrix', () => {
   });
 
   it('allows header role only when local bypass is enabled', () => {
-    process.env.LOCAL_DEV_AUTH_BYPASS = 'true';
+    env.LOCAL_DEV_AUTH_BYPASS = 'true';
     const request = new Request('http://localhost/api/jobs', {
       method: 'GET',
       headers: { 'x-role': 'Admin' },

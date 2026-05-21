@@ -80,6 +80,7 @@ export async function GET() {
       deerflow: 'DeerFlow',
       tradingagents: 'TradingAgents',
       mirofis: 'MiroFish',
+      mirofish: 'MiroFish',
       firecrawl: 'Firecrawl',
       'agent_reach': 'Agent-Reach',
     };
@@ -94,6 +95,7 @@ export async function GET() {
       deerflow: '/health',
       tradingagents: '/health',
       mirofis: '/health',
+      mirofish: '/health',
       'agent_reach': '/health',
     };
 
@@ -144,6 +146,7 @@ export async function GET() {
       'deerflow',
       'tradingagents',
       'agent_reach',
+      'mirofish',
       'searxng',
       'qdrant',
       'openai',

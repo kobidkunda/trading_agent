@@ -25,7 +25,7 @@ describe('scanner primitives', () => {
     });
 
     expect(breakdown.totalScore).toBeGreaterThanOrEqual(0);
-    expect(classifyCandidateScore(breakdown.totalScore)).toBe('SKIP');
+    expect(classifyCandidateScore(breakdown.totalScore)).toBe('TRIAGE');
     expect(breakdown.acceptedCriteria).toBeInstanceOf(Array);
     expect(breakdown.rejectedCriteria).toBeInstanceOf(Array);
   });

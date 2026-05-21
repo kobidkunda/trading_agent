@@ -194,6 +194,9 @@ export async function GET(request: NextRequest) {
     const marketId = searchParams.get('marketId');
     const status = searchParams.get('status');
     const pagination = parsePaginationParams(searchParams);
+    const allowedSortFields = new Set(['createdAt', 'startedAt', 'completedAt', 'status', 'depth']);
+    const sortBy = allowedSortFields.has(pagination.sortBy ?? '') ? pagination.sortBy ?? 'createdAt' : 'createdAt';
+    const sortOrder = pagination.sortOrder ?? 'desc';
 
     const where: Prisma.ResearchRunWhereInput = {};
     if (marketId) where.marketId = marketId;
@@ -202,9 +205,7 @@ export async function GET(request: NextRequest) {
       where.market = { title: { contains: pagination.search } };
     }
 
-    const orderBy: Prisma.ResearchRunOrderByWithRelationInput[] = pagination.sortBy
-      ? [{ [pagination.sortBy]: pagination.sortOrder || 'desc' }]
-      : [{ createdAt: 'desc' }];
+    const orderBy: Prisma.ResearchRunOrderByWithRelationInput[] = [{ [sortBy]: sortOrder }];
 
     const [researchRuns, total] = await Promise.all([
       db.researchRun.findMany({
@@ -225,9 +226,17 @@ export async function GET(request: NextRequest) {
     // Map runs to include transparency stages and source provenance
     const mappedRuns = (researchRuns as unknown as ResearchRunWithRelations[]).map(mapResearchRun);
 
-    return NextResponse.json(buildPaginatedResponse(mappedRuns, total, pagination));
+    const payload = buildPaginatedResponse(mappedRuns, total, pagination);
+    return NextResponse.json({
+      ...payload,
+      researchRuns: payload.data,
+    });
   } catch (error) {
-    console.error('[Research API] GET error:', error);
+    console.error('[Research API] GET error:', {
+      error,
+      query: Object.fromEntries(new URL(request.url).searchParams.entries()),
+      sortBy: new URL(request.url).searchParams.get('sortBy'),
+    });
     return NextResponse.json({ error: 'Failed to fetch research runs' }, { status: 500 });
   }
 }

@@ -23,3 +23,26 @@ export async function syncTradingModeFromBackend(): Promise<void> {
     state.setGlobalKillSwitch(payload.globalKillSwitch);
   }
 }
+
+export async function updateTradingModeOnBackend(mode: 'DEMO' | 'PAPER' | 'LIVE'): Promise<void> {
+  const response = await fetch('/api/trading/mode', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-role': 'Admin',
+    },
+    body: JSON.stringify({ mode }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to update trading mode');
+  }
+
+  const payload = (await response.json()) as TradingModeApiResponse;
+  const normalizedMode = normalizeTradingMode(payload.mode ?? mode);
+  const state = useTradingStore.getState();
+  state.setTradingMode(normalizedMode);
+  if (typeof payload.globalKillSwitch === 'boolean') {
+    state.setGlobalKillSwitch(payload.globalKillSwitch);
+  }
+}

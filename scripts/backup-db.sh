@@ -8,7 +8,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKUP_DIR="$ROOT_DIR/db/backups"
-DB_FILE="$ROOT_DIR/db/custom.db"
+
+if [ -f "$ROOT_DIR/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT_DIR/.env"
+  set +a
+fi
+
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "ERROR: DATABASE_URL is not set"
+  exit 1
+fi
+
+case "$DATABASE_URL" in
+  file:*)
+    DB_FILE="${DATABASE_URL#file:}"
+    ;;
+  *)
+    echo "ERROR: Unsupported DATABASE_URL for SQLite backup: $DATABASE_URL"
+    exit 1
+    ;;
+esac
 
 if [ ! -f "$DB_FILE" ]; then
   echo "ERROR: Database file not found at $DB_FILE"

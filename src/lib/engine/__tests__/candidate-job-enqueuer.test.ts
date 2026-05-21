@@ -33,9 +33,10 @@ describe('candidate job enqueuer', () => {
     });
 
     expect(jobs.map((job) => job.type)).toEqual([
+      'TRIAGE_MARKET',
       'DEEP_RESEARCH',
     ]);
-    expect(createMock).toHaveBeenCalledTimes(1);
+    expect(createMock).toHaveBeenCalledTimes(2);
   });
 
   it('creates no jobs for skipped candidates', async () => {
@@ -63,8 +64,9 @@ describe('candidate job enqueuer', () => {
       candidateId: 'c1',
     });
 
-    expect(jobs).toHaveLength(0);
-    expect(createMock).not.toHaveBeenCalled();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].type).toBe('TRIAGE_MARKET');
+    expect(createMock).toHaveBeenCalledTimes(1);
   });
 
   it('blocks re-enqueue when completed job with same dedupKey is within cooldown', async () => {
@@ -82,8 +84,9 @@ describe('candidate job enqueuer', () => {
       candidateId: 'c1',
     });
 
-    expect(jobs).toHaveLength(0);
-    expect(createMock).not.toHaveBeenCalled();
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].type).toBe('TRIAGE_MARKET');
+    expect(createMock).toHaveBeenCalledTimes(1);
   });
 
   it('allows re-enqueue when completed job cooldown has expired', async () => {
@@ -101,9 +104,9 @@ describe('candidate job enqueuer', () => {
       candidateId: 'c1',
     });
 
-    expect(jobs).toHaveLength(1);
-    expect(jobs[0].type).toBe('DEEP_RESEARCH');
-    expect(createMock).toHaveBeenCalledTimes(1);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.map((job) => job.type)).toEqual(['TRIAGE_MARKET', 'DEEP_RESEARCH']);
+    expect(createMock).toHaveBeenCalledTimes(2);
   });
 
   it('stores dedupKey on created job records', async () => {

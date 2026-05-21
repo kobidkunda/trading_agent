@@ -56,7 +56,24 @@ export async function POST(request: NextRequest) {
       data: { action: 'UPDATE_STRATEGY', entityType: 'Settings', entityId: update.strategyKey, details: `Strategy settings updated for mode ${update.modeValue}` },
     });
 
-    return NextResponse.json({ success: true, mode: update.modeValue, tradingConfig: update.tradingConfig });
+    const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
+      db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_MODE_KEY } }),
+    ]);
+
+    const effectiveSettings = getEffectiveTradingConfig({
+      strategySettings: strategySetting ? JSON.parse(strategySetting.value) : null,
+      tradingConfig: tradingConfigSetting ? JSON.parse(tradingConfigSetting.value) : null,
+      tradingMode: tradingModeSetting?.value ?? null,
+    });
+
+    return NextResponse.json({
+      success: true,
+      mode: effectiveSettings.mode,
+      settings: effectiveSettings,
+      persistedAt: new Date().toISOString(),
+    });
   } catch (error) {
     return NextResponse.json({ error: 'Failed to save strategy settings' }, { status: 500 });
   }

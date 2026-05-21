@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
-const findManyMock: any = mock(async () => ([
+const baseCandidates = [
   {
     id: 'candidate-1',
     stage: 'WATCHING',
@@ -14,7 +14,14 @@ const findManyMock: any = mock(async () => ([
       externalId: 'poly-1',
     },
   },
-]));
+];
+
+const findManyMock: any = mock(async ({ where }: { where?: { market?: { NOT?: { OR?: Array<{ externalId?: { startsWith?: string } }> } } } }) => {
+  const blockedPrefixes = where?.market?.NOT?.OR
+    ?.map((entry) => entry.externalId?.startsWith)
+    .filter((value): value is string => Boolean(value)) ?? [];
+  return baseCandidates.filter((candidate) => !blockedPrefixes.some((prefix) => candidate.market.externalId.startsWith(prefix)));
+});
 
 const createJobMock: any = mock(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'job-1', ...data }));
 const findCandidateMock: any = mock(async ({ where }: { where: { id: string } }) => {
@@ -36,6 +43,9 @@ const settingsFindUniqueMock: any = mock(async ({ where }: { where: { key: strin
   }
   if (where.key === 'strategy_settings') {
     return { key: 'strategy_settings', value: JSON.stringify({ enabledVenues: ['POLYMARKET'] }) };
+  }
+  if (where.key === 'trading_config') {
+    return { key: 'trading_config', value: JSON.stringify({ mode: 'PAPER', dataSource: 'REAL', executionMode: 'SIMULATED' }) };
   }
   return null;
 });
@@ -112,8 +122,12 @@ describe('candidates routes', () => {
     const res = await GET(new Request('http://localhost/api/trading/candidates?limit=10') as never);
     const payload = await res.json();
 
-    expect(payload.data).toHaveLength(1);
-    expect(payload.data[0].id).toBe('candidate-real');
+    expect(findManyMock).toHaveBeenCalledTimes(1);
+    expect(findManyMock.mock.calls[0]?.[0]?.where?.market?.NOT?.OR).toEqual([
+      { externalId: { startsWith: 'live_' } },
+      { externalId: { startsWith: 'sim_' } },
+    ]);
+    expect(payload.candidates).toHaveLength(2);
   });
 
   it('queues force-research jobs for an existing candidate', async () => {

@@ -19,9 +19,14 @@ mock.module('@/lib/db', () => ({
 }));
 
 describe('jobs api', () => {
+  const env = process.env as Record<string, string | undefined>;
+  const originalNodeEnv = process.env.NODE_ENV;
+
   beforeEach(() => {
     createJobMock.mockClear();
     auditCreateMock.mockClear();
+    env.NODE_ENV = 'production';
+    env.LOCAL_DEV_AUTH_BYPASS = 'true';
   });
 
   it('accepts deep research job types created by market loop', async () => {
@@ -46,6 +51,7 @@ describe('jobs api', () => {
   });
 
   it('rejects job creation without an operator role', async () => {
+    env.LOCAL_DEV_AUTH_BYPASS = 'false';
     const { POST } = await import('../../../app/api/jobs/route');
 
     const response = await POST(
@@ -59,7 +65,7 @@ describe('jobs api', () => {
       }) as never,
     );
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(401);
     expect(createJobMock).toHaveBeenCalledTimes(0);
   });
 });

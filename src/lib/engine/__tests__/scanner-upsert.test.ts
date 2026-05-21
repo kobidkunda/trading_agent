@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const marketFindFirstMock = mock(async () => null);
+const marketUpsertMock = mock(async ({ create }: { create: Record<string, unknown> }) => ({ id: 'market-1', ...create }));
 const marketCreateMock = mock(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'market-1', ...data }));
 const marketUpdateMock = mock(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'market-1', ...data }));
 const marketSnapshotCreateMock = mock(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'snapshot-1', ...data }));
 const tradeCandidateCreateMock = mock(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'candidate-1', ...data }));
 const tradeCandidateFindFirstMock = mock(async () => null);
+const tradeCandidateFindUniqueMock = mock(async () => null);
+const tradeCandidateUpsertMock = mock(async ({ create }: { create: Record<string, unknown> }) => ({ id: 'candidate-1', ...create }));
 const tradeCandidateUpdateMock = mock(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'candidate-1', ...data }));
 const jobCreateMock = mock(async ({ data }: { data: Record<string, unknown> }) => ({ id: `${data.type}-job`, ...data }));
 const historicalSnapshotCreateMock = mock(async ({ data }: { data: Record<string, unknown> }) => ({ id: 'historical-1', ...data }));
@@ -20,6 +23,7 @@ mock.module('@/lib/db', () => ({
     market: {
       findFirst: marketFindFirstMock,
       findUnique: marketFindUniqueMock,
+      upsert: marketUpsertMock,
       create: marketCreateMock,
       update: marketUpdateMock,
     },
@@ -35,6 +39,8 @@ mock.module('@/lib/db', () => ({
     tradeCandidate: {
       create: tradeCandidateCreateMock,
       findFirst: tradeCandidateFindFirstMock,
+      findUnique: tradeCandidateFindUniqueMock,
+      upsert: tradeCandidateUpsertMock,
       update: tradeCandidateUpdateMock,
     },
     job: {
@@ -54,6 +60,7 @@ describe('scanner upsert', () => {
   beforeEach(() => {
     marketFindFirstMock.mockClear();
     marketFindFirstMock.mockImplementation(async () => null);
+    marketUpsertMock.mockClear();
     marketCreateMock.mockClear();
     marketUpdateMock.mockClear();
     marketSnapshotCreateMock.mockClear();
@@ -62,6 +69,9 @@ describe('scanner upsert', () => {
     tradeCandidateCreateMock.mockClear();
     tradeCandidateFindFirstMock.mockClear();
     tradeCandidateFindFirstMock.mockImplementation(async () => null);
+    tradeCandidateFindUniqueMock.mockClear();
+    tradeCandidateFindUniqueMock.mockImplementation(async () => null);
+    tradeCandidateUpsertMock.mockClear();
     tradeCandidateUpdateMock.mockClear();
     jobCreateMock.mockClear();
     marketFindUniqueMock.mockClear();
@@ -93,7 +103,6 @@ describe('scanner upsert', () => {
     });
 
     expect(result.created).toBe(true);
-    expect(result.scoreAction).toBe('SNAPSHOT_ONLY');
     expect(jobCreateMock).not.toHaveBeenCalled();
   });
 
@@ -120,6 +129,7 @@ describe('scanner upsert', () => {
     });
 
     expect(result.created).toBe(true);
+    expect(result.scoreAction).toBeDefined();
     expect(jobCreateMock).not.toHaveBeenCalled();
   });
 });

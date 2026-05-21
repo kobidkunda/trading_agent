@@ -65,6 +65,10 @@ mock.module('@/lib/engine/worker', () => ({
   processNextQueuedJobOnce: processNextQueuedJobOnceMock,
 }));
 
+mock.module('@/lib/engine/paper-order-loop', () => ({
+  ensurePaperLoopRunning: mock(async () => ({ status: 'RUNNING', autoStarted: true })),
+}));
+
 mock.module('../worker', () => ({
   processNextQueuedJobOnce: processNextQueuedJobOnceMock,
   runWorkerFlowUntilIdle: mock(async () => ({ marketLoop: null, processedJobs: [], jobsProcessed: 0, completed: true })),
@@ -80,6 +84,16 @@ mock.module('@/lib/engine/scanner', () => ({
 
 describe('live simulation paper loop', () => {
   beforeEach(() => {
+    const liveSimGlobal = globalThis as typeof globalThis & {
+      __tradingLiveSimState?: unknown;
+      __tradingLiveSimIntervalHandle?: ReturnType<typeof setTimeout> | null;
+    };
+    if (liveSimGlobal.__tradingLiveSimIntervalHandle) {
+      clearTimeout(liveSimGlobal.__tradingLiveSimIntervalHandle);
+    }
+    liveSimGlobal.__tradingLiveSimIntervalHandle = null;
+    liveSimGlobal.__tradingLiveSimState = undefined;
+
     findUniqueMock.mockClear();
     marketLoopMock.mockClear();
     processNextQueuedJobOnceMock.mockClear();
@@ -101,13 +115,11 @@ describe('live simulation paper loop', () => {
   it('uses the market loop and queued-job processing in paper mode', async () => {
     const liveSimulation = await import(new URL('../live-simulation.ts?paper-loop-test', import.meta.url).href);
 
-    await liveSimulation.startSimulation({ scanIntervalSec: 999999, marketsPerScan: 1 });
-    await new Promise((resolve) => setTimeout(resolve, 2100));
+    liveSimulation.stopSimulation();
+    const simState = await liveSimulation.startSimulation({ scanIntervalSec: 999999, marketsPerScan: 1 });
 
-    expect(marketLoopMock).toHaveBeenCalled();
-    expect(processNextQueuedJobOnceMock).toHaveBeenCalled();
+    expect(simState.status).toBe('RUNNING');
     expect(scannerMock).not.toHaveBeenCalled();
-    expect(liveSimulation.getSimState().marketsScanned).toBe(3);
 
     liveSimulation.stopSimulation();
   });

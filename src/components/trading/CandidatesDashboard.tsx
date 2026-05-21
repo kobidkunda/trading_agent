@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Search,
   ChevronUp,
@@ -133,6 +134,7 @@ const SORT_LABELS: Record<string, string> = {
 // ── component ────────────────────────────────────────────────────────────────
 
 export function CandidatesDashboard() {
+  const router = useRouter();
   const [searchTerm, setSearchTerm] = useState('');
   const [stageFilter, setStageFilter] = useState<string>('ALL');
 
@@ -337,11 +339,16 @@ export function CandidatesDashboard() {
                     </TableHead>
                     <TableHead className="text-right text-gray-500">Wallet</TableHead>
                     <TableHead className="text-right text-gray-500">Skip Reason</TableHead>
+                    <TableHead className="text-right text-gray-500">Detail</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {candidates.map((c) => (
-                    <TableRow key={c.id} className="border-gray-800 transition-colors hover:bg-gray-800/50">
+                    <TableRow
+                      key={c.id}
+                      className="cursor-pointer border-gray-800 transition-colors hover:bg-gray-800/50"
+                      onClick={() => router.push(`/candidates/${c.id}`)}
+                    >
                       <TableCell>
                         <p className="max-w-[220px] truncate text-xs font-medium text-gray-200">
                           {c.market?.title ?? '—'}
@@ -378,6 +385,19 @@ export function CandidatesDashboard() {
                         ) : (
                           <span className="text-xs text-gray-600">—</span>
                         )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs text-cyan-400 hover:bg-cyan-500/10 hover:text-cyan-300"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            router.push(`/candidates/${c.id}`);
+                          }}
+                        >
+                          Open
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))}

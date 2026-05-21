@@ -48,10 +48,11 @@ import { cn } from '@/lib/utils';
 import { useTradingStore } from '@/store/trading-store';
 import { VENUE_OPTIONS, CATEGORY_OPTIONS } from '@/lib/constants';
 import { DEFAULT_STRATEGY, DEFAULT_STAGE_ROUTING } from '@/lib/engine/risk';
-import { syncTradingModeFromBackend } from '@/lib/engine/trading-mode-client';
+import { syncTradingModeFromBackend, updateTradingModeOnBackend } from '@/lib/engine/trading-mode-client';
 import { getModeDisplayCopy } from '@/lib/engine/trading-view-model';
 import type { StrategySettings, Venue, StageServiceMapping, ResearchDepth, MetadataOption, TradingAgentsMetadataResponse } from '@/lib/types';
 import { withStaleOption } from '@/lib/engine/research/transparency';
+import { RESEARCH_PROVIDER_REGISTRY } from '@/lib/engine/research-provider-registry';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -113,8 +114,10 @@ function getTradingAgentsSourceLabel(source: TradingAgentsMetadataResponse['sour
 export function StrategyHub() {
   const { tradingMode, setTradingMode } = useTradingStore();
   const [settings, setSettings] = useState<StrategySettings>(DEFAULT_STRATEGY);
+  const [lastSavedSettings, setLastSavedSettings] = useState<StrategySettings>(DEFAULT_STRATEGY);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
 
   // Fetch on mount
   useEffect(() => {
@@ -125,8 +128,7 @@ export function StrategyHub() {
         if (res.ok && !cancelled) {
           const data = await res.json();
           setTradingMode(data.mode ?? 'PAPER');
-          // Merge with defaults to ensure all fields exist
-          setSettings({
+          const mergedSettings = {
             ...DEFAULT_STRATEGY,
             ...data,
             stageRouting: {
@@ -137,7 +139,9 @@ export function StrategyHub() {
               ...DEFAULT_STRATEGY.promptVersion,
               ...(data.promptVersion || {}),
             },
-          });
+          };
+          setSettings(mergedSettings);
+          setLastSavedSettings(mergedSettings);
         }
       } catch {
         toast.error('Failed to load strategy settings');
@@ -165,13 +169,29 @@ export function StrategyHub() {
         body: JSON.stringify(responseBody),
       });
       if (res.ok) {
+        const payload = await res.json();
+        const mergedSettings = {
+          ...DEFAULT_STRATEGY,
+          ...(payload.settings || {}),
+          stageRouting: {
+            ...DEFAULT_STAGE_ROUTING,
+            ...((payload.settings?.stageRouting as StageServiceMapping | undefined) || {}),
+          },
+          promptVersion: {
+            ...DEFAULT_STRATEGY.promptVersion,
+            ...(payload.settings?.promptVersion || {}),
+          },
+        };
+        setSettings(mergedSettings);
+        setLastSavedSettings(mergedSettings);
+        setSavedAt(payload.persistedAt ?? new Date().toISOString());
         await syncTradingModeFromBackend();
         toast.success('Strategy settings saved');
       } else {
         toast.error('Failed to save settings');
       }
     } catch {
-      toast.error('Network error — settings saved locally');
+      toast.error('Network error — settings not saved');
     } finally {
       setSaving(false);
     }
@@ -182,6 +202,8 @@ export function StrategyHub() {
     setTradingMode('PAPER');
     toast.info('Settings reset to defaults');
   }, [setTradingMode]);
+
+  const isDirty = JSON.stringify(settings) !== JSON.stringify(lastSavedSettings);
 
   const modeCopy = getModeDisplayCopy(tradingMode);
 
@@ -205,7 +227,8 @@ export function StrategyHub() {
   const [mirofishError, setMirofishError] = useState<string | null>(null);
 
   // Service health state
-  const [serviceHealth, setServiceHealth] = useState<Record<string, string>>({});
+  const [serviceHealth, setServiceHealth] = useState<Record<string, { status: string; error?: string | null }>>({});
+  const [scanRuns, setScanRuns] = useState<Array<{ venue: string; status: string; marketsFetched: number; marketsCreated: number; marketsUpdated: number; marketsSkipped: number; errorMessage: string | null }>>([]);
 
   const fetchModels = useCallback(async () => {
     setModelsLoading(true);
@@ -260,16 +283,33 @@ export function StrategyHub() {
     let cancelled = false;
     async function fetchHealth() {
       try {
-        const res = await fetch('/api/health');
+        const res = await fetch('/api/research/providers/health');
         if (!cancelled && res.ok) {
           const data = await res.json();
-          setServiceHealth(data.apiHealth || {});
+          setServiceHealth(data.providers || {});
         }
       } catch {}
     }
     fetchHealth();
     const interval = setInterval(fetchHealth, 15000);
     return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchScanRuns() {
+      try {
+        const res = await fetch('/api/trading/scan-runs');
+        if (!cancelled && res.ok) {
+          const data = await res.json();
+          setScanRuns(data.scanRuns || []);
+        }
+      } catch {}
+    }
+    fetchScanRuns();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -370,12 +410,48 @@ export function StrategyHub() {
 
   // ── updaters ─────────────────────────────────────────────────────────────
   const toggleVenue = (venue: Venue) => {
-    setSettings((s) => ({
-      ...s,
-      enabledVenues: s.enabledVenues.includes(venue)
-        ? s.enabledVenues.filter((v) => v !== venue)
-        : [...s.enabledVenues, venue],
-    }));
+    setSettings((s) => {
+      const nextSettings = {
+        ...s,
+        enabledVenues: s.enabledVenues.includes(venue)
+          ? s.enabledVenues.filter((v) => v !== venue)
+          : [...s.enabledVenues, venue],
+      };
+      queueMicrotask(() => {
+        void (async () => {
+          setSaving(true);
+          try {
+            const res = await fetch('/api/strategy', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ...nextSettings, mode: tradingMode }),
+            });
+            if (!res.ok) throw new Error('Failed to save venue toggle');
+            const payload = await res.json();
+            const merged = {
+              ...DEFAULT_STRATEGY,
+              ...(payload.settings || {}),
+              stageRouting: {
+                ...DEFAULT_STAGE_ROUTING,
+                ...((payload.settings?.stageRouting as StageServiceMapping | undefined) || {}),
+              },
+              promptVersion: {
+                ...DEFAULT_STRATEGY.promptVersion,
+                ...(payload.settings?.promptVersion || {}),
+              },
+            };
+            setSettings(merged);
+            setLastSavedSettings(merged);
+            setSavedAt(payload.persistedAt ?? new Date().toISOString());
+          } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Failed to persist venue toggle');
+          } finally {
+            setSaving(false);
+          }
+        })();
+      });
+      return nextSettings;
+    });
   };
 
   const toggleCategory = (cat: string) => {
@@ -434,6 +510,14 @@ export function StrategyHub() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {isDirty && (
+            <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-300">
+              Unsaved changes
+            </Badge>
+          )}
+          {savedAt && !isDirty && (
+            <span className="text-xs text-gray-500">Saved {new Date(savedAt).toLocaleTimeString()}</span>
+          )}
           <Button variant="ghost" size="sm" onClick={resetSettings}>
             <RotateCcw className="mr-2 h-4 w-4" />
             Reset
@@ -888,29 +972,53 @@ export function StrategyHub() {
                 <span className="text-sm text-gray-300">Research Providers</span>
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
-                {[
-                  { key: 'deerflow', label: 'DeerFlow', fallback: 'Firecrawl' },
-                  { key: 'firecrawl', label: 'Firecrawl', fallback: null },
-                  { key: 'mirofis', label: 'MiroFish', fallback: null },
-                ].map(({ key, label, fallback }) => {
-                  const status = serviceHealth[key] || 'UNKNOWN';
-                  const color = status === 'UP' ? 'bg-emerald-500' : status === 'DOWN' ? 'bg-red-500' : 'bg-gray-500';
+                {RESEARCH_PROVIDER_REGISTRY.filter((entry) => ['deerflow', 'firecrawl', 'mirofish'].includes(entry.key)).map(({ key, displayName, fallback }) => {
+                  const status = serviceHealth[key]?.status || 'UNKNOWN';
+                  const color = status === 'OK' ? 'bg-emerald-500' : status === 'DOWN' ? 'bg-red-500' : status === 'CONFIG_MISSING' ? 'bg-orange-500' : 'bg-gray-500';
                   return (
                     <div key={key} className="flex items-center justify-between rounded bg-gray-800/60 px-3 py-2">
                       <div className="flex items-center gap-2">
                         <span className={`h-2 w-2 rounded-full ${color}`} />
-                        <span className="text-xs text-gray-300">{label}</span>
+                        <span className="text-xs text-gray-300">{displayName}</span>
                       </div>
                       <div className="flex items-center gap-1.5">
                         {status === 'DOWN' && fallback ? (
                           <span className="text-[10px] text-amber-400">→ {fallback}</span>
                         ) : null}
                         <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${
-                          status === 'UP' ? 'border-emerald-700 text-emerald-400' :
+                          status === 'OK' ? 'border-emerald-700 text-emerald-400' :
                           status === 'DOWN' ? 'border-red-700 text-red-400' :
+                          status === 'CONFIG_MISSING' ? 'border-orange-700 text-orange-400' :
                           'border-gray-600 text-gray-400'
                         }`}>{status}</Badge>
                       </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="rounded-lg border border-gray-800 bg-gray-800/40 px-4 py-3 space-y-2.5">
+              <div className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-gray-500" />
+                <span className="text-sm text-gray-300">Latest Venue Scans</span>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {VENUE_OPTIONS.map((venue) => {
+                  const run = scanRuns.find((entry) => entry.venue === venue.value);
+                  return (
+                    <div key={venue.value} className="rounded bg-gray-800/60 px-3 py-2 text-xs text-gray-300">
+                      <div className="flex items-center justify-between">
+                        <span>{venue.label}</span>
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                          {run?.status || 'NO_RUN'}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-[10px] text-gray-500">
+                        {run
+                          ? `Fetched ${run.marketsFetched} · Created ${run.marketsCreated} · Updated ${run.marketsUpdated} · Skipped ${run.marketsSkipped}`
+                          : 'No scan yet'}
+                      </p>
+                      {run?.errorMessage && <p className="mt-1 text-[10px] text-red-400">{run.errorMessage}</p>}
                     </div>
                   );
                 })}
@@ -1406,7 +1514,11 @@ export function StrategyHub() {
                              : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
                          : 'text-gray-400 hover:text-white hover:bg-gray-800'
                      )}
-                     onClick={() => setTradingMode(modeOption)}
+                     onClick={() => {
+                       updateTradingModeOnBackend(modeOption).catch(() => {
+                         toast.error('Failed to persist trading mode');
+                       });
+                     }}
                    >
                      {modeOption}
                    </Button>

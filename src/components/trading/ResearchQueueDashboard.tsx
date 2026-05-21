@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   ListOrdered,
   AlertTriangle,
@@ -121,6 +122,7 @@ function formatTime(iso: string | null): string {
 }
 
 export function ResearchQueueDashboard() {
+  const router = useRouter();
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -453,6 +455,7 @@ export function ResearchQueueDashboard() {
                           Created {sortBy === 'createdAt' && <SortIcon className="h-3 w-3" />}
                         </span>
                       </TableHead>
+                      <TableHead className="text-right text-gray-500">Detail</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -460,10 +463,14 @@ export function ResearchQueueDashboard() {
                       const stuck = isStuck(job);
                       const dead = isDead(job);
                       return (
-                        <TableRow key={job.id} className={cn(
-                          'border-gray-800 transition-colors hover:bg-gray-800/50',
+                        <TableRow
+                          key={job.id}
+                          className={cn(
+                          'cursor-pointer border-gray-800 transition-colors hover:bg-gray-800/50',
                           (stuck || dead) && 'bg-red-500/5'
-                        )}>
+                        )}
+                          onClick={() => router.push(`/research-queue/${job.id}`)}
+                        >
                           <TableCell>
                             <div className="max-w-[260px]">
                               <p className="truncate text-xs font-medium text-gray-200">
@@ -481,6 +488,19 @@ export function ResearchQueueDashboard() {
                           </TableCell>
                           <TableCell className="text-right">
                             <span className="text-xs tabular-nums text-gray-500">{formatTime(job.createdAt)}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2 text-xs text-cyan-400 hover:bg-cyan-500/10 hover:text-cyan-300"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                router.push(`/research-queue/${job.id}`);
+                              }}
+                            >
+                              Open
+                            </Button>
                           </TableCell>
                         </TableRow>
                       );
