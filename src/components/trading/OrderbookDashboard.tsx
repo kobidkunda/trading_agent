@@ -65,6 +65,11 @@ interface OrderbookLevel {
   side?: 'BID' | 'ASK';
 }
 
+function SortIndicator({ active, order }: { active: boolean; order: 'asc' | 'desc' }) {
+  if (!active) return <ChevronDown className="ml-1 h-3 w-3 text-gray-600" />;
+  return order === 'desc' ? <ChevronDown className="ml-1 h-3 w-3" /> : <ChevronUp className="ml-1 h-3 w-3" />;
+}
+
 interface OrderbookDetail {
   market: {
     id: string;
@@ -324,10 +329,6 @@ export function OrderbookDashboard() {
     router.push(`/market/${marketId}?tab=orderbook`);
   }
 
-  function SortIcon({ field }: { field: SortField }) {
-    if (sortBy !== field) return <ChevronDown className="ml-1 h-3 w-3 text-gray-600" />;
-    return sortOrder === 'desc' ? <ChevronDown className="ml-1 h-3 w-3" /> : <ChevronUp className="ml-1 h-3 w-3" />;
-  }
 
   // ── loading ──
   if (loading) {
@@ -465,19 +466,19 @@ export function OrderbookDashboard() {
                       <TableHead className="text-right text-gray-500">Best Bid</TableHead>
                       <TableHead className="text-right text-gray-500">Best Ask</TableHead>
                       <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('spread')}>
-                        <span className="inline-flex items-center gap-1">Spread <SortIcon field="spread" /></span>
+                        <span className="inline-flex items-center gap-1">Spread <SortIndicator active={sortBy === "spread"} order={sortOrder} /></span>
                       </TableHead>
                       <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('bidDepth')}>
-                        <span className="inline-flex items-center gap-1">Bid Depth <SortIcon field="bidDepth" /></span>
+                        <span className="inline-flex items-center gap-1">Bid Depth <SortIndicator active={sortBy === "bidDepth"} order={sortOrder} /></span>
                       </TableHead>
                       <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('askDepth')}>
-                        <span className="inline-flex items-center gap-1">Ask Depth <SortIcon field="askDepth" /></span>
+                        <span className="inline-flex items-center gap-1">Ask Depth <SortIndicator active={sortBy === "askDepth"} order={sortOrder} /></span>
                       </TableHead>
                       <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('depthImbalance')}>
-                        <span className="inline-flex items-center gap-1">Imbalance <SortIcon field="depthImbalance" /></span>
+                        <span className="inline-flex items-center gap-1">Imbalance <SortIndicator active={sortBy === "depthImbalance"} order={sortOrder} /></span>
                       </TableHead>
                       <TableHead className="cursor-pointer text-center text-gray-500 hover:text-gray-300" onClick={() => handleSort('fillProbability')}>
-                        <span className="inline-flex items-center gap-1">Fill Prob <SortIcon field="fillProbability" /></span>
+                        <span className="inline-flex items-center gap-1">Fill Prob <SortIndicator active={sortBy === "fillProbability"} order={sortOrder} /></span>
                       </TableHead>
                       <TableHead className="text-gray-500">Warnings</TableHead>
                     </TableRow>

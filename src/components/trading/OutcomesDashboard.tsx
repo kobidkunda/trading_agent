@@ -53,6 +53,11 @@ interface OutcomeRecord {
 
 type SortField = 'predictedProb' | 'brierScore' | 'pnl' | 'resolvedAt';
 
+function SortIndicator({ active, order }: { active: boolean; order: 'asc' | 'desc' }) {
+  if (!active) return <ChevronDown className="ml-1 h-3 w-3 text-gray-600" />;
+  return order === 'desc' ? <ChevronDown className="ml-1 h-3 w-3" /> : <ChevronUp className="ml-1 h-3 w-3" />;
+}
+
 function outcomeBadge(result: string) {
   const isYes = result === 'YES';
   const isCancelled = result === 'CANCELLED';
@@ -172,10 +177,6 @@ export function OutcomesDashboard() {
     setSort(field, dir);
   }
 
-  function SortIcon({ field }: { field: SortField }) {
-    if (sortBy !== field) return <ChevronDown className="ml-1 h-3 w-3 text-gray-600" />;
-    return sortOrder === 'desc' ? <ChevronDown className="ml-1 h-3 w-3" /> : <ChevronUp className="ml-1 h-3 w-3" />;
-  }
 
   // ── loading ──
   if (loading) {
@@ -321,18 +322,18 @@ export function OutcomesDashboard() {
                     <TableRow className="border-gray-800 hover:bg-transparent">
                       <TableHead className="text-gray-500">Market</TableHead>
                       <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('predictedProb')}>
-                        <span className="inline-flex items-center gap-1">Predicted <SortIcon field="predictedProb" /></span>
+                        <span className="inline-flex items-center gap-1">Predicted <SortIndicator active={sortBy === "predictedProb"} order={sortOrder} /></span>
                       </TableHead>
                       <TableHead className="text-gray-500">Result</TableHead>
                       <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('brierScore')}>
-                        <span className="inline-flex items-center gap-1">Brier <SortIcon field="brierScore" /></span>
+                        <span className="inline-flex items-center gap-1">Brier <SortIndicator active={sortBy === "brierScore"} order={sortOrder} /></span>
                       </TableHead>
                       <TableHead className="text-gray-500">Correct</TableHead>
                       <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('pnl')}>
-                        <span className="inline-flex items-center gap-1">PnL <SortIcon field="pnl" /></span>
+                        <span className="inline-flex items-center gap-1">PnL <SortIndicator active={sortBy === "pnl"} order={sortOrder} /></span>
                       </TableHead>
                       <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('resolvedAt')}>
-                        <span className="inline-flex items-center gap-1">Resolved <SortIcon field="resolvedAt" /></span>
+                        <span className="inline-flex items-center gap-1">Resolved <SortIndicator active={sortBy === "resolvedAt"} order={sortOrder} /></span>
                       </TableHead>
                     </TableRow>
                   </TableHeader>

@@ -2,20 +2,20 @@ import { describe, expect, it } from 'bun:test';
 
 // ---------------------------------------------------------------------------
 // Paper Mode Execution Gating
-// Verifies that the A+ gate (candidateScore ≥ 90) is only applied in
-// LIVE/DEMO modes and that PAPER mode bypasses it.
+// Verifies that the A+ gate (candidateScore ≥ 90) is applied in PAPER/LIVE/DEMO
+// so simulated execution matches real decision safety.
 // ---------------------------------------------------------------------------
 
 describe('Paper Mode Execution Gating', () => {
-  // The logic under test: requiresAPlusForExecution = isLiveOrDemo || liveEnabled
+  // The logic under test: PAPER/LIVE/DEMO all require A+ for BID execution.
 
   function computeRequiresAPlus(mode: string, liveEnabled: boolean): boolean {
     const isLiveOrDemo = mode === 'LIVE' || mode === 'DEMO';
-    return isLiveOrDemo || liveEnabled;
+    return mode === 'PAPER' || isLiveOrDemo || liveEnabled;
   }
 
-  it('PAPER mode should not require A+ gate for BID decisions', () => {
-    expect(computeRequiresAPlus('PAPER', false)).toBe(false);
+  it('PAPER mode should require A+ gate for BID decisions', () => {
+    expect(computeRequiresAPlus('PAPER', false)).toBe(true);
   });
 
   it('PAPER mode with liveEnabled should still require A+', () => {
@@ -33,13 +33,13 @@ describe('Paper Mode Execution Gating', () => {
 
   // --- Candidate score filtering based on gate ---
 
-  it('PAPER mode: candidateScore < 90 should still proceed to execution', () => {
+  it('PAPER mode: candidateScore < 90 should be blocked from execution', () => {
     const candidateScore = 72;
     const requiresAPlus = computeRequiresAPlus('PAPER', false);
     const blocked = requiresAPlus && candidateScore < 90;
 
-    expect(requiresAPlus).toBe(false);
-    expect(blocked).toBe(false);
+    expect(requiresAPlus).toBe(true);
+    expect(blocked).toBe(true);
   });
 
   it('LIVE mode: candidateScore < 90 should be blocked from execution', () => {

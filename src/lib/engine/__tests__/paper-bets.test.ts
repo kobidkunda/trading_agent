@@ -111,10 +111,12 @@ describe('scorePaperBet pnl for executed bets', () => {
     expect(r.brierScore).toBe(1);
   });
 
-  it('CANCELLED markets produce zero pnl', () => {
+  it('CANCELLED markets produce neutral scoring and zero pnl', () => {
     const r = scorePaperBet(0.80, 'YES', 0.65, 100, 'CANCELLED');
     expect(r.pnl).toBe(0);
-    expect(r.brierScore).toBe(1);
+    expect(r.brierScore).toBeNull();
+    expect(r.probError).toBeNull();
+    expect(r.directionCorrect).toBeNull();
   });
 });
 

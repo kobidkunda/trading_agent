@@ -54,6 +54,71 @@ describe('risk engine configuration', () => {
     expect(result.reasonCode).toBe('WIDE_SPREAD');
   });
 
+  it('hard-stops zero-liquidity bids even if DB thresholds are loose', () => {
+    const result = computeRisk({
+      impliedProbability: 0.5,
+      judgeProbability: 0.62,
+      confidence: 0.95,
+      uncertainty: 0.05,
+      fees: 0,
+      slippage: 0,
+      venue: 'POLYMARKET',
+      category: 'crypto',
+      dailyExposure: 0,
+      categoryExposure: 0,
+      openPositions: 0,
+      minLiquidity: 0,
+      marketLiquidity: 0,
+      marketSpread: 0.01,
+    });
+
+    expect(result.action).toBe('SKIP');
+    expect(result.reasonCode).toBe('LOW_LIQUIDITY');
+  });
+
+  it('does not allow 31% confidence to become BID', () => {
+    const result = computeRisk({
+      impliedProbability: 0.5,
+      judgeProbability: 0.62,
+      confidence: 0.31,
+      uncertainty: 0.2,
+      fees: 0,
+      slippage: 0,
+      venue: 'POLYMARKET',
+      category: 'crypto',
+      dailyExposure: 0,
+      categoryExposure: 0,
+      openPositions: 0,
+      bidConfidenceThreshold: 0.3,
+      marketLiquidity: 5000,
+      marketSpread: 0.01,
+    });
+
+    expect(result.action).not.toBe('BID');
+  });
+
+  it('blocks high-uncertainty bids even if DB threshold is loosened', () => {
+    const result = computeRisk({
+      impliedProbability: 0.5,
+      judgeProbability: 0.62,
+      confidence: 0.8,
+      uncertainty: 0.685,
+      fees: 0,
+      slippage: 0,
+      venue: 'POLYMARKET',
+      category: 'crypto',
+      dailyExposure: 0,
+      categoryExposure: 0,
+      openPositions: 0,
+      maxUncertaintyThreshold: 0.9,
+      marketLiquidity: 5000,
+      marketSpread: 0.01,
+    });
+
+    expect(result.action).toBe('WATCH');
+    expect(result.reasonCode).toBe('HIGH_UNCERTAINTY');
+  });
+
   it('blocks bids when cluster exposure breaches utilization threshold', () => {
     const result = computeRisk(
       {

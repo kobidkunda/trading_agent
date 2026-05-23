@@ -8,7 +8,7 @@ export type MarketStatus = 'ACTIVE' | 'CLOSED' | 'RESOLVED';
 export type CandidateStage = 'SCANNED' | 'TRIAGED' | 'RESEARCHING' | 'JUDGED' | 'DECIDED' | 'EXECUTED' | 'WATCHING' | 'SETTLED';
 
 // Triage status
-export type TriageStatus = 'RELEVANT' | 'IRRELEVANT' | 'AMBIGUOUS';
+export type TriageStatus = 'RELEVANT' | 'IRRELEVANT' | 'AMBIGUOUS' | 'ANALYSIS_DEGRADED';
 
 // Decision action
 export type DecisionAction = 'BID' | 'SKIP' | 'WATCH';

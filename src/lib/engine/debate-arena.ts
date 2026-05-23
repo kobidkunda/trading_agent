@@ -39,6 +39,25 @@ export interface DebateArenaResult {
   recommendationReason: string;
 }
 
+export function buildDegradedDebateResult(marketTitle: string, impliedProbability: number, failureReason: string): DebateArenaResult {
+  const reason = `ANALYSIS_DEGRADED: debate/judge unavailable for ${marketTitle}; forcing SKIP. ${failureReason}`;
+  return {
+    rounds: [],
+    bullConsensus: { probability: impliedProbability, confidence: 0, keyArguments: ['Debate unavailable'] },
+    bearConsensus: { probability: impliedProbability, confidence: 0, keyArguments: ['Debate unavailable'] },
+    pointsOfAgreement: ['Analysis degraded'],
+    pointsOfDisagreement: ['No validated debate output available'],
+    debateOutcome: 'INCONCLUSIVE',
+    finalProbability: impliedProbability,
+    finalConfidence: 0,
+    finalUncertainty: 1,
+    proEvidence: [],
+    antiEvidence: [],
+    recommendation: 'SKIP',
+    recommendationReason: reason,
+  };
+}
+
 const BULL_SYSTEM = `You are an aggressive BULL analyst in a debate arena. You advocate FOR the prediction market outcome.
 
 Your job:
@@ -234,24 +253,9 @@ Respond in JSON:
     ]);
 
     if (!bullResult || !bearResult) {
-      const stubP = impliedProbability + (Math.random() - 0.5) * 0.20;
-      const stubConf = 0.30 + Math.random() * 0.20;
-      console.warn(`[DebateArena] LLM models unavailable for ${marketTitle}, using PAPER stub output`);
-      return {
-        rounds: [],
-        bullConsensus: { probability: stubP + 0.10, confidence: stubConf, keyArguments: ['Stub: market momentum'] },
-        bearConsensus: { probability: stubP - 0.10, confidence: stubConf, keyArguments: ['Stub: mean reversion'] },
-        pointsOfAgreement: ['Event will resolve'],
-        pointsOfDisagreement: ['Probability estimate'],
-        debateOutcome: Math.random() > 0.5 ? 'BULL_WINS' : 'BEAR_WINS' as const,
-        finalProbability: stubP,
-        finalConfidence: stubConf,
-        finalUncertainty: 1 - stubConf,
-        proEvidence: ['Market implied probability'],
-        antiEvidence: ['Market may overestimate'],
-        recommendation: 'WATCH',
-        recommendationReason: 'PAPER-mode stub debate output — LLM models unavailable, using randomized estimate',
-      };
+      const failureReason = 'Bull/Bear models unavailable after fallback exhaustion';
+      console.warn(`[DebateArena] ${failureReason} for ${marketTitle}; forcing degraded SKIP output`);
+      return buildDegradedDebateResult(marketTitle, impliedProbability, failureReason);
     }
 
     const bullResp = bullResult.result;
@@ -321,7 +325,9 @@ Respond in JSON:
   let arbiter: ArbiterResponse;
   const arbiterResult = await callWithFallback('judge', (model) => callLLMJson<ArbiterResponse>(arbiterPrompt, ARBITER_SYSTEM, model), 180000);
   if (!arbiterResult) {
-    throw new Error(`Arbiter agent failed after exhausting all fallback models`);
+    const failureReason = 'Arbiter agent failed after exhausting all fallback models';
+    console.warn(`[DebateArena] ${failureReason} for ${marketTitle}; forcing degraded SKIP output`);
+    return buildDegradedDebateResult(marketTitle, impliedProbability, failureReason);
   }
   arbiter = validateArbiterResponse(arbiterResult.result.data, arbiterResult.modelUsed);
 

@@ -14,6 +14,99 @@ interface ResolutionResult {
   resolvedProb?: number;
 }
 
+
+export async function reconcileMarketResolution(params: {
+  marketId: string;
+  outcome: 'YES' | 'NO' | 'CANCELLED';
+  resolvedProb?: number;
+  source: string;
+}): Promise<{
+  outcomeCreated: boolean;
+  paperBetsScored: number;
+  positionsClosed: number;
+  candidatesSettled: number;
+  outcomeRecord: { id: string; marketId: string; result: string; resolvedProb: number | null };
+}> {
+  const existingOutcomes = await db.outcome.findMany({ where: { marketId: params.marketId }, orderBy: { resolvedAt: 'desc' }, take: 2 });
+  if (existingOutcomes.length > 1) {
+    throw new Error(`Duplicate outcomes detected for market ${params.marketId}`);
+  }
+  const existingOutcome = existingOutcomes[0] ?? null;
+  const settledOutcome = (existingOutcome?.result as 'YES' | 'NO' | 'CANCELLED' | undefined) ?? params.outcome;
+  const settledProb = existingOutcome?.resolvedProb ?? params.resolvedProb ?? null;
+
+  const outcomeRecord = existingOutcome ?? await db.outcome.create({
+    data: {
+      marketId: params.marketId,
+      result: settledOutcome,
+      resolvedProb: settledProb,
+    },
+  });
+
+  await db.market.update({
+    where: { id: params.marketId },
+    data: { status: 'RESOLVED', resolutionTime: new Date() },
+  });
+
+  if (!existingOutcome) {
+    await db.auditLog.create({
+      data: {
+        action: 'MARKET_RESOLVED',
+        entityType: 'Market',
+        entityId: params.marketId,
+        details: `Resolved via ${params.source}: ${settledOutcome}`,
+      },
+    });
+  }
+
+  const positionsClosed = await db.position.count({
+    where: { marketId: params.marketId, status: { in: ['OPEN', 'WATCH'] } },
+  });
+  const unsettledCandidates = await db.tradeCandidate.count({
+    where: { marketId: params.marketId, stage: { not: 'SETTLED' } },
+  });
+
+  const betResults = await resolveAllPaperBetsForMarket(
+    params.marketId,
+    settledOutcome,
+    settledProb ?? undefined,
+  );
+
+  const decisions = await db.decision.findMany({
+    where: { marketId: params.marketId, dryRun: true },
+  });
+
+  for (const decision of decisions) {
+    if (decision.judgeProbability !== null) {
+      const brier = settledOutcome === 'CANCELLED' ? null : BrierCalibrationEngine.computeBrier(decision.judgeProbability, settledOutcome);
+      await (db.decision as any).update({
+        where: { id: decision.id },
+        data: { brierScore: brier },
+      });
+    }
+  }
+
+  if (unsettledCandidates > 0) {
+    await db.tradeCandidate.updateMany({
+      where: { marketId: params.marketId, stage: { not: 'SETTLED' } },
+      data: { stage: 'SETTLED' },
+    });
+  }
+
+  return {
+    outcomeCreated: !existingOutcome,
+    paperBetsScored: betResults.filter(Boolean).length,
+    positionsClosed,
+    candidatesSettled: unsettledCandidates,
+    outcomeRecord: {
+      id: outcomeRecord.id,
+      marketId: outcomeRecord.marketId,
+      result: outcomeRecord.result,
+      resolvedProb: outcomeRecord.resolvedProb,
+    },
+  };
+}
+
 export async function pollPolymarketResolutions(externalIds: string[]): Promise<ResolutionResult[]> {
   const results: ResolutionResult[] = [];
   const baseUrl = (await getActiveVenueProxyUrl('polymarket')) || POLYMARKET_DIRECT_API;
@@ -156,25 +249,14 @@ export async function runResolutionCycle(): Promise<{
 
   console.log(`[Resolution] Found ${activeMarkets.length} markets with dry-run decisions`);
 
-  // Filter to markets that either:
-  // 1. Have no outcomes yet (need to poll for resolution)
-  // 2. Are RESOLVED but have paper bets that haven't been scored
-  const unresolvedMarkets = activeMarkets.filter((m) => {
-    const hasNoOutcomes = m.outcomes.length === 0;
-    const isResolvedNoOutcome = m.status === 'RESOLVED' && m.outcomes.length === 0;
-    const needsPolling = hasNoOutcomes || isResolvedNoOutcome;
-    
-    if (needsPolling) {
-      console.log(`[Resolution] Market ${m.id} (${m.venue}): needs polling, outcomes=${m.outcomes.length}, status=${m.status}`);
-    }
-    
-    return needsPolling;
-  });
+  const reconciliableMarkets = activeMarkets.filter((m) => m.outcomes.length > 0);
+  const unresolvedMarkets = activeMarkets.filter((m) => m.outcomes.length === 0);
 
   console.log(`[Resolution] ${unresolvedMarkets.length} markets need resolution polling`);
+  console.log(`[Resolution] ${reconciliableMarkets.length} markets already have outcomes and will be reconciled`);
 
-  if (unresolvedMarkets.length === 0) {
-    console.log('[Resolution] No markets to poll, skipping');
+  if (unresolvedMarkets.length === 0 && reconciliableMarkets.length === 0) {
+    console.log('[Resolution] No markets to poll or reconcile, skipping');
     return { checked: activeMarkets.length, resolved: 0, scored: 0, results: [] };
   }
 
@@ -197,76 +279,32 @@ export async function runResolutionCycle(): Promise<{
 
   for (const result of allResults) {
     console.log(`[Resolution] Processing result for market ${result.marketId}: ${result.outcome}`);
-    
-    const existingOutcome = await db.outcome.findFirst({
-      where: { marketId: result.marketId },
+    const reconciled = await reconcileMarketResolution({
+      marketId: result.marketId,
+      outcome: result.outcome,
+      resolvedProb: result.resolvedProb,
+      source: `${result.venue}_POLL`,
     });
 
-    if (existingOutcome) {
-      console.log(`[Resolution] Market ${result.marketId} already has outcome, skipping`);
-      continue;
-    }
+    resolvedCount += reconciled.outcomeCreated ? 1 : 0;
+    scoredCount += reconciled.paperBetsScored;
+  }
 
-    console.log(`[Resolution] Creating outcome for market ${result.marketId}: ${result.outcome}`);
-    
-    await db.outcome.create({
-      data: {
-        marketId: result.marketId,
-        result: result.outcome,
-        resolvedProb: result.resolvedProb ?? null,
-      },
+  for (const market of reconciliableMarkets) {
+    const outcome = market.outcomes[0];
+    if (!outcome) continue;
+
+    const reconciled = await reconcileMarketResolution({
+      marketId: market.id,
+      outcome: outcome.result as 'YES' | 'NO' | 'CANCELLED',
+      resolvedProb: outcome.resolvedProb ?? undefined,
+      source: 'EXISTING_OUTCOME_RECONCILE',
     });
-
-    await db.market.update({
-      where: { id: result.marketId },
-      data: { status: 'RESOLVED', resolutionTime: new Date() },
-    });
-
-    await db.auditLog.create({
-      data: {
-        action: 'MARKET_RESOLVED',
-        entityType: 'Market',
-        entityId: result.marketId,
-        details: `Auto-resolved via ${result.venue} poll: ${result.outcome}`,
-      },
-    });
-
-    const betResults = await resolveAllPaperBetsForMarket(
-      result.marketId,
-      result.outcome,
-      result.resolvedProb,
-    );
-
-    const decisions = await db.decision.findMany({
-      where: { marketId: result.marketId, dryRun: true },
-    });
-
-    for (const decision of decisions) {
-      if (decision.judgeProbability !== null) {
-        const brier = BrierCalibrationEngine.computeBrier(decision.judgeProbability, result.outcome);
-        await (db.decision as any).update({
-          where: { id: decision.id },
-          data: { brierScore: brier },
-        });
-      }
-    }
-
-    const candidates = await db.tradeCandidate.findMany({
-      where: { marketId: result.marketId },
-    });
-    for (const c of candidates) {
-      await db.tradeCandidate.update({
-        where: { id: c.id },
-        data: { stage: 'SETTLED' },
-      });
-    }
-
-    resolvedCount++;
-    scoredCount += betResults.length;
+    scoredCount += reconciled.paperBetsScored;
   }
 
   return {
-    checked: unresolvedMarkets.length,
+    checked: activeMarkets.length,
     resolved: resolvedCount,
     scored: scoredCount,
     results: allResults,

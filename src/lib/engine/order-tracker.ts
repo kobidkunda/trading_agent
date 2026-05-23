@@ -89,37 +89,71 @@ export async function processPaperOrderFill(params: {
     };
   }
 
-// Risk re-evaluation gate: check if market still meets BID criteria.
-// Skip for CONSERVATIVE_PAPER fill — paper orders should always attempt fills
-// regardless of current snapshot state, since fills are simulated.
-  const [latestMarketSnapshot, latestDecision] = await Promise.all([
+// Risk re-evaluation gate: PAPER fills must remain executable under current market conditions.
+// Fail closed when the latest snapshot / decision context is missing.
+  const [latestMarketSnapshot, paperBet] = await Promise.all([
     db.marketSnapshot.findFirst({
       where: { marketId: params.marketId },
       orderBy: { timestamp: 'desc' },
     }),
-    db.decision.findFirst({
-      where: { marketId: params.marketId },
-      include: { market: { select: { venue: true, category: true } } },
-      orderBy: { createdAt: 'desc' },
+    db.paperBet.findFirst({
+      where: { orderId: params.orderId },
+      include: {
+        decision: {
+          include: { market: { select: { venue: true, category: true } } },
+        },
+      },
     }),
   ]);
 
-  const skipRiskGate =
-    normalizeFillModel(params.fillModel) === 'CONSERVATIVE_PAPER';
+  const latestDecision = paperBet?.decision ?? await db.decision.findFirst({
+    where: { marketId: params.marketId },
+    include: { market: { select: { venue: true, category: true } } },
+    orderBy: { createdAt: 'desc' },
+  });
 
   if (
-    !skipRiskGate &&
     latestMarketSnapshot &&
     latestDecision &&
     latestDecision.judgeProbability != null &&
     latestDecision.confidence != null &&
     latestDecision.uncertainty != null
   ) {
+    // Extra guard: zero-liquidity markets cannot be filled in paper mode.
+    // Prevents the fill tracker from executing fills on markets without real depth.
+    const mktLiquidity = latestMarketSnapshot.liquidity ?? 0;
+    const mktUncertainty = latestDecision.uncertainty ?? 1;
+    if (mktLiquidity <= 0 || mktUncertainty > 0.45) {
+      await updateOrderCompat(params.orderId, {
+        lifecycleStatus: 'CANCELLED',
+        status: 'CANCELLED',
+        lastFillAttemptAt: new Date(),
+        fillAttemptCount: { increment: 1 },
+        failureReason: mktLiquidity <= 0
+          ? 'Zero liquidity — cannot fill paper order'
+          : `Uncertainty ${(mktUncertainty * 100).toFixed(1)}% exceeds 45% threshold — paper fill blocked`,
+      });
+      await db.paperBet.updateMany({
+        where: { orderId: params.orderId },
+        data: { executionStatus: 'CANCELLED' },
+      });
+      await db.tradeCandidate.updateMany({
+        where: { marketId: params.marketId },
+        data: { stage: 'EXECUTION_FAILED' },
+      });
+      return {
+        filledSize: 0,
+        avgFillPrice: 0,
+        isFullyFilled: false,
+        orderStatus: 'CANCELLED',
+      };
+    }
+
     const riskInput = {
       impliedProbability: latestMarketSnapshot.impliedProb,
       judgeProbability: latestDecision.judgeProbability,
       confidence: latestDecision.confidence,
-      uncertainty: latestDecision.uncertainty,
+      uncertainty: mktUncertainty,
       fees: 0,
       slippage: 0,
       venue: latestDecision.market.venue as Venue,
@@ -127,7 +161,7 @@ export async function processPaperOrderFill(params: {
       dailyExposure: 0,
       categoryExposure: 0,
       openPositions: 0,
-      marketLiquidity: latestMarketSnapshot.liquidity,
+      marketLiquidity: mktLiquidity,
       marketSpread: latestMarketSnapshot.spread,
       catalystTiming: undefined,
     };
@@ -145,6 +179,10 @@ export async function processPaperOrderFill(params: {
         where: { orderId: params.orderId },
         data: { executionStatus: 'CANCELLED' },
       });
+      await db.tradeCandidate.updateMany({
+        where: { marketId: params.marketId },
+        data: { stage: 'EXECUTION_FAILED' },
+      });
       return {
         filledSize: 0,
         avgFillPrice: 0,
@@ -152,6 +190,36 @@ export async function processPaperOrderFill(params: {
         orderStatus: 'CANCELLED',
       };
     }
+  }
+
+  if (
+    !latestMarketSnapshot ||
+    !latestDecision ||
+    latestDecision.judgeProbability == null ||
+    latestDecision.confidence == null ||
+    latestDecision.uncertainty == null
+  ) {
+    await updateOrderCompat(params.orderId, {
+      lifecycleStatus: 'CANCELLED',
+      status: 'CANCELLED',
+      lastFillAttemptAt: new Date(),
+      fillAttemptCount: { increment: 1 },
+      failureReason: 'Risk re-evaluation failed: missing latest market snapshot or decision context',
+    });
+    await db.paperBet.updateMany({
+      where: { orderId: params.orderId },
+      data: { executionStatus: 'CANCELLED' },
+    });
+    await db.tradeCandidate.updateMany({
+      where: { marketId: params.marketId },
+      data: { stage: 'EXECUTION_FAILED' },
+    });
+    return {
+      filledSize: 0,
+      avgFillPrice: 0,
+      isFullyFilled: false,
+      orderStatus: 'CANCELLED',
+    };
   }
 
   const { resolvePaperFill } = await import('./paper-execution');
@@ -259,7 +327,7 @@ export async function processPaperOrderFill(params: {
     });
 
     const existingPosition = await db.position.findFirst({
-      where: { marketId: params.marketId, status: { in: ['OPEN', 'WATCH'] } },
+      where: { marketId: params.marketId, side: order.side, status: { in: ['OPEN', 'WATCH'] } },
     });
 
     if (!existingPosition) {

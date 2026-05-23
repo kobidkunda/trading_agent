@@ -26,7 +26,8 @@ export type PageView =
   | 'optimizer'
   | 'settings'
   | 'logs'
-  | 'qdrantWizard';
+  | 'qdrantWizard'
+  | 'reset';
 
 export interface TradingPageDefinition {
   id: PageView;
@@ -63,6 +64,7 @@ export const TRADING_PAGES: TradingPageDefinition[] = [
   { id: 'researchProvider', label: 'Research Provider', slug: 'research-provider' },
   { id: 'logs', label: 'Logs', slug: 'logs' },
   { id: 'qdrantWizard', label: 'Qdrant Setup', slug: 'qdrant-setup' },
+  { id: 'reset', label: 'Reset', slug: 'reset' },
 ];
 
 const PAGE_BY_ID = new Map(TRADING_PAGES.map((page) => [page.id, page] as const));

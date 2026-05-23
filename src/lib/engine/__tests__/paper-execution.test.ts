@@ -63,6 +63,54 @@ describe('paper execution helpers', () => {
     expect(resolvePaperExecutionSize({ adjustedSize: 10, maxSize: 20, fallbackSize: 30 })).toBe(10);
   });
 
+  it('does not fabricate fills when liquidity and book signals are absent', () => {
+    const fill = resolvePaperFill({
+      size: 10,
+      price: 0.08,
+      fillModel: 'CONSERVATIVE_PAPER',
+      liquidity: 0,
+      fillProbability: null,
+      spread: null,
+      bidDepth: null,
+      askDepth: null,
+    });
+
+    expect(fill.filledSize).toBe(0);
+    expect(fill.remainingSize).toBe(10);
+    expect(fill.lifecycleStatus).toBe('SUBMITTED');
+  });
+
+  it('blocks all fills when liquidity is zero even if fillProbability is non-null', () => {
+    const fill = resolvePaperFill({
+      size: 100,
+      price: 0.42,
+      fillModel: 'CONSERVATIVE_PAPER',
+      liquidity: 0,
+      fillProbability: 0.95,
+      spread: 0.02,
+      bidDepth: 500,
+      askDepth: 500,
+    });
+
+    // fillProb > 0.75 would normally give FILLED; but liquidity=0 must block it
+    expect(fill.filledSize).toBe(0);
+    expect(fill.remainingSize).toBe(100);
+    expect(fill.lifecycleStatus).toBe('SUBMITTED');
+  });
+
+  it('blocks fills when liquidity is zero for non-CONSERVATIVE models', () => {
+    const fill = resolvePaperFill({
+      size: 100,
+      price: 0.42,
+      fillModel: 'STRICT_LIMIT',
+      liquidity: 0,
+    });
+
+    // STRICT_LIMIT would check cross-book; but liquidity=0 must block it first
+    expect(fill.filledSize).toBe(0);
+    expect(fill.lifecycleStatus).toBe('SUBMITTED');
+  });
+
   it('keeps no-fill PAPER limit orders submitted instead of falsely failing', () => {
     const fill = resolvePaperFill({
       size: 10,

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { runResolutionCycle } from '@/lib/engine/resolution-poller';
+import { reconcileMarketResolution, runResolutionCycle } from '@/lib/engine/resolution-poller';
 import { getAccuracyMetrics } from '@/lib/engine/paper-bets';
 
 export async function GET() {
@@ -76,8 +76,10 @@ export async function GET() {
         impliedProb: d.impliedProb,
         actualOutcome: d.market.outcomes[0]?.result,
         correct: (() => {
+          const outcome = d.market.outcomes[0]?.result;
+          if (outcome === 'CANCELLED') return null;
           const predictedYes = (d.judgeProbability ?? 0) > 0.5;
-          const actualYes = d.market.outcomes[0]?.result === 'YES';
+          const actualYes = outcome === 'YES';
           return (predictedYes && actualYes) || (!predictedYes && !actualYes);
         })(),
         createdAt: d.createdAt,
@@ -97,34 +99,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'marketId and result required' }, { status: 400 });
     }
 
-    const existing = await db.outcome.findFirst({ where: { marketId } });
-    if (existing) {
-      return NextResponse.json({ error: 'Outcome already exists', outcome: existing }, { status: 409 });
+    const existing = await db.outcome.findMany({ where: { marketId }, orderBy: { resolvedAt: 'desc' }, take: 2 });
+    if (existing.length > 1) {
+      return NextResponse.json({ error: 'Duplicate outcomes detected for market', outcomes: existing }, { status: 409 });
+    }
+    const firstExisting = existing[0];
+    if (firstExisting) {
+      return NextResponse.json({ error: 'Outcome already exists', outcome: firstExisting }, { status: 409 });
     }
 
-    const outcome = await db.outcome.create({
-      data: {
-        marketId,
-        result,
-        resolvedProb: resolvedProb ?? null,
-      },
+    const reconciliation = await reconcileMarketResolution({
+      marketId,
+      outcome: result,
+      resolvedProb: resolvedProb ?? undefined,
+      source: 'MANUAL_OUTCOME_POST',
     });
 
-    await db.market.update({
-      where: { id: marketId },
-      data: { status: 'RESOLVED', resolutionTime: new Date() },
-    });
-
-    await db.auditLog.create({
-      data: {
-        action: 'MARKET_RESOLVED',
-        entityType: 'Market',
-        entityId: marketId,
-        details: `Market resolved as ${result}`,
-      },
-    });
-
-    return NextResponse.json(outcome, { status: 201 });
+    return NextResponse.json(reconciliation.outcomeRecord, { status: 201 });
   } catch (error) {
     return NextResponse.json({ error: 'Failed to create outcome' }, { status: 500 });
   }

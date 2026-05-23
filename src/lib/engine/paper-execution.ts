@@ -1,4 +1,5 @@
 import type { FillModel, FillModelInput } from '@/lib/types';
+import { computePositionSize } from '@/lib/engine/risk';
 
 export type PaperExecutionSide = 'YES' | 'NO';
 export type PaperDataSource = 'MOCK' | 'REAL';
@@ -33,12 +34,7 @@ export function resolvePaperExecutionSize(params: {
   if ((candidate == null || candidate <= 0) && params.edge != null && params.edge > 0) {
     const conf = params.confidence ?? 0.3;
     const unc = params.uncertainty ?? 0.5;
-    const riskFallback = (() => {
-      try {
-        const { computePositionSize } = require('./risk');
-        return computePositionSize(params.edge, conf, unc);
-      } catch { return 100; }
-    })();
+    const riskFallback = computePositionSize(params.edge, conf, unc);
     if (riskFallback > 0) return riskFallback;
     if (conf >= 0.1) return 100;
   }
@@ -130,6 +126,20 @@ export function resolvePaperFill(params: {
 } {
   const fillModel = normalizeFillModel(params.fillModel);
 
+  // HARD LIQUIDITY GATE: zero liquidity = no fill, regardless of fillModel or fillProb.
+  // Prevents fake fills on markets with no real orderbook depth.
+  // This check runs BEFORE all fillModel branches (DEMO_INSTANT, STRICT_LIMIT, etc.)
+  // to ensure zero-liquidity markets can never be filled.
+  if ((params.liquidity ?? 0) <= 0 && fillModel !== 'DEMO_INSTANT') {
+    return {
+      filledSize: 0,
+      avgFillPrice: 0,
+      remainingSize: params.size,
+      isFullyFilled: false,
+      lifecycleStatus: 'SUBMITTED',
+    };
+  }
+
   if (fillModel === 'DEMO_INSTANT') {
     // DEMO_INSTANT: full instant fill (only for demo mode)
     return {
@@ -216,10 +226,7 @@ export function resolvePaperFill(params: {
       };
     }
 
-    // Conservative fallback when partial book data exists but explicit fill probability is unavailable.
-    // Use liquidity when available; fall back to order size when liquidity is unknown but spread confirms real market.
-    const effectiveLiquidity = params.liquidity > 0 ? params.liquidity : Math.max(1, params.size * params.price * 100);
-    const fillRatio = Math.min(0.25, effectiveLiquidity / Math.max(1, params.size * params.price * 400));
+    const fillRatio = Math.min(0.25, params.liquidity / Math.max(1, params.size * params.price * 400));
     const filledSize = Math.round(params.size * fillRatio * 100) / 100;
     const slippage = params.price * Math.max(0.015, (1 - fillRatio) * 0.03);
     const avgFillPrice = filledSize > 0 ? params.price + slippage : 0;

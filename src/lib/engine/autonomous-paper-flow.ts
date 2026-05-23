@@ -282,7 +282,7 @@ export async function runAutonomousPaperFlowUntilOrder(
         await emit({ stage: 'TRIAGE', marketId: pick.marketId, message: `Triaging ${pick.title}` });
         const triage = await runTriageStage(pick.marketId, { onStage: (event) => emit({ ...event, marketId: pick.marketId }) });
         attempt.triageStatus = triage.triageStatus;
-        if (triage.triageResult.reason?.includes('defaulting to RELEVANT')) {
+        if (triage.triageResult.reason?.includes('defaulting to RELEVANT') || triage.triageResult.reason?.includes('ANALYSIS_DEGRADED')) {
           throw new Error(`Triage fallback forbidden: ${triage.triageResult.reason}`);
         }
         if (!triage.worthResearch) {

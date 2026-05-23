@@ -26,8 +26,10 @@ const TAIL_RISK_MAX_SEEKED = 3;
 
 // Absolute minimum confidence floors — cannot be overridden by DB settings.
 // Prevents zeroed strategy thresholds from bypassing all quality gates.
-const ABSOLUTE_MIN_BID_CONFIDENCE = 0.30;
-const ABSOLUTE_MIN_WATCH_CONFIDENCE = 0.20;
+const ABSOLUTE_MIN_BID_CONFIDENCE = 0.55;
+const ABSOLUTE_MIN_WATCH_CONFIDENCE = 0.35;
+const ABSOLUTE_MAX_UNCERTAINTY_THRESHOLD = 0.45;
+const ABSOLUTE_MIN_LIQUIDITY = 1;
 
 export function computeRisk(
   input: RiskEngineInput,
@@ -37,7 +39,7 @@ export function computeRisk(
     clusterOverlapCount?: number;
   },
 ): RiskEngineOutput {
-  const minLiquidity = input.minLiquidity ?? MIN_LIQUIDITY;
+  const minLiquidity = Math.max(input.minLiquidity ?? MIN_LIQUIDITY, ABSOLUTE_MIN_LIQUIDITY);
   const maxSpread = input.maxSpread ?? MAX_SPREAD;
   const maxDailyExposure = input.maxDailyExposure ?? MAX_DAILY_EXPOSURE;
   const maxCategoryExposure = input.maxCategoryExposure ?? MAX_CATEGORY_EXPOSURE;
@@ -52,7 +54,7 @@ export function computeRisk(
     input.watchConfidenceThreshold ?? WATCH_CONFIDENCE_THRESHOLD,
     ABSOLUTE_MIN_WATCH_CONFIDENCE,
   );
-  const maxUncertaintyThreshold = input.maxUncertaintyThreshold ?? MAX_UNCERTAINTY_THRESHOLD;
+  const maxUncertaintyThreshold = Math.min(input.maxUncertaintyThreshold ?? MAX_UNCERTAINTY_THRESHOLD, ABSOLUTE_MAX_UNCERTAINTY_THRESHOLD);
   const edge = Math.abs(input.judgeProbability - input.impliedProbability);
   const effectiveEdge = edge - input.fees - input.slippage;
 

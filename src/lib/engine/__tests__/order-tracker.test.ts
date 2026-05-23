@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { classifyOrderTerminalState, derivePositionStatusAfterFill } from '../order-tracker';
+import { classifyOrderTerminalState, derivePaperBetExecutionStatus, derivePositionStatusAfterFill } from '../order-tracker';
 
 describe('order tracker helpers', () => {
   it('classifies cancelled and expired terminal states', () => {
@@ -14,5 +14,13 @@ describe('order tracker helpers', () => {
     expect(derivePositionStatusAfterFill('PARTIALLY_FILLED')).toBe('OPEN');
     expect(derivePositionStatusAfterFill('CANCELLED')).toBeNull();
     expect(derivePositionStatusAfterFill('EXPIRED')).toBeNull();
+  });
+});
+
+
+describe('order tracker execution status mapping', () => {
+  it('maps cancelled and expired fills to terminal paper bet statuses', () => {
+    expect(derivePaperBetExecutionStatus({ lifecycleStatus: 'CANCELLED', filledSize: 0 })).toBe('CANCELLED');
+    expect(derivePaperBetExecutionStatus({ lifecycleStatus: 'EXPIRED', filledSize: 0 })).toBe('EXPIRED');
   });
 });

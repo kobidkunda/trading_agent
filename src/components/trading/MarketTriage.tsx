@@ -926,6 +926,7 @@ function triageBadge(status: TriageStatus) {
     RELEVANT: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
     IRRELEVANT: 'border-gray-500/30 bg-gray-500/10 text-gray-500',
     AMBIGUOUS: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
+    ANALYSIS_DEGRADED: 'border-red-500/30 bg-red-500/10 text-red-400',
   };
   return (
     <Badge className={cn('text-[10px]', styles[status])}>{status}</Badge>

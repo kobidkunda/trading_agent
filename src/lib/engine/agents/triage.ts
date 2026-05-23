@@ -4,10 +4,23 @@ import { DEFAULT_PROMPT_TEMPLATES } from '@/lib/constants';
 import { getStageRouting, getModelForStage } from '@/lib/engine/service-routing';
 
 export interface TriageOutput {
-  status: 'RELEVANT' | 'IRRELEVANT' | 'AMBIGUOUS';
+  status: 'RELEVANT' | 'IRRELEVANT' | 'AMBIGUOUS' | 'ANALYSIS_DEGRADED';
   reason: string;
   worthResearch: boolean;
   score: number;
+}
+
+export function isAnalysisDegradedReason(reason: string | null | undefined): boolean {
+  return typeof reason === 'string' && reason.includes('ANALYSIS_DEGRADED');
+}
+
+export function buildTriageFailureOutput(errorMsg: string): TriageOutput {
+  return {
+    status: 'ANALYSIS_DEGRADED',
+    reason: `ANALYSIS_DEGRADED: Triage LLM unavailable; NO_TRADE until triage recovers. ${errorMsg}`,
+    worthResearch: false,
+    score: 0,
+  };
 }
 
 export async function runTriageAgent(
@@ -50,12 +63,6 @@ export async function runTriageAgent(
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error(`[Triage] Failed for ${marketId}:`, errorMsg);
 
-    // Fallback: assume RELEVANT when LLM unavailable so pipeline can continue
-    return {
-      status: 'RELEVANT',
-      reason: `Triage LLM unavailable, defaulting to RELEVANT: ${errorMsg}`,
-      worthResearch: true,
-      score: 50,
-    };
+    return buildTriageFailureOutput(errorMsg);
   }
 }

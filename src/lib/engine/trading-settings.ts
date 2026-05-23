@@ -32,6 +32,9 @@ export function getEffectiveTradingConfig(input: EffectiveTradingConfigInput = {
   };
 
   const tradingOverrides = input.tradingConfig ?? {};
+  const scopedOverrides = input.strategySettings == null && input.tradingConfig == null && input.tradingMode == null
+    ? (_scopedConfigOverride ?? {})
+    : {};
   const merged = normalizeTradingConfig({
     ...fromStrategy,
     ...tradingOverrides,
@@ -39,7 +42,7 @@ export function getEffectiveTradingConfig(input: EffectiveTradingConfigInput = {
     enabledVenues: fromStrategy.enabledVenues,
     enabledCategories: fromStrategy.enabledCategories,
     mode: normalizeTradingMode(input.tradingMode ?? tradingOverrides.mode ?? undefined),
-    ...(_scopedConfigOverride ?? {}),
+    ...scopedOverrides,
   });
 
   setTradingMode(merged.mode);

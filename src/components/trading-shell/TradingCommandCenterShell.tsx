@@ -31,6 +31,7 @@ import {
   Cpu,
   ClipboardList,
   Wrench,
+  RotateCcw,
 } from 'lucide-react';
 import { useTradingStore } from '@/store/trading-store';
 import {
@@ -78,6 +79,7 @@ import { StrategyOptimizerDashboard } from '@/components/trading/StrategyOptimiz
 import { AppSettings } from '@/components/trading/AppSettings';
 import { LogsDashboard } from '@/components/trading/LogsDashboard';
 import { QdrantSetupWizard } from '@/components/trading/QdrantSetupWizard';
+import { ResetDashboard } from '@/components/trading/ResetDashboard';
 
 interface NavItem {
   id: PageView;
@@ -114,6 +116,7 @@ const NAV_ICONS: Record<PageView, React.ElementType> = {
   researchProvider: BookOpen,
   logs: ClipboardList,
   qdrantWizard: Wrench,
+  reset: RotateCcw,
 };
 
 const NAV_ITEMS: NavItem[] = TRADING_PAGES.map((page) => ({
@@ -131,8 +134,7 @@ function TopBar() {
     setGlobalKillSwitch,
     toggleSidebar,
   } = useTradingStore();
-  const [currentTime, setCurrentTime] = useState('');
-  const [mounted, setMounted] = useState(false);
+  const [currentTime, setCurrentTime] = useState(() => '');
   const killSwitchManualOverride = useRef(false);
 
   useEffect(() => {
@@ -146,7 +148,6 @@ function TopBar() {
         })
       );
     };
-    setMounted(true);
     tick();
     const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
@@ -260,7 +261,7 @@ function TopBar() {
 
         <div className="hidden items-center gap-1.5 text-xs text-gray-500 md:flex">
           <Clock className="h-3.5 w-3.5" />
-          <span className="font-mono tabular-nums">{mounted ? currentTime : ''}</span>
+          <span className="font-mono tabular-nums">{currentTime}</span>
         </div>
 
         <TooltipProvider>
@@ -441,6 +442,8 @@ function PageContent({ activePage }: { activePage: PageView }) {
       return <LogsDashboard />;
     case 'qdrantWizard':
       return <QdrantSetupWizardWrapper />;
+    case 'reset':
+      return <ResetDashboard />;
     default:
       return <SimulationLab />;
   }

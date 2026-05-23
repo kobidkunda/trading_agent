@@ -1,7 +1,7 @@
 import { db } from '@/lib/db';
 import { computeRisk, computePositionSize } from '@/lib/engine/risk';
 import { computeBiasAdjustedProb } from '@/lib/engine/bias-correction';
-import { runTriageAgent } from '@/lib/engine/agents/triage';
+import { buildTriageFailureOutput, isAnalysisDegradedReason, runTriageAgent } from '@/lib/engine/agents/triage';
 import { runDebateArena } from '@/lib/engine/debate-arena';
 import { searchSearXNG } from '@/lib/engine/research/search';
 import { extractContent } from '@/lib/engine/research/extract';
@@ -1286,8 +1286,8 @@ export async function runJudgeStage(
         failureReason: message,
       });
       judgeProbability = impliedProb;
-      judgeConfidence = 0.3;
-      judgeUncertainty = 0.7;
+      judgeConfidence = 0;
+      judgeUncertainty = 1;
     }
 
     if (debateResult) {
@@ -1705,7 +1705,7 @@ export async function runRiskStage(
         governance.maxDailyLoss > 0;
 
   const isLiveOrDemo = tradingConfig.mode === 'LIVE' || tradingConfig.mode === 'DEMO';
-  const requiresAPlusForExecution = isLiveOrDemo || governance.liveEnabled;
+  const requiresAPlusForExecution = tradingConfig.mode === 'PAPER' || isLiveOrDemo || governance.liveEnabled;
 
   const gatedRiskResult =
     oracleRiskLevel === 'BLOCK'

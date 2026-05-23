@@ -1,54 +1,48 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
-const getAccuracyMetricsMock = mock(async () => ({
-  totalBets: 1,
-  resolvedBets: 1,
-  pendingBets: 0,
-  aPlusResolvedBets: 0,
-  aPlusPendingBets: 0,
-  aPlusDirectionAccuracy: 0,
-  aPlusAvgBrierScore: 0,
-  aPlusTotalPnl: 0,
-  directionAccuracy: 100,
-  avgBrierScore: 0,
-  avgProbError: 0,
-  totalPnl: 0,
-  bidCount: 1,
-  bidCorrect: 1,
-  bidPnl: 0,
-  watchCount: 0,
-  watchCorrect: 0,
-  watchPnl: 0,
-  recentBets: [
-    {
-      id: 'paper-test-bet',
-      marketTitle: 'Test V2: Paper Orders should work in paper mode',
-      predictionType: 'BID',
-      predictedProb: 0.65,
-      predictedSide: 'YES',
-      impliedProb: 0.6,
-      actualOutcome: 'YES',
-      directionCorrect: true,
-      brierScore: 0,
-      pnl: 0,
-      createdAt: new Date('2026-05-19T00:00:00.000Z'),
-      resolvedAt: new Date('2026-05-19T00:00:00.000Z'),
+const paperBetFindManyMock = mock(async () => ([
+  {
+    id: 'paper-test-bet',
+    marketTitle: 'Test V2: Paper Orders should work in paper mode',
+    predictionType: 'BID',
+    predictedProb: 0.65,
+    predictedSide: 'YES',
+    impliedProb: 0.6,
+    edge: 0.05,
+    confidence: 0.8,
+    stake: 100,
+    entryPrice: 0.6,
+    executionStatus: 'FILLED',
+    actualOutcome: 'YES',
+    directionCorrect: true,
+    probError: 0,
+    brierScore: 0,
+    pnl: 0,
+    createdAt: new Date('2026-05-19T00:00:00.000Z'),
+    resolvedAt: new Date('2026-05-19T00:00:00.000Z'),
+    setupType: null,
+    aPlusStatus: null,
+    market: { title: 'Test V2: Paper Orders should work in paper mode' },
+  },
+]));
+
+mock.module('@/lib/db', () => ({
+  db: {
+    paperBet: {
+      findMany: paperBetFindManyMock,
+      findUnique: mock(async () => null),
+      update: mock(async () => null),
     },
-  ],
-}));
-
-mock.module('@/lib/engine/paper-bets', () => ({
-  getAccuracyMetrics: getAccuracyMetricsMock,
-  resolvePaperBet: mock(async () => ({ ok: true })),
-}));
-
-mock.module('@/lib/engine/resolution-poller', () => ({
-  runResolutionCycle: mock(async () => ({ ok: true })),
+    position: {
+      findMany: mock(async () => []),
+      update: mock(async () => null),
+    },
+  },
 }));
 
 describe('paper-bets route', () => {
   beforeEach(() => {
-    getAccuracyMetricsMock.mockClear();
+    paperBetFindManyMock.mockClear();
   });
 
   it('excludes paper-loop test market rows when metrics include them', async () => {

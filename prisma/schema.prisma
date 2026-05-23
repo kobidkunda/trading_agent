@@ -443,6 +443,8 @@ model Position {
   status        String   @default("OPEN") // OPEN, WATCH, CLOSED
   openedAt      DateTime @default(now())
   closedAt      DateTime?
+
+  @@index([marketId, side, status])
 }
 
 // ============ PAPER BETS (DRY-RUN TRACKING) ============
@@ -497,7 +499,7 @@ model PaperBet {
 
 model Outcome {
   id String @id @default(cuid())
-  marketId String
+  marketId String @unique
   market Market @relation(fields: [marketId], references: [id])
   result String // YES, NO, CANCELLED
   resolvedProb Float?

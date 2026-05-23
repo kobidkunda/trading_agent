@@ -7,9 +7,9 @@ const RESOLVED_PAPER_BET_STATUSES: PaperBetExecutionStatus[] = ['FILLED', 'PARTI
 export interface PaperBetScore {
   betId: string;
   marketId: string;
-  directionCorrect: boolean;
-  probError: number;
-  brierScore: number;
+  directionCorrect: boolean | null;
+  probError: number | null;
+  brierScore: number | null;
   pnl: number;
 }
 
@@ -66,9 +66,9 @@ export function scorePaperBet(
 ): Omit<PaperBetScore, 'betId' | 'marketId'> {
   if (actualOutcome === 'CANCELLED') {
     return {
-      directionCorrect: false,
-      probError: 1,
-      brierScore: 1,
+      directionCorrect: null,
+      probError: null,
+      brierScore: null,
       pnl: 0,
     };
   }
@@ -134,27 +134,26 @@ export async function resolveAllPaperBetsForMarket(marketId: string, actualOutco
     results.push(result);
   }
 
-  if (actualOutcome !== 'CANCELLED') {
-    const positions = await db.position.findMany({
-      where: { marketId, status: { in: ['OPEN', 'WATCH'] } },
-    });
+  const positions = await db.position.findMany({
+    where: { marketId, status: { in: ['OPEN', 'WATCH'] } },
+  });
 
-    for (const pos of positions) {
-      const actualBinary = actualOutcome === 'YES' ? 1 : 0;
-      const realizedPnl = pos.side === actualOutcome
+  for (const pos of positions) {
+    const realizedPnl = actualOutcome === 'CANCELLED'
+      ? 0
+      : pos.side === actualOutcome
         ? (pos.side === 'YES' ? (1 - pos.entryPrice) : pos.entryPrice) * pos.currentSize
         : (pos.side === 'YES' ? -pos.entryPrice : -(1 - pos.entryPrice)) * pos.currentSize;
 
-      await db.position.update({
-        where: { id: pos.id },
-        data: {
-          realizedPnl: Math.round(realizedPnl * 100) / 100,
-          unrealizedPnl: 0,
-          status: 'CLOSED',
-          closedAt: new Date(),
-        },
-      });
-    }
+    await db.position.update({
+      where: { id: pos.id },
+      data: {
+        realizedPnl: Math.round(realizedPnl * 100) / 100,
+        unrealizedPnl: 0,
+        status: 'CLOSED',
+        closedAt: new Date(),
+      },
+    });
   }
 
   return results;
@@ -213,6 +212,7 @@ export async function getAccuracyMetrics(limit: number = 100): Promise<AccuracyM
   });
 
   const resolved = bets.filter((b) => b.actualOutcome !== null && b.actualOutcome !== undefined);
+  const scoredResolved = resolved.filter((b) => b.actualOutcome !== 'CANCELLED');
   const pending = bets.filter((b) => b.actualOutcome === null || b.actualOutcome === undefined);
   const aPlusResolved = resolved.filter((b) => b.setupType === 'A_PLUS_BET' || b.aPlusStatus === 'PASSED');
   const aPlusPending = pending.filter((b) => b.setupType === 'A_PLUS_BET' || b.aPlusStatus === 'PASSED');
@@ -231,7 +231,7 @@ export async function getAccuracyMetrics(limit: number = 100): Promise<AccuracyM
   let watchCorrect = 0;
   let watchPnl = 0;
 
-  for (const b of resolved) {
+  for (const b of scoredResolved) {
     if (b.directionCorrect) directionCorrect++;
     totalBrier += b.brierScore ?? 0;
     totalProbError += b.probError ?? 0;

@@ -8,6 +8,8 @@ import {
   runRiskStage,
   runExecuteStage,
 } from '@/lib/engine/pipeline';
+import { isAnalysisDegradedReason } from '@/lib/engine/agents/triage';
+import { reconcileMarketResolution, runResolutionCycle } from '@/lib/engine/resolution-poller';
 import { getEffectiveTradingConfig } from '@/lib/engine/trading-settings';
 import { classifyOrderTerminalState, processPaperOrderFill } from '@/lib/engine/order-tracker';
 import type { ResearchDepth } from '@/lib/types';
@@ -694,7 +696,12 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
         }).catch(() => {});
       }
       // Chain: triage complete with worthResearch → enqueue STANDARD_RESEARCH
-      if (result.worthResearch === true) {
+      const triageReason = typeof (result as { triageResult?: { reason?: unknown } }).triageResult?.reason === 'string'
+        ? String((result as { triageResult?: { reason?: unknown } }).triageResult?.reason)
+        : '';
+      const analysisDegraded = String((result as { triageStatus?: unknown }).triageStatus ?? '') === 'ANALYSIS_DEGRADED'
+        || isAnalysisDegradedReason(triageReason);
+      if (result.worthResearch === true && !analysisDegraded) {
         const existingResearchJob = await db.job.findFirst({
           where: { type: { in: ['STANDARD_RESEARCH', 'RESEARCH_MARKET', 'RESEARCH'] }, status: { in: ['PENDING', 'RUNNING', 'RETRYING'] }, payload: { contains: marketId } },
         });
@@ -943,8 +950,28 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       return await processOrderTracking(data.marketId as string);
 
     case 'RESOLUTION_CHECK':
-    case 'SETTLE':
-      return { status: 'SETTLE_PENDING', marketId: data.marketId };
+    case 'SETTLE': {
+      const marketId = typeof data.marketId === 'string' ? data.marketId : undefined;
+      if (marketId) {
+        const existingOutcome = await db.outcome.findFirst({ where: { marketId } });
+        if (existingOutcome) {
+          const reconciled = await reconcileMarketResolution({
+            marketId,
+            outcome: existingOutcome.result as 'YES' | 'NO' | 'CANCELLED',
+            resolvedProb: existingOutcome.resolvedProb ?? undefined,
+            source: 'WORKER_RECONCILE',
+          });
+          return { status: 'SETTLED', marketId, ...reconciled };
+        }
+      }
+
+      const cycle = await runResolutionCycle();
+      return {
+        status: 'RESOLUTION_CYCLE_COMPLETED',
+        marketId: marketId ?? null,
+        ...cycle,
+      };
+    }
 
     case 'ORACLE_CHECK':
       return await processOracleCheck(data.marketId as string);
