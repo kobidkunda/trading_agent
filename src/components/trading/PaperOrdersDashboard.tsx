@@ -67,6 +67,9 @@ interface OrderRecord {
     title: string;
     venue: string;
     category: string;
+    status: string;
+    isResolved: boolean;
+    resolutionTime: string | null;
   } | null;
 }
 
@@ -74,6 +77,9 @@ interface OrdersResponse extends PaginatedResponse<OrderRecord> {
   meta?: {
     includeTest?: boolean;
     hiddenTestCount?: number;
+    lifecycleStatusCounts?: Partial<Record<LifecycleStatus, number>>;
+    openCount?: number;
+    filledCount?: number;
   };
 }
 
@@ -126,12 +132,44 @@ function formatPnl(val: number | null): string {
   return `${sign}${formatCurrency(val)}`;
 }
 
+function formatTentativeSettlement(value: string | null | undefined): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function deriveSettlementStatus(market: OrderRecord['market']): 'SETTLED' | 'DUE' | 'PENDING' {
+  if (market?.isResolved || market?.status === 'RESOLVED') return 'SETTLED';
+  if (!market?.resolutionTime) return 'PENDING';
+  const date = new Date(market.resolutionTime);
+  if (!Number.isNaN(date.getTime()) && date.getTime() <= Date.now()) return 'DUE';
+  return 'PENDING';
+}
+
+function settlementStatusBadge(status: 'SETTLED' | 'DUE' | 'PENDING') {
+  const styles = {
+    SETTLED: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
+    DUE: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
+    PENDING: 'border-gray-600/30 bg-gray-700/20 text-gray-400',
+  };
+  return (
+    <Badge variant="outline" className={cn('text-[10px]', styles[status])}>
+      {status === 'SETTLED' ? 'Done' : status === 'DUE' ? 'Due' : 'Not done'}
+    </Badge>
+  );
+}
+
 export function PaperOrdersDashboard() {
   const router = useRouter();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [includeTestOrders, setIncludeTestOrders] = useState(false);
   const [hiddenTestCount, setHiddenTestCount] = useState(0);
+  const [summaryCounts, setSummaryCounts] = useState<{
+    openCount: number;
+    filledCount: number;
+  } | null>(null);
 
   const {
     data: orders,
@@ -161,6 +199,10 @@ export function PaperOrdersDashboard() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json() as OrdersResponse;
       setHiddenTestCount(json.meta?.hiddenTestCount ?? 0);
+      setSummaryCounts({
+        openCount: json.meta?.openCount ?? 0,
+        filledCount: json.meta?.filledCount ?? 0,
+      });
       return json;
     },
     [search, statusFilter, includeTestOrders],
@@ -177,9 +219,12 @@ export function PaperOrdersDashboard() {
   const startIndex = total === 0 ? 0 : (page - 1) * limit + 1;
   const endIndex = Math.min(page * limit, total);
 
-  const filledCount = orders.filter((o) => o.lifecycleStatus === 'FILLED').length;
-  const openCount = orders.filter((o) => ['PLANNED', 'SUBMITTED', 'PARTIALLY_FILLED'].includes(o.lifecycleStatus)).length;
-  const totalPnl = orders.reduce((s, o) => s + (o.pnl ?? 0), 0);
+  const filledCount = summaryCounts?.filledCount ?? orders.filter((o) => o.lifecycleStatus === 'FILLED').length;
+  const openCount = summaryCounts?.openCount ?? orders.filter((o) => ['PLANNED', 'SUBMITTED', 'PARTIALLY_FILLED'].includes(o.lifecycleStatus)).length;
+  const realizedPnlOrders = orders.filter((o) => typeof o.pnl === 'number');
+  const totalPnl = realizedPnlOrders.length > 0
+    ? realizedPnlOrders.reduce((s, o) => s + (o.pnl ?? 0), 0)
+    : null;
 
   if (error) {
     return (
@@ -241,11 +286,14 @@ export function PaperOrdersDashboard() {
             <p className="mt-1 text-2xl font-bold tabular-nums text-emerald-400">{filledCount}</p>
           </CardContent>
         </Card>
-        <Card className={cn('border bg-gray-900', totalPnl >= 0 ? 'border-emerald-500/20' : 'border-red-500/20')}>
+        <Card className={cn(
+          'border bg-gray-900',
+          totalPnl === null ? 'border-gray-800' : totalPnl >= 0 ? 'border-emerald-500/20' : 'border-red-500/20',
+        )}>
           <CardContent className="p-4">
-            <p className="text-xs text-gray-500">Total PnL</p>
-            <p className={cn('mt-1 text-2xl font-bold tabular-nums', pnlColor(totalPnl))}>
-              {formatPnl(totalPnl)}
+            <p className="text-xs text-gray-500">Realized PnL</p>
+            <p className={cn('mt-1 text-2xl font-bold tabular-nums', totalPnl === null ? 'text-gray-500' : pnlColor(totalPnl))}>
+              {totalPnl === null ? '—' : formatPnl(totalPnl)}
             </p>
           </CardContent>
         </Card>
@@ -341,6 +389,8 @@ export function PaperOrdersDashboard() {
                         </span>
                       </TableHead>
                       <TableHead className="text-gray-500">Status</TableHead>
+                      <TableHead className="text-right text-gray-500">Tentative Settlement</TableHead>
+                      <TableHead className="text-right text-gray-500">Settlement Done</TableHead>
                       <TableHead className="text-right text-gray-500">Spread Cost</TableHead>
                       <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('pnl')}>
                         <span className="inline-flex items-center gap-1">
@@ -378,6 +428,14 @@ export function PaperOrdersDashboard() {
                           </span>
                         </TableCell>
                         <TableCell>{lifecycleBadge(o.lifecycleStatus)}</TableCell>
+                        <TableCell className="text-right">
+                          <span className="text-xs tabular-nums text-gray-400">
+                            {formatTentativeSettlement(o.market?.resolutionTime)}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {settlementStatusBadge(deriveSettlementStatus(o.market))}
+                        </TableCell>
                         <TableCell className="text-right">
                           <span className="text-xs tabular-nums text-gray-500">
                             {o.spreadCost !== null ? formatCurrency(o.spreadCost) : '—'}

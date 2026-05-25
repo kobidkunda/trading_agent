@@ -2,6 +2,118 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { orderbookEngine, type PriceLevel } from '@/lib/engine/orderbook-microstructure';
 import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
+import { Prisma } from '@prisma/client';
+
+type OrderbookDashboardRow = {
+  id: string;
+  marketId: string;
+  marketTitle: string | null;
+  venue: string | null;
+  category: string | null;
+  status: string | null;
+  isResolved: boolean | number | null;
+  resolutionTime: Date | number | string | null;
+  bestBid: number | null;
+  bestAsk: number | null;
+  spread: number | null;
+  bidDepth: number | null;
+  askDepth: number | null;
+  depthImbalance: number | null;
+  largeBidWall: number | null;
+  largeAskWall: number | null;
+  thinBookDanger: boolean | number | null;
+  priceImpact: number | null;
+  fillProbability: number | null;
+  capturedAt: Date | number | string;
+};
+
+function hasExecutableTwoSidedBook(row: {
+  bestBid: number | null;
+  bestAsk: number | null;
+  bidDepth: number | null;
+  askDepth: number | null;
+}) {
+  return row.bestBid != null &&
+    row.bestBid > 0 &&
+    row.bestAsk != null &&
+    row.bestAsk > 0 &&
+    row.bestAsk < 1 &&
+    row.bestAsk > row.bestBid &&
+    row.bidDepth != null &&
+    row.bidDepth > 0 &&
+    row.askDepth != null &&
+    row.askDepth > 0;
+}
+
+function isDegenerateBook(row: { bestBid: number | null; bestAsk: number | null; bidDepth: number | null; askDepth: number | null }) {
+  return !hasExecutableTwoSidedBook(row);
+}
+
+function normalizeCapturedAt(value: Date | number | string): Date {
+  if (value instanceof Date) return value;
+  const numeric = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(numeric) ? new Date(numeric) : new Date(value);
+}
+
+function deriveOrderbookMetrics(row: {
+  spread: number | null;
+  bidDepth: number | null;
+  askDepth: number | null;
+  depthImbalance?: number | null;
+  fillProbability?: number | null;
+  priceImpact?: number | null;
+}) {
+  const bidDepth = row.bidDepth ?? 0;
+  const askDepth = row.askDepth ?? 0;
+  const spread = row.spread ?? 0.05;
+  const hasDepth = bidDepth > 0 || askDepth > 0;
+  const analysis = hasDepth
+    ? orderbookEngine.analyze({
+        spread,
+        bidDepth,
+        askDepth,
+        orderSize: 1000,
+      })
+    : null;
+
+  return {
+    depthImbalance: row.depthImbalance ?? analysis?.depthImbalance?.imbalance ?? null,
+    fillProbability: row.fillProbability ?? analysis?.fillProbability ?? null,
+    priceImpact: row.priceImpact ?? analysis?.priceImpact ?? null,
+    thinBookDanger: analysis?.thinBookDanger ?? false,
+  };
+}
+
+function mapOrderbookRow(row: OrderbookDashboardRow) {
+  const executable = hasExecutableTwoSidedBook(row);
+  const degenerate = !executable;
+  const derived = executable ? deriveOrderbookMetrics(row) : null;
+  const isSettled = Boolean(row.isResolved) || row.status === 'RESOLVED';
+  return {
+    id: row.id,
+    marketId: row.marketId,
+    marketTitle: row.marketTitle ?? '',
+    venue: row.venue ?? '',
+    category: row.category ?? '',
+    settlementStatus: isSettled ? 'SETTLED' : 'PENDING',
+    tentativeSettlementAt: row.resolutionTime ? normalizeCapturedAt(row.resolutionTime) : null,
+    bestBid: row.bestBid == null || row.bestBid <= 0 ? null : row.bestBid,
+    bestAsk: row.bestAsk == null || row.bestAsk <= 0 || row.bestAsk >= 1 ? null : row.bestAsk,
+    spread: executable ? row.spread : null,
+    bidDepth: row.bidDepth,
+    askDepth: row.askDepth,
+    depthImbalance: executable ? derived?.depthImbalance ?? null : null,
+    largeBidWall: row.largeBidWall,
+    largeAskWall: row.largeAskWall,
+    thinBookDanger: degenerate ? true : Boolean(row.thinBookDanger || derived?.thinBookDanger),
+    thinBookWarning: degenerate ? true : Boolean(row.thinBookDanger || derived?.thinBookDanger),
+    priceImpact: executable ? derived?.priceImpact ?? null : null,
+    fillProbability: executable ? derived?.fillProbability ?? null : null,
+    capturedAt: normalizeCapturedAt(row.capturedAt),
+    lastUpdated: normalizeCapturedAt(row.capturedAt),
+    dataQuality: executable ? 'REAL_ORDERBOOK' : 'INCOMPLETE_ORDERBOOK',
+  };
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -10,46 +122,119 @@ export async function GET(request: NextRequest) {
     const pagination = parsePaginationParams(searchParams);
 
     if (!marketId) {
-      const [snapshots, total] = await Promise.all([
-        db.orderbookSnapshot.findMany({
-          orderBy: { capturedAt: 'desc' },
-          skip: (pagination.page - 1) * pagination.limit,
-          take: pagination.limit,
-          include: {
-            market: {
-              select: {
-                id: true,
-                title: true,
-                venue: true,
-                category: true,
-              },
-            },
-          },
-        }),
-        db.orderbookSnapshot.count(),
-      ]);
-      
-      const mapped = snapshots.map(s => ({
-        id: s.id,
-        marketId: s.marketId,
-        marketTitle: s.market?.title ?? '',
-        venue: s.market?.venue ?? '',
-        category: s.market?.category ?? '',
-        bestBid: s.bestBid,
-        bestAsk: s.bestAsk,
-        spread: s.spread,
-        bidDepth: s.bidDepth,
-        askDepth: s.askDepth,
-        depthImbalance: s.depthImbalance,
-        largeBidWall: s.largeBidWall,
-        largeAskWall: s.largeAskWall,
-        thinBookDanger: s.thinBookDanger,
-        thinBookWarning: s.thinBookDanger,
-        priceImpact: s.priceImpact,
-        fillProbability: s.fillProbability,
-        capturedAt: s.capturedAt,
-        lastUpdated: s.capturedAt,
-      }));
+      const search = pagination.search?.trim();
+      const sortMap: Record<string, Prisma.Sql> = {
+        capturedAt: Prisma.sql`capturedAt`,
+        spread: Prisma.sql`spread`,
+        bidDepth: Prisma.sql`bidDepth`,
+        askDepth: Prisma.sql`askDepth`,
+        depthImbalance: Prisma.sql`depthImbalance`,
+        fillProbability: Prisma.sql`fillProbability`,
+      };
+      const sortColumn = sortMap[pagination.sortBy ?? 'capturedAt'] ?? sortMap.capturedAt;
+      const sortDirection = pagination.sortOrder === 'asc' ? Prisma.sql`ASC` : Prisma.sql`DESC`;
+      const searchClause = search
+        ? Prisma.sql`where marketTitle like ${`%${search}%`} or venue like ${`%${search}%`} or category like ${`%${search}%`}`
+        : Prisma.empty;
+      const offset = (pagination.page - 1) * pagination.limit;
+
+      const rows = await db.$queryRaw<OrderbookDashboardRow[]>`
+        with ranked as (
+          select
+            o.id,
+            o.marketId,
+            m.title as marketTitle,
+            m.venue as venue,
+            m.category as category,
+            m.status as status,
+            m.isResolved as isResolved,
+            m.resolutionTime as resolutionTime,
+            o.bestBid,
+            o.bestAsk,
+            o.spread,
+            o.bidDepth,
+            o.askDepth,
+            o.depthImbalance,
+            o.largeBidWall,
+            o.largeAskWall,
+            o.thinBookDanger,
+            o.priceImpact,
+            o.fillProbability,
+            o.capturedAt,
+            row_number() over (
+              partition by o.marketId
+              order by
+                case
+                  when (o.bestBid is null or o.bestBid <= 0)
+                   and (o.bestAsk is null or o.bestAsk >= 1)
+                   and (o.bidDepth is null or o.bidDepth <= 0)
+                   and (o.askDepth is null or o.askDepth <= 0)
+                  then 1 else 0
+                end asc,
+                o.capturedAt desc
+            ) as rn
+          from OrderbookSnapshot o
+          left join Market m on m.id = o.marketId
+          where m.status = 'ACTIVE'
+            and m.isActive = true
+            and not (
+              lower(m.title) glob 'yes *,yes *'
+              or lower(m.title) glob 'yes *,no *'
+              or lower(m.title) glob 'no *,yes *'
+              or lower(m.title) glob 'no *,no *'
+            )
+        ),
+        latest as (
+          select * from ranked where rn = 1
+        )
+        select * from latest
+        ${searchClause}
+        order by ${sortColumn} ${sortDirection}
+        limit ${pagination.limit} offset ${offset}
+      `;
+
+      const totalRows = await db.$queryRaw<Array<{ total: bigint | number }>>`
+        with ranked as (
+          select
+            o.marketId,
+            m.title as marketTitle,
+            m.venue as venue,
+            m.category as category,
+            m.status as status,
+            m.isResolved as isResolved,
+            m.resolutionTime as resolutionTime,
+            row_number() over (
+              partition by o.marketId
+              order by
+                case
+                  when (o.bestBid is null or o.bestBid <= 0)
+                   and (o.bestAsk is null or o.bestAsk >= 1)
+                   and (o.bidDepth is null or o.bidDepth <= 0)
+                   and (o.askDepth is null or o.askDepth <= 0)
+                  then 1 else 0
+                end asc,
+                o.capturedAt desc
+            ) as rn
+          from OrderbookSnapshot o
+          left join Market m on m.id = o.marketId
+          where m.status = 'ACTIVE'
+            and m.isActive = true
+            and not (
+              lower(m.title) glob 'yes *,yes *'
+              or lower(m.title) glob 'yes *,no *'
+              or lower(m.title) glob 'no *,yes *'
+              or lower(m.title) glob 'no *,no *'
+            )
+        ),
+        latest as (
+          select * from ranked where rn = 1
+        )
+        select count(*) as total from latest
+        ${searchClause}
+      `;
+
+      const total = Number(totalRows[0]?.total ?? 0);
+      const mapped = rows.map(mapOrderbookRow);
       
       return NextResponse.json(buildPaginatedResponse(mapped, total, pagination));
     }
@@ -70,6 +255,8 @@ export async function GET(request: NextRequest) {
             latestSpread: true,
             latestLiquidity: true,
             lastSnapshotAt: true,
+            isResolved: true,
+            resolutionTime: true,
           },
         },
       },
@@ -117,44 +304,54 @@ export async function GET(request: NextRequest) {
       depthDecay: snapshot.depthDecay ?? undefined,
     });
 
+    const executableSnapshot = hasExecutableTwoSidedBook(snapshot);
+    const derivedSnapshot = executableSnapshot ? deriveOrderbookMetrics(snapshot) : null;
+    const mapRecentSnapshot = (item: typeof recentSnapshots[number]) => {
+      const executable = hasExecutableTwoSidedBook(item);
+      const derived = executable ? deriveOrderbookMetrics(item) : null;
+      return {
+        id: item.id,
+        capturedAt: item.capturedAt,
+        bestBid: item.bestBid == null || item.bestBid <= 0 ? null : item.bestBid,
+        bestAsk: item.bestAsk == null || item.bestAsk <= 0 || item.bestAsk >= 1 ? null : item.bestAsk,
+        spread: executable ? item.spread : null,
+        bidDepth: item.bidDepth,
+        askDepth: item.askDepth,
+        depthImbalance: executable ? derived?.depthImbalance ?? null : null,
+        thinBookDanger: !executable || item.thinBookDanger || Boolean(derived?.thinBookDanger),
+        largeBidWall: item.largeBidWall,
+        largeAskWall: item.largeAskWall,
+        fillProbability: executable ? derived?.fillProbability ?? null : null,
+        recentMovement: item.recentMovement,
+        depthDecay: item.depthDecay,
+        dataQuality: executable ? 'REAL_ORDERBOOK' : 'INCOMPLETE_ORDERBOOK',
+      };
+    };
+
     return NextResponse.json({
       market: snapshot.market,
       snapshot: {
         id: snapshot.id,
         marketId: snapshot.marketId,
         orderbookSource: snapshot.orderbookSource,
-        spreadSource: snapshot.spreadSource,
-        bestBid: snapshot.bestBid,
-        bestAsk: snapshot.bestAsk,
-        spread: snapshot.spread,
+        spreadSource: executableSnapshot ? snapshot.spreadSource : 'INCOMPLETE_ORDERBOOK',
+        bestBid: snapshot.bestBid == null || snapshot.bestBid <= 0 ? null : snapshot.bestBid,
+        bestAsk: snapshot.bestAsk == null || snapshot.bestAsk <= 0 || snapshot.bestAsk >= 1 ? null : snapshot.bestAsk,
+        spread: executableSnapshot ? snapshot.spread : null,
         bidDepth: snapshot.bidDepth,
         askDepth: snapshot.askDepth,
-        depthImbalance: snapshot.depthImbalance,
+        depthImbalance: executableSnapshot ? derivedSnapshot?.depthImbalance ?? null : null,
         largeBidWall: snapshot.largeBidWall,
         largeAskWall: snapshot.largeAskWall,
-        thinBookDanger: snapshot.thinBookDanger,
-        priceImpact: snapshot.priceImpact,
-        fillProbability: snapshot.fillProbability,
+        thinBookDanger: !executableSnapshot || snapshot.thinBookDanger || Boolean(derivedSnapshot?.thinBookDanger),
+        priceImpact: executableSnapshot ? derivedSnapshot?.priceImpact ?? null : null,
+        fillProbability: executableSnapshot ? derivedSnapshot?.fillProbability ?? null : null,
         recentMovement: snapshot.recentMovement,
         depthDecay: snapshot.depthDecay,
         capturedAt: snapshot.capturedAt,
+        dataQuality: executableSnapshot ? 'REAL_ORDERBOOK' : 'INCOMPLETE_ORDERBOOK',
       },
-      recentSnapshots: recentSnapshots.map((item) => ({
-        id: item.id,
-        capturedAt: item.capturedAt,
-        bestBid: item.bestBid,
-        bestAsk: item.bestAsk,
-        spread: item.spread,
-        bidDepth: item.bidDepth,
-        askDepth: item.askDepth,
-        depthImbalance: item.depthImbalance,
-        thinBookDanger: item.thinBookDanger,
-        largeBidWall: item.largeBidWall,
-        largeAskWall: item.largeAskWall,
-        fillProbability: item.fillProbability,
-        recentMovement: item.recentMovement,
-        depthDecay: item.depthDecay,
-      })),
+      recentSnapshots: recentSnapshots.map(mapRecentSnapshot),
       analysis,
     });
   } catch (error) {

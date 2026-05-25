@@ -52,17 +52,32 @@ export async function GET(request: NextRequest) {
     }
 
     const sortField = pagination.sortBy || 'createdAt';
-    const [data, total, hiddenTestCount] = await Promise.all([
+    const [data, total, lifecycleCounts, hiddenTestCount] = await Promise.all([
       db.order.findMany({
         where,
         orderBy: { [sortField]: pagination.sortOrder || 'desc' },
         skip: (pagination.page - 1) * pagination.limit,
         take: pagination.limit,
         include: {
-          market: { select: { id: true, title: true, venue: true, category: true } },
+          market: {
+            select: {
+              id: true,
+              title: true,
+              venue: true,
+              category: true,
+              status: true,
+              isResolved: true,
+              resolutionTime: true,
+            },
+          },
         },
       }),
       db.order.count({ where }),
+      db.order.groupBy({
+        by: ['lifecycleStatus'],
+        where,
+        _count: { _all: true },
+      }),
       includeTest
         ? Promise.resolve(0)
         : db.order.count({
@@ -79,14 +94,30 @@ export async function GET(request: NextRequest) {
           }),
     ]);
 
+    const lifecycleStatusCounts = lifecycleCounts.reduce<Record<string, number>>((acc, row) => {
+      acc[row.lifecycleStatus] = row._count._all;
+      return acc;
+    }, {});
+    const openCount = [
+      OrderLifecycle.PLANNED,
+      OrderLifecycle.SUBMITTED,
+      OrderLifecycle.PARTIALLY_FILLED,
+    ].reduce((sum, status) => sum + (lifecycleStatusCounts[status] ?? 0), 0);
+
+    const payload = buildPaginatedResponse(data, total, pagination);
     return NextResponse.json({
-      ...buildPaginatedResponse(data, total, pagination),
+      ...payload,
+      orders: data,
       meta: {
         includeTest,
         hiddenTestCount,
+        lifecycleStatusCounts,
+        openCount,
+        filledCount: lifecycleStatusCounts[OrderLifecycle.FILLED] ?? 0,
       },
     });
   } catch (error) {
+    console.error('[Orders API] GET error:', error);
     return NextResponse.json({ error: 'Failed to fetch orders' }, { status: 500 });
   }
 }

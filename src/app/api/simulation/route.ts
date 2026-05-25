@@ -24,6 +24,11 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const action = body.action as string;
 
+    if (action === 'stop') {
+      const newState = stopSimulation();
+      return NextResponse.json(newState);
+    }
+
     const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
       db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
       db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
@@ -50,11 +55,6 @@ export async function POST(request: NextRequest) {
         ...(body.config.maxPortfolioExposure != null ? { maxPortfolioExposure: body.config.maxPortfolioExposure } : {}),
       } : undefined;
       const newState = await startSimulation(config);
-      return NextResponse.json(newState);
-    }
-
-    if (action === 'stop') {
-      const newState = stopSimulation();
       return NextResponse.json(newState);
     }
 

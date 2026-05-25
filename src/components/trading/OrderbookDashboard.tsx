@@ -46,17 +46,20 @@ interface OrderbookMarket {
   marketId: string;
   marketTitle: string;
   venue: string;
-  bestBid: number;
-  bestAsk: number;
-  spread: number;
-  bidDepth: number;
-  askDepth: number;
-  depthImbalance: number;
+  bestBid: number | null;
+  bestAsk: number | null;
+  spread: number | null;
+  bidDepth: number | null;
+  askDepth: number | null;
+  depthImbalance: number | null;
   largeBidWall: number | null;
   largeAskWall: number | null;
   fillProbability: number | null;
   thinBookWarning: boolean;
+  dataQuality?: string;
   lastUpdated: string;
+  tentativeSettlementAt: string | null;
+  settlementStatus: 'SETTLED' | 'DUE' | 'PENDING';
 }
 
 interface OrderbookLevel {
@@ -82,6 +85,8 @@ interface OrderbookDetail {
     latestSpread: number | null;
     latestLiquidity: number | null;
     lastSnapshotAt: string | null;
+    isResolved: boolean;
+    resolutionTime: string | null;
   } | null;
   snapshot: {
     id: string;
@@ -102,6 +107,7 @@ interface OrderbookDetail {
     recentMovement: number | null;
     depthDecay: number | null;
     capturedAt: string;
+    dataQuality?: string;
   };
   recentSnapshots: Array<{
     id: string;
@@ -154,6 +160,13 @@ function formatPctNullable(value: number | null | undefined): string {
   return formatPct(value);
 }
 
+function formatWholePctNullable(value: number | null | undefined): string {
+  if (typeof value !== 'number') return '—';
+  const pct = value * 100;
+  if (pct > 0 && pct < 1) return '<1%';
+  return `${pct.toFixed(0)}%`;
+}
+
 function formatPriceNullable(value: number | null | undefined): string {
   if (typeof value !== 'number') return '—';
   return formatPrice(value);
@@ -170,11 +183,49 @@ function formatSignedPct(value: number | null | undefined): string {
   return `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
 }
 
+function formatTentativeSettlement(value: string | null | undefined): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function deriveSettlementStatus(input: {
+  settlementStatus?: string | null;
+  isResolved?: boolean | null;
+  status?: string | null;
+  resolutionTime?: string | null;
+}): 'SETTLED' | 'DUE' | 'PENDING' {
+  if (input.settlementStatus === 'SETTLED' || input.isResolved || input.status === 'RESOLVED') return 'SETTLED';
+  if (!input.resolutionTime) return 'PENDING';
+  const date = new Date(input.resolutionTime);
+  if (!Number.isNaN(date.getTime()) && date.getTime() <= Date.now()) return 'DUE';
+  return 'PENDING';
+}
+
+function settlementStatusBadge(status: 'SETTLED' | 'DUE' | 'PENDING') {
+  const styles = {
+    SETTLED: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
+    DUE: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
+    PENDING: 'border-gray-600/30 bg-gray-700/20 text-gray-400',
+  };
+  return (
+    <Badge variant="outline" className={cn('text-[10px]', styles[status])}>
+      {status === 'SETTLED' ? 'Done' : status === 'DUE' ? 'Due' : 'Not done'}
+    </Badge>
+  );
+}
+
 function spreadColor(spread: number): string {
   if (spread <= 0.01) return 'text-emerald-400';
   if (spread <= 0.03) return 'text-cyan-400';
   if (spread <= 0.05) return 'text-amber-400';
   return 'text-red-400';
+}
+
+function spreadColorNullable(spread: number | null | undefined): string {
+  if (typeof spread !== 'number') return 'text-gray-500';
+  return spreadColor(spread);
 }
 
 function imbalanceColor(imbalance: number): string {
@@ -247,17 +298,26 @@ export function OrderbookDashboard() {
         marketId: String(s.marketId ?? ''),
         marketTitle: String(s.marketTitle ?? s.market?.title ?? s.title ?? ''),
         venue: String(s.venue ?? s.market?.venue ?? ''),
-        bestBid: Number(s.bestBid ?? 0),
-        bestAsk: Number(s.bestAsk ?? 0),
-        spread: Number(s.spread ?? 0),
-        bidDepth: Number(s.bidDepth ?? 0),
-        askDepth: Number(s.askDepth ?? 0),
-        depthImbalance: Number(s.depthImbalance ?? 0),
+        // Use null for degenerate 0/$1 books — only trust real positive values under $1
+        bestBid: (s.bestBid != null && Number(s.bestBid) > 0) ? Number(s.bestBid) : null,
+        bestAsk: (s.bestAsk != null && Number(s.bestAsk) > 0 && Number(s.bestAsk) < 1) ? Number(s.bestAsk) : null,
+        spread: s.spread != null ? Number(s.spread) : null,
+        bidDepth: s.bidDepth != null ? Number(s.bidDepth) : null,
+        askDepth: s.askDepth != null ? Number(s.askDepth) : null,
+        depthImbalance: s.depthImbalance != null ? Number(s.depthImbalance) : null,
         largeBidWall: s.largeBidWall != null ? Number(s.largeBidWall) : null,
         largeAskWall: s.largeAskWall != null ? Number(s.largeAskWall) : null,
         fillProbability: s.fillProbability != null ? Number(s.fillProbability) : null,
         thinBookWarning: Boolean(s.thinBookWarning ?? s.thinBookDanger ?? false),
+        dataQuality: String(s.dataQuality ?? ''),
         lastUpdated: String(s.lastUpdated ?? s.capturedAt ?? ''),
+        tentativeSettlementAt: s.tentativeSettlementAt ? String(s.tentativeSettlementAt) : (s.resolutionTime ? String(s.resolutionTime) : null),
+        settlementStatus: deriveSettlementStatus({
+          settlementStatus: s.settlementStatus,
+          isResolved: Boolean(s.isResolved ?? s.market?.isResolved ?? false),
+          status: s.status ?? s.market?.status,
+          resolutionTime: s.tentativeSettlementAt ?? s.resolutionTime ?? null,
+        }),
       }));
       return { ...raw, data: mapped };
     },
@@ -372,7 +432,10 @@ export function OrderbookDashboard() {
   const thinBookCount = markets.filter((m) => m.thinBookWarning).length;
   const whaleWallCount = markets.filter((m) => m.largeBidWall || m.largeAskWall).length;
   const avgSpread = markets.length > 0
-    ? markets.reduce((sum, m) => sum + m.spread, 0) / markets.length
+    ? (() => {
+        const spreads = markets.map((m) => m.spread).filter((value): value is number => typeof value === 'number');
+        return spreads.length > 0 ? spreads.reduce((sum, value) => sum + value, 0) / spreads.length : null;
+      })()
     : 0;
 
   return (
@@ -416,8 +479,8 @@ export function OrderbookDashboard() {
         <Card className="border-cyan-500/20 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Avg Spread</p>
-            <p className={cn('mt-1 text-2xl font-bold tabular-nums', spreadColor(avgSpread))}>
-              {formatPct(avgSpread)}
+            <p className={cn('mt-1 text-2xl font-bold tabular-nums', spreadColorNullable(avgSpread))}>
+              {formatPctNullable(avgSpread)}
             </p>
           </CardContent>
         </Card>
@@ -455,7 +518,7 @@ export function OrderbookDashboard() {
           ) : (
             <>
               <p className="px-6 pb-2 text-xs text-gray-600">
-                Showing {((page - 1) * limit) + 1}\u2013{Math.min(page * limit, total)} of {total}
+                Showing {((page - 1) * limit) + 1}&ndash;{Math.min(page * limit, total)} of {total}
               </p>
               <div className="max-h-[600px] overflow-y-auto">
                 <Table>
@@ -463,6 +526,8 @@ export function OrderbookDashboard() {
                     <TableRow className="border-gray-800 hover:bg-transparent">
                       <TableHead className="text-gray-500">Market</TableHead>
                       <TableHead className="text-gray-500">Venue</TableHead>
+                      <TableHead className="text-right text-gray-500">Tentative Settlement</TableHead>
+                      <TableHead className="text-right text-gray-500">Settlement Done</TableHead>
                       <TableHead className="text-right text-gray-500">Best Bid</TableHead>
                       <TableHead className="text-right text-gray-500">Best Ask</TableHead>
                       <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('spread')}>
@@ -484,17 +549,19 @@ export function OrderbookDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {markets.map((m) => {
-                      const gauge = fillProbGauge(m.fillProbability);
-                      const isSelected = m.marketId === selectedMarketId;
-                      return (
+	                    {markets.map((m) => {
+	                      const gauge = fillProbGauge(m.fillProbability);
+	                      const isSelected = m.marketId === selectedMarketId;
+	                      const missingBook = m.dataQuality === 'MISSING_ORDERBOOK' || m.dataQuality === 'INCOMPLETE_ORDERBOOK' || (m.bestBid == null && m.bestAsk == null && m.fillProbability == null);
+	                      return (
                         <TableRow
                           key={m.id}
                           className={cn(
-                            'cursor-pointer border-gray-800 transition-colors hover:bg-gray-800/50',
-                            isSelected && 'bg-cyan-500/10 ring-1 ring-inset ring-cyan-500/30',
-                            m.thinBookWarning && 'bg-red-500/5'
-                          )}
+	                            'cursor-pointer border-gray-800 transition-colors hover:bg-gray-800/50',
+	                            isSelected && 'bg-cyan-500/10 ring-1 ring-inset ring-cyan-500/30',
+	                            m.thinBookWarning && 'bg-red-500/5',
+	                            missingBook && 'opacity-75'
+	                          )}
                           onClick={() => setSelectedMarketId(m.marketId)}
                         >
                           <TableCell>
@@ -505,51 +572,64 @@ export function OrderbookDashboard() {
                                 event.stopPropagation();
                                 openMarketDetail(m.marketId);
                               }}
-                            >
-                              {m.marketTitle}
-                            </button>
+	                            >
+	                              {m.marketTitle}
+	                            </button>
+	                            {missingBook && (
+	                              <p className="mt-1 text-[10px] text-amber-400">No executable book captured</p>
+	                            )}
                           </TableCell>
                           <TableCell>{venueBadge(m.venue)}</TableCell>
                           <TableCell className="text-right">
-                            <span className="text-xs tabular-nums text-emerald-400">{formatPrice(m.bestBid)}</span>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <span className="text-xs tabular-nums text-red-400">{formatPrice(m.bestAsk)}</span>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <span className={cn('text-xs font-medium tabular-nums', spreadColor(m.spread))}>
-                              {formatPct(m.spread)}
+                            <span className="text-xs tabular-nums text-gray-400">
+                              {formatTentativeSettlement(m.tentativeSettlementAt)}
                             </span>
                           </TableCell>
                           <TableCell className="text-right">
-                            <span className="text-xs tabular-nums text-gray-300">{formatDepth(m.bidDepth)}</span>
+                            {settlementStatusBadge(m.settlementStatus)}
                           </TableCell>
                           <TableCell className="text-right">
-                            <span className="text-xs tabular-nums text-gray-300">{formatDepth(m.askDepth)}</span>
+                            <span className="text-xs tabular-nums text-emerald-400">{formatPriceNullable(m.bestBid)}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs tabular-nums text-red-400">{formatPriceNullable(m.bestAsk)}</span>
+                          </TableCell>
+	                          <TableCell className="text-right">
+	                            <span className={cn('text-xs font-medium tabular-nums', spreadColorNullable(m.spread))}>
+	                              {missingBook ? '—' : formatPctNullable(m.spread)}
+	                            </span>
+	                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs tabular-nums text-gray-300">{formatDepthNullable(m.bidDepth)}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs tabular-nums text-gray-300">{formatDepthNullable(m.askDepth)}</span>
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex items-center justify-end gap-1">
-                              {m.depthImbalance > 0.1 ? (
+                              {(m.depthImbalance ?? 0) > 0.1 ? (
                                 <TrendingUp className="h-3 w-3 text-emerald-400" />
-                              ) : m.depthImbalance < -0.1 ? (
+                              ) : (m.depthImbalance ?? 0) < -0.1 ? (
                                 <TrendingDown className="h-3 w-3 text-red-400" />
                               ) : null}
-                              <span className={cn('text-xs tabular-nums', imbalanceColor(m.depthImbalance))}>
-                                {m.depthImbalance > 0 ? '+' : ''}{(m.depthImbalance * 100).toFixed(0)}%
+                              <span className={cn('text-xs tabular-nums', typeof m.depthImbalance === 'number' ? imbalanceColor(m.depthImbalance) : 'text-gray-500')}>
+                                {typeof m.depthImbalance === 'number' ? `${m.depthImbalance > 0 ? '+' : ''}${(m.depthImbalance * 100).toFixed(0)}%` : '—'}
                               </span>
                             </div>
                           </TableCell>
-                          <TableCell className="w-28">
-                            <div className="mx-auto h-2 w-20 overflow-hidden rounded-full bg-gray-800">
-                              <div
-                                className={cn('h-full rounded-full transition-all', gauge.color)}
-                                style={{ width: gauge.width }}
-                              />
-                            </div>
-                            <p className="mt-1 text-center text-[10px] text-gray-500">
-                              {m.fillProbability !== null ? `${(m.fillProbability * 100).toFixed(0)}%` : '\u2014'}
-                            </p>
-                          </TableCell>
+	                          <TableCell className="w-28">
+	                            {!missingBook && (
+	                              <div className="mx-auto h-2 w-20 overflow-hidden rounded-full bg-gray-800">
+	                                <div
+	                                  className={cn('h-full rounded-full transition-all', gauge.color)}
+	                                  style={{ width: gauge.width }}
+	                                />
+	                              </div>
+	                            )}
+	                            <p className="mt-1 text-center text-[10px] text-gray-500">
+	                              {!missingBook ? formatWholePctNullable(m.fillProbability) : '\u2014'}
+	                            </p>
+	                          </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-1">
                               {m.thinBookWarning && (
@@ -563,7 +643,7 @@ export function OrderbookDashboard() {
                                 </span>
                               )}
                               {!m.thinBookWarning && !m.largeBidWall && !m.largeAskWall && (
-                                <span className="text-xs text-gray-600">\u2014</span>
+                                <span className="text-xs text-gray-600">&mdash;</span>
                               )}
                             </div>
                           </TableCell>
@@ -674,6 +754,13 @@ export function OrderbookDashboard() {
                           <Clock3 className="h-3.5 w-3.5" />
                           Snapshot: {new Date(detail.snapshot.capturedAt).toLocaleString()}
                         </span>
+                        <span className="inline-flex items-center gap-1">
+                          <Clock3 className="h-3.5 w-3.5" />
+                          Tentative settlement: {formatTentativeSettlement(detail.market?.resolutionTime)}
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          Settlement done: {settlementStatusBadge(deriveSettlementStatus(detail.market ?? {}))}
+                        </span>
                       </div>
                     </div>
                     <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-4 py-3 text-right">
@@ -699,7 +786,7 @@ export function OrderbookDashboard() {
                     </div>
                     <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
                       <p className="text-[11px] uppercase tracking-[0.18em] text-amber-300/70">Spread</p>
-                      <p className={cn('mt-2 text-2xl font-semibold', spreadColor(detail.snapshot.spread ?? 0))}>
+                      <p className={cn('mt-2 text-2xl font-semibold', spreadColorNullable(detail.snapshot.spread))}>
                         {formatPctNullable(detail.snapshot.spread)}
                       </p>
                       <p className="mt-1 text-xs text-amber-200/60">{detail.snapshot.spreadSource ?? 'spread source unknown'}</p>
@@ -764,7 +851,7 @@ export function OrderbookDashboard() {
                           <div className="text-gray-400">{new Date(item.capturedAt).toLocaleTimeString()}</div>
                           <div className="text-emerald-300">{formatPriceNullable(item.bestBid)}</div>
                           <div className="text-red-300">{formatPriceNullable(item.bestAsk)}</div>
-                          <div className={spreadColor(item.spread ?? 0)}>{formatPctNullable(item.spread)}</div>
+                          <div className={spreadColorNullable(item.spread)}>{formatPctNullable(item.spread)}</div>
                           <div className={cn((item.depthImbalance ?? 0) > 0 ? 'text-emerald-300' : 'text-red-300')}>
                             {formatSignedPct(item.depthImbalance)}
                           </div>
@@ -833,7 +920,7 @@ export function OrderbookDashboard() {
                             {formatDepth(m.largeBidWall)}
                           </Badge>
                         ) : (
-                          <span className="text-xs text-gray-600">\u2014</span>
+                          <span className="text-xs text-gray-600">&mdash;</span>
                         )}
                       </TableCell>
                       <TableCell className="text-right">
@@ -842,7 +929,7 @@ export function OrderbookDashboard() {
                             {formatDepth(m.largeAskWall)}
                           </Badge>
                         ) : (
-                          <span className="text-xs text-gray-600">\u2014</span>
+                          <span className="text-xs text-gray-600">&mdash;</span>
                         )}
                       </TableCell>
                     </TableRow>
