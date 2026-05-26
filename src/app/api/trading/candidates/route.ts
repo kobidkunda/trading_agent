@@ -4,6 +4,19 @@ import { Prisma } from '@prisma/client';
 import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
 import { parsePaginationParams, buildPaginatedResponse } from '@/lib/types';
 
+function parseCriteriaList(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => String(item)).filter(Boolean);
+    }
+  } catch {
+    // Older rows may be semicolon-delimited.
+  }
+  return value.split(';').map((item) => item.trim()).filter(Boolean);
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -35,6 +48,10 @@ export async function GET(request: NextRequest) {
     if (excludeExecuted) {
       where.stage = { notIn: ['EXECUTED', 'EXECUTION_PENDING'] };
     }
+    const marketWhere: Prisma.MarketWhereInput = {
+      status: 'ACTIVE',
+      isActive: true,
+    };
 
     const marketFilters: Prisma.MarketWhereInput[] = [];
     if (pagination.search) {
@@ -75,18 +92,21 @@ export async function GET(request: NextRequest) {
     });
 
     if (tradingConfig.mode !== 'DEMO') {
-      marketFilters.push({
-        NOT: {
-          OR: [
-            { externalId: { startsWith: 'live_' } },
-            { externalId: { startsWith: 'sim_' } },
-          ],
-        },
-      });
+      marketWhere.NOT = {
+        OR: [
+          { externalId: { startsWith: 'live_' } },
+          { externalId: { startsWith: 'sim_' } },
+          { title: { startsWith: 'yes ' } },
+          { title: { startsWith: 'no ' } },
+          { title: { contains: ',yes ' } },
+          { title: { contains: ',no ' } },
+        ],
+      };
     }
     if (marketFilters.length > 0) {
-      where.market = marketFilters.length === 1 ? marketFilters[0] : { AND: marketFilters };
+      marketWhere.AND = marketFilters;
     }
+    where.market = marketWhere;
 
     const [totalCount, candidates] = await Promise.all([
       db.tradeCandidate.count({ where }),
@@ -112,7 +132,12 @@ export async function GET(request: NextRequest) {
 
     const enriched = candidates.map(c => ({
       ...c,
-      riskFlags: (c.rejectedCriteria ? c.rejectedCriteria.split(';').filter(Boolean) : []) as string[],
+      marketTitle: c.market?.title ?? null,
+      venue: c.market?.venue ?? null,
+      category: c.market?.category ?? null,
+      riskFlags: parseCriteriaList(c.rejectedCriteria),
+      acceptedCriteriaList: parseCriteriaList(c.acceptedCriteria),
+      rejectedCriteriaList: parseCriteriaList(c.rejectedCriteria),
       modelDisagreement: ((c.contradictionPenalty ?? 0) + (c.uncertaintyPenalty ?? 0)) > 0.5 ? 0.4 : 0,
     }));
 

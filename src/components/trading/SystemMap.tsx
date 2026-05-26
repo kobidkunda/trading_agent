@@ -75,7 +75,7 @@ const PIPELINE_STAGES: PipelineStageInfo[] = [
 const SERVICE_DEFS = [
   { id: 'llm', label: 'LLM Provider', url: '', icon: Cpu, color: 'text-blue-400', borderColor: 'border-blue-500/40', desc: 'All agent LLM calls (triage, bull, bear, contradiction, judge)' },
   { id: 'deerflow', label: 'DeerFlow Research', url: '', icon: Brain, color: 'text-indigo-400', borderColor: 'border-indigo-500/40', desc: 'Deep multi-hop research with optional API model selection and local fallback' },
-  { id: 'tradingagents', label: 'TradingAgents', url: 'http://localhost:8100', icon: Activity, color: 'text-rose-400', borderColor: 'border-rose-500/40', desc: 'Multi-source analysts with app-driven provider, deep/quick models, and debate rounds' },
+  { id: 'tradingagents', label: 'TradingAgents', url: 'http://localhost:6503', icon: Activity, color: 'text-rose-400', borderColor: 'border-rose-500/40', desc: 'Multi-source analysts with app-driven provider, deep/quick models, and debate rounds' },
   { id: 'agent-reach', label: 'Agent-Reach', url: '', icon: GitBranch, color: 'text-sky-400', borderColor: 'border-sky-500/40', desc: 'Optional MCP social ingestion used directly and as TradingAgents enrichment' },
   { id: 'searxng', label: 'SearXNG', url: '', icon: Search, color: 'text-amber-400', borderColor: 'border-amber-500/40', desc: 'Web search for research, DeerFlow iteration, and TradingAgents social discovery' },
   { id: 'finance', label: 'Finance Vendors', url: 'Alpha Vantage / Finnhub', icon: Wallet, color: 'text-emerald-400', borderColor: 'border-emerald-500/40', desc: 'Optional ta-service enrichment for tradable symbols and proxy context' },

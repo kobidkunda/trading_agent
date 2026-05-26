@@ -20,10 +20,9 @@ export function buildCandidateJobs(action: CandidateQueueAction, params: { marke
     ];
   }
 
+  // Don't pre-create JUDGE_MARKET or RISK_CHECK — the worker chains them after research completes
   return [
     { type: 'TRIAGE_MARKET', priority: 7, payload: basePayload },
     { type: 'RESEARCH_MARKET', priority: 8, payload: basePayload },
-    { type: 'JUDGE_MARKET', priority: 9, payload: basePayload },
-    { type: 'RISK_CHECK', priority: 10, payload: basePayload },
   ];
 }

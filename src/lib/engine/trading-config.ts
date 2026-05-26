@@ -1,5 +1,5 @@
 import type { FillModel, ScanMode, StrategySettings } from '@/lib/types';
-import { DEFAULT_STRATEGY } from '@/lib/engine/risk';
+import { DEFAULT_STAGE_ROUTING, DEFAULT_STRATEGY } from '@/lib/engine/risk';
 import { getModeState, normalizeTradingMode, type DataSource, type ExecutionMode, type TradingMode } from '@/lib/engine/mode';
 
 export interface TradingConfig extends StrategySettings {
@@ -21,6 +21,7 @@ export interface TradingConfig extends StrategySettings {
   scanRateLimitMs: number;
   scanTimeoutMs: number;
   orderExpiryMinutes: number;
+  maxResolutionDays: number;
 }
 
 export const DEFAULT_TRADING_CONFIG: TradingConfig = {
@@ -30,7 +31,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   executionMode: 'SIMULATED',
   globalKillSwitch: true,
   scanIntervalMinutes: 5,
-  candidateThreshold: 75,
+  candidateThreshold: 20,
   researchCooldownMinutes: 360,
   maxResearchJobsPerCycle: 5,
   paperFillModel: 'CONSERVATIVE_PAPER',
@@ -43,12 +44,26 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   scanRateLimitMs: DEFAULT_STRATEGY.scanRateLimitMs ?? 500,
   scanTimeoutMs: DEFAULT_STRATEGY.scanTimeoutMs ?? 15000,
   orderExpiryMinutes: DEFAULT_STRATEGY.orderExpiryMinutes ?? 1440,
+  maxResolutionDays: DEFAULT_STRATEGY.maxResolutionDays ?? 30,
 };
 
 export function normalizeTradingConfig(input: Partial<TradingConfig | StrategySettings>): TradingConfig {
+  const inputStageRouting = (input as Partial<TradingConfig | StrategySettings>).stageRouting ?? {};
+  const stageRouting = {
+    ...DEFAULT_STAGE_ROUTING,
+    ...inputStageRouting,
+  };
+  if (!stageRouting.agentReachServiceUrl?.trim()) {
+    stageRouting.agentReachServiceUrl = DEFAULT_STAGE_ROUTING.agentReachServiceUrl;
+  }
+  if (stageRouting.agentReachToolName === 'web_read') {
+    stageRouting.agentReachToolName = DEFAULT_STAGE_ROUTING.agentReachToolName;
+  }
+
   const merged = {
     ...DEFAULT_TRADING_CONFIG,
     ...input,
+    stageRouting,
   } as TradingConfig;
 
   const mode = normalizeTradingMode((input as Partial<TradingConfig>).mode);

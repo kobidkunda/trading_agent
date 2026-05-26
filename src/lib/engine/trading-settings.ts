@@ -49,11 +49,18 @@ export function getEffectiveTradingConfig(input: EffectiveTradingConfigInput = {
   return merged;
 }
 
-export function buildTradingConfigUpdate(partial: Partial<TradingConfig>) {
+export function buildTradingConfigUpdate(
+  partial: Partial<TradingConfig>,
+  current: Partial<TradingConfig> = {}
+) {
+  const mergedInput = {
+    ...current,
+    ...partial,
+  };
   const tradingConfig = normalizeTradingConfig({
     ...DEFAULT_TRADING_CONFIG,
-    ...partial,
-    ...sanitizeTradingModeUpdate(partial),
+    ...mergedInput,
+    ...sanitizeTradingModeUpdate(mergedInput),
   });
 
   const strategySettings: StrategySettings = {
@@ -74,6 +81,14 @@ export function buildTradingConfigUpdate(partial: Partial<TradingConfig>) {
     researchModel: tradingConfig.researchModel,
     judgeModel: tradingConfig.judgeModel,
     stageRouting: tradingConfig.stageRouting,
+    maxMarketsPerScan: tradingConfig.maxMarketsPerScan,
+    maxPagesPerVenue: tradingConfig.maxPagesPerVenue,
+    scanUntilNoCursor: tradingConfig.scanUntilNoCursor,
+    scanMode: tradingConfig.scanMode,
+    scanRateLimitMs: tradingConfig.scanRateLimitMs,
+    scanTimeoutMs: tradingConfig.scanTimeoutMs,
+    orderExpiryMinutes: tradingConfig.orderExpiryMinutes,
+    maxResolutionDays: tradingConfig.maxResolutionDays,
   };
 
   return {

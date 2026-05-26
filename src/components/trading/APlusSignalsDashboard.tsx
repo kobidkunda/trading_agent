@@ -239,7 +239,7 @@ export function APlusSignalsDashboard() {
       ) : (
         <>
           <p className="text-xs text-gray-600">
-            Showing {((page - 1) * limit) + 1}\u2013{Math.min(page * limit, total)} of {total}
+            Showing {((page - 1) * limit) + 1}&ndash;{Math.min(page * limit, total)} of {total}
           </p>
           <div className="grid gap-4 lg:grid-cols-2">
             {signals.map((s) => {

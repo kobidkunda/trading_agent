@@ -8,6 +8,39 @@ export async function POST(request: NextRequest) {
   if (denied) return denied;
 
   try {
+    const completeStaleOrderTrackJobs = async () => {
+      const activeMarkets = await db.order.findMany({
+        where: { lifecycleStatus: { in: ['SUBMITTED', 'PARTIALLY_FILLED'] } },
+        select: { marketId: true },
+        distinct: ['marketId'],
+      });
+      const activeMarketIds = new Set(activeMarkets.map((order) => order.marketId));
+      const pendingTrackers = await db.job.findMany({
+        where: { type: 'ORDER_TRACK', status: { in: ['PENDING', 'RETRYING'] } },
+      });
+      const staleIds = pendingTrackers
+        .filter((job) => {
+          try {
+            const payload = JSON.parse(job.payload || '{}') as { marketId?: string };
+            return payload.marketId ? !activeMarketIds.has(payload.marketId) : true;
+          } catch {
+            return true;
+          }
+        })
+        .map((job) => job.id);
+
+      if (staleIds.length === 0) return 0;
+      const result = await db.job.updateMany({
+        where: { id: { in: staleIds } },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          result: JSON.stringify({ status: 'NO_ACTIVE_ORDER', cleanedBy: '/api/trading/process-orders' }),
+        },
+      });
+      return result.count;
+    };
+
     const orders = await db.order.findMany({
       where: { lifecycleStatus: { in: ['SUBMITTED', 'PARTIALLY_FILLED'] } },
       include: {
@@ -16,7 +49,8 @@ export async function POST(request: NextRequest) {
     });
 
     if (orders.length === 0) {
-      return NextResponse.json({ message: 'No orders to process', processed: 0 });
+      const staleTrackersCompleted = await completeStaleOrderTrackJobs();
+      return NextResponse.json({ message: 'No orders to process', processed: 0, staleTrackersCompleted });
     }
 
     const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
@@ -86,6 +120,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const staleTrackersCompleted = await completeStaleOrderTrackJobs();
+
     const [paperBets, positions, fills, filledOrders] = await Promise.all([
       db.paperBet.count(),
       db.position.count(),
@@ -96,9 +132,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       processed: results.length,
       results,
+      staleTrackersCompleted,
       totals: { paperBets, positions, fills, filledOrders },
     });
   } catch (error) {
+    console.error('[process-orders] Failed to process paper orders:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },
       { status: 500 },

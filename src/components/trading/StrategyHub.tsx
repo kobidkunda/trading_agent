@@ -35,6 +35,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Slider } from '@/components/ui/slider';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
   SelectContent,
@@ -98,6 +99,15 @@ const ORDERBOOK_PENALTY_OPTIONS = [
   { value: 'LENIENT', label: 'Lenient', desc: 'Missing book data mostly neutral; let triage decide' },
 ] as const;
 
+const TA_EFFORT_OPTIONS = ['low', 'medium', 'high'] as const;
+const TA_VENDOR_OPTIONS = ['yfinance', 'alpha_vantage'] as const;
+const TA_ANALYST_OPTIONS = [
+  { value: 'market', label: 'Market' },
+  { value: 'social', label: 'Sentiment' },
+  { value: 'news', label: 'News' },
+  { value: 'fundamentals', label: 'Fundamentals' },
+] as const;
+
 function getTradingAgentsSourceLabel(source: TradingAgentsMetadataResponse['source'] | null): string {
   switch (source) {
     case 'tradingagents':
@@ -107,6 +117,39 @@ function getTradingAgentsSourceLabel(source: TradingAgentsMetadataResponse['sour
     default:
       return 'Metadata unavailable';
   }
+}
+
+function formatToolVendorOverrides(overrides?: Record<string, string>): string {
+  return Object.entries(overrides || {})
+    .map(([tool, vendor]) => `${tool}=${vendor}`)
+    .join('\n');
+}
+
+function parseToolVendorOverrides(value: string): Record<string, 'yfinance' | 'alpha_vantage'> {
+  const overrides: Record<string, 'yfinance' | 'alpha_vantage'> = {};
+  for (const line of value.split('\n')) {
+    const [rawTool, rawVendor] = line.split('=').map((part) => part?.trim());
+    if (!rawTool || !rawVendor) continue;
+    if (rawVendor === 'yfinance' || rawVendor === 'alpha_vantage') {
+      overrides[rawTool] = rawVendor;
+    }
+  }
+  return overrides;
+}
+
+function formatStringMap(overrides?: Record<string, string>): string {
+  return Object.entries(overrides || {})
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
+}
+
+function parseStringMap(value: string): Record<string, string> {
+  const entries: Record<string, string> = {};
+  for (const line of value.split('\n')) {
+    const [rawKey, rawValue] = line.split('=').map((part) => part?.trim());
+    if (rawKey && rawValue) entries[rawKey] = rawValue;
+  }
+  return entries;
 }
 
 // ── component ────────────────────────────────────────────────────────────────
@@ -379,9 +422,9 @@ export function StrategyHub() {
           const savedQuickModel = settings.stageRouting?.analystQuickThinkLlm;
 
           const providersWithStale = withStaleOption(data.providers, savedProvider);
-          const modelsWithStale = withStaleOption(
-            data.models,
-            savedDeepModel || savedQuickModel || null
+          const modelsWithStale = [savedDeepModel, savedQuickModel].reduce(
+            (options, savedModel) => withStaleOption(options, savedModel),
+            data.models
           );
 
           setTradingAgentsProviders(providersWithStale);
@@ -469,7 +512,7 @@ export function StrategyHub() {
 
   const updateStageRouting = (
     key: keyof StageServiceMapping,
-    val: string | number | boolean
+    val: string | number | boolean | string[] | Record<string, string> | undefined
   ) => {
     setSettings((s) => ({
       ...s,
@@ -663,6 +706,17 @@ export function StrategyHub() {
               step={0.005}
               format={(v) => formatPercent(v)}
               onChange={(v) => updateNumber('maxSpread', v)}
+            />
+
+            <RiskSliderRow
+              label="Max Days Until Resolution"
+              help="Only allow new plays on markets that resolve within this many days."
+              value={settings.maxResolutionDays ?? 30}
+              min={1}
+              max={365}
+              step={1}
+              format={(v) => `${v.toFixed(0)} days`}
+              onChange={(v) => updateNumber('maxResolutionDays', v)}
             />
 
             <Separator className="bg-gray-800" />
@@ -1437,6 +1491,260 @@ export function StrategyHub() {
                       </div>
                     </div>
                   )}
+                  <div className="rounded-lg border border-gray-800 bg-gray-950/40 p-3">
+                    <div className="grid gap-3 sm:grid-cols-4">
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Risk Rounds</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={5}
+                          value={settings.stageRouting?.analystMaxRiskRounds ?? 1}
+                          onChange={(e) => updateStageRouting('analystMaxRiskRounds', Number(e.target.value))}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Output Language</Label>
+                        <Input
+                          value={settings.stageRouting?.analystOutputLanguage || ''}
+                          onChange={(e) => updateStageRouting('analystOutputLanguage', e.target.value)}
+                          placeholder="English"
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Asset Type</Label>
+                        <Select
+                          value={settings.stageRouting?.analystAssetType || 'auto'}
+                          onValueChange={(v) => updateStageRouting('analystAssetType', v === 'auto' ? '' : v)}
+                        >
+                          <SelectTrigger className="h-8 border-gray-700 bg-gray-800 text-xs text-white">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="border-gray-700 bg-gray-900">
+                            <SelectItem value="auto" className="text-xs">Auto</SelectItem>
+                            <SelectItem value="stock" className="text-xs">Stock</SelectItem>
+                            <SelectItem value="crypto" className="text-xs">Crypto</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Benchmark</Label>
+                        <Input
+                          value={settings.stageRouting?.analystBenchmarkTicker || ''}
+                          onChange={(e) => updateStageRouting('analystBenchmarkTicker', e.target.value)}
+                          placeholder="SPY"
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Recursion Limit</Label>
+                        <Input
+                          type="number"
+                          min={25}
+                          max={300}
+                          value={settings.stageRouting?.analystMaxRecurLimit ?? 100}
+                          onChange={(e) => updateStageRouting('analystMaxRecurLimit', Number(e.target.value))}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Concurrency</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={8}
+                          value={settings.stageRouting?.analystConcurrencyLimit ?? 1}
+                          onChange={(e) => updateStageRouting('analystConcurrencyLimit', Number(e.target.value))}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Ticker News</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={settings.stageRouting?.analystNewsArticleLimit ?? 20}
+                          onChange={(e) => updateStageRouting('analystNewsArticleLimit', Number(e.target.value))}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Macro News</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={settings.stageRouting?.analystGlobalNewsArticleLimit ?? 10}
+                          onChange={(e) => updateStageRouting('analystGlobalNewsArticleLimit', Number(e.target.value))}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Macro Lookback</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={60}
+                          value={settings.stageRouting?.analystGlobalNewsLookbackDays ?? 7}
+                          onChange={(e) => updateStageRouting('analystGlobalNewsLookbackDays', Number(e.target.value))}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <label className="flex items-center justify-between gap-3 rounded border border-gray-800 bg-gray-900/70 px-3 py-2 sm:col-span-3">
+                        <span className="text-[11px] text-gray-400">Checkpoint Resume</span>
+                        <Switch
+                          checked={Boolean(settings.stageRouting?.analystCheckpointEnabled)}
+                          onCheckedChange={(checked) => updateStageRouting('analystCheckpointEnabled', checked)}
+                        />
+                      </label>
+                    </div>
+                    <div className="mt-3 space-y-1">
+                      <Label className="text-[11px] text-gray-400">Macro Queries</Label>
+                      <Textarea
+                        value={(settings.stageRouting?.analystGlobalNewsQueries || []).join('\n')}
+                        onChange={(e) => updateStageRouting(
+                          'analystGlobalNewsQueries',
+                          e.target.value.split('\n').map((line) => line.trim()).filter(Boolean)
+                        )}
+                        placeholder="Federal Reserve interest rates inflation&#10;S&P 500 earnings GDP economic outlook"
+                        className="min-h-20 border-gray-700 bg-gray-800 text-xs text-white"
+                      />
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">OpenAI Effort</Label>
+                        <Select
+                          value={settings.stageRouting?.analystOpenAIReasoningEffort || 'default'}
+                          onValueChange={(v) => updateStageRouting('analystOpenAIReasoningEffort', v === 'default' ? undefined : v)}
+                        >
+                          <SelectTrigger className="h-8 border-gray-700 bg-gray-800 text-xs text-white">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="border-gray-700 bg-gray-900">
+                            <SelectItem value="default" className="text-xs">Default</SelectItem>
+                            {TA_EFFORT_OPTIONS.map((value) => (
+                              <SelectItem key={value} value={value} className="text-xs capitalize">{value}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Google Thinking</Label>
+                        <Input
+                          value={settings.stageRouting?.analystGoogleThinkingLevel || ''}
+                          onChange={(e) => updateStageRouting('analystGoogleThinkingLevel', e.target.value)}
+                          placeholder="minimal"
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Anthropic Effort</Label>
+                        <Select
+                          value={settings.stageRouting?.analystAnthropicEffort || 'default'}
+                          onValueChange={(v) => updateStageRouting('analystAnthropicEffort', v === 'default' ? undefined : v)}
+                        >
+                          <SelectTrigger className="h-8 border-gray-700 bg-gray-800 text-xs text-white">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent className="border-gray-700 bg-gray-900">
+                            <SelectItem value="default" className="text-xs">Default</SelectItem>
+                            {TA_EFFORT_OPTIONS.map((value) => (
+                              <SelectItem key={value} value={value} className="text-xs capitalize">{value}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-4">
+                      {TA_ANALYST_OPTIONS.map((analyst) => {
+                        const selectedAnalysts = settings.stageRouting?.analystSelectedAnalysts || TA_ANALYST_OPTIONS.map((option) => option.value);
+                        const checked = selectedAnalysts.includes(analyst.value);
+                        return (
+                          <label
+                            key={analyst.value}
+                            className="flex items-center gap-2 rounded border border-gray-800 bg-gray-900/70 px-3 py-2 text-[11px] text-gray-300"
+                          >
+                            <Checkbox
+                              checked={checked}
+                              onCheckedChange={(nextChecked) => {
+                                const next = nextChecked
+                                  ? Array.from(new Set([...selectedAnalysts, analyst.value]))
+                                  : selectedAnalysts.filter((value) => value !== analyst.value);
+                                updateStageRouting('analystSelectedAnalysts', next.length ? next : TA_ANALYST_OPTIONS.map((option) => option.value));
+                              }}
+                            />
+                            <span>{analyst.label}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-4">
+                      {[
+                        ['analystCoreStockVendor', 'Core Stock'],
+                        ['analystTechnicalIndicatorsVendor', 'Indicators'],
+                        ['analystFundamentalDataVendor', 'Fundamentals'],
+                        ['analystNewsDataVendor', 'News Data'],
+                      ].map(([key, label]) => (
+                        <div key={key} className="space-y-1">
+                          <Label className="text-[11px] text-gray-400">{label}</Label>
+                          <Select
+                            value={(settings.stageRouting?.[key as keyof StageServiceMapping] as string | undefined) || 'default'}
+                            onValueChange={(v) => updateStageRouting(key as keyof StageServiceMapping, v === 'default' ? undefined : v)}
+                          >
+                            <SelectTrigger className="h-8 border-gray-700 bg-gray-800 text-xs text-white">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="border-gray-700 bg-gray-900">
+                              <SelectItem value="default" className="text-xs">Default</SelectItem>
+                              {TA_VENDOR_OPTIONS.map((value) => (
+                                <SelectItem key={value} value={value} className="text-xs font-mono">{value}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Benchmark Map</Label>
+                        <Textarea
+                          value={formatStringMap(settings.stageRouting?.analystBenchmarkMap)}
+                          onChange={(e) => updateStageRouting('analystBenchmarkMap', parseStringMap(e.target.value))}
+                          placeholder=".T=^N225&#10;.HK=^HSI&#10;=SPY"
+                          className="min-h-16 border-gray-700 bg-gray-800 font-mono text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Memory Cap</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          max={10000}
+                          value={settings.stageRouting?.analystMemoryLogMaxEntries ?? 0}
+                          onChange={(e) => {
+                            const value = Number(e.target.value);
+                            updateStageRouting('analystMemoryLogMaxEntries', value > 0 ? value : undefined);
+                          }}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-3 space-y-1">
+                      <Label className="text-[11px] text-gray-400">Tool Vendor Overrides</Label>
+                      <Textarea
+                        value={formatToolVendorOverrides(settings.stageRouting?.analystToolVendorOverrides)}
+                        onChange={(e) => updateStageRouting(
+                          'analystToolVendorOverrides',
+                          parseToolVendorOverrides(e.target.value)
+                        )}
+                        placeholder="get_stock_data=alpha_vantage&#10;get_news=yfinance"
+                        className="min-h-16 border-gray-700 bg-gray-800 font-mono text-xs text-white"
+                      />
+                    </div>
+                  </div>
                   <p className="text-[10px] text-gray-600">
                     Configure the TradingAgents credential on the Credentials page. Models are used by the Python TradingAgents service internally.
                   </p>

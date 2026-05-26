@@ -47,7 +47,12 @@ export async function GET(request: NextRequest) {
 
     const where: Prisma.MarketWhereInput = {};
     if (venue) where.venue = venue;
-    if (status && ['ACTIVE', 'CLOSED', 'RESOLVED', 'INACTIVE'].includes(status)) where.status = status;
+    if (status && ['ACTIVE', 'CLOSED', 'RESOLVED', 'INACTIVE'].includes(status)) {
+      where.status = status;
+    } else {
+      where.status = 'ACTIVE';
+      where.isActive = true;
+    }
     if (category) where.category = category;
     if (pagination.search) {
       where.OR = [
@@ -182,9 +187,33 @@ export async function GET(request: NextRequest) {
         OR: [
           { externalId: { startsWith: 'live_' } },
           { externalId: { startsWith: 'sim_' } },
+          { title: { startsWith: 'yes ' } },
+          { title: { startsWith: 'no ' } },
+          { title: { contains: ',yes ' } },
+          { title: { contains: ',no ' } },
         ],
       };
     }
+
+    const buildStatsWhere = (candidateExtra?: Prisma.TradeCandidateWhereInput): Prisma.MarketWhereInput => ({
+      AND: [
+        where,
+        {
+          tradeCandidates: {
+            some: {
+              ...(candidateWhere ?? {}),
+              ...(candidateExtra ?? {}),
+            },
+          },
+        },
+      ],
+    });
+
+    const [relevantCount, researchQueuedCount, liquidityStats] = await Promise.all([
+      db.market.count({ where: buildStatsWhere({ triageStatus: 'RELEVANT' }) }),
+      db.market.count({ where: buildStatsWhere({ researchQueued: true }) }),
+      db.market.aggregate({ where, _sum: { latestLiquidity: true } }),
+    ]);
 
     const needsCandidateScoreSort = sortPriority || safeSortBy === 'candidateScore';
     const totalBeforeFilters = await db.market.count({});
@@ -297,6 +326,12 @@ export async function GET(request: NextRequest) {
         dataSource: tradingConfig.dataSource,
         totalBeforeFilters,
         totalAfterFilters: totalCount,
+      },
+      summaryStats: {
+        total: totalCount,
+        relevant: relevantCount,
+        researchQueued: researchQueuedCount,
+        totalLiquidity: liquidityStats._sum.latestLiquidity ?? 0,
       },
     });
   } catch (error) {

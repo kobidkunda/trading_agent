@@ -25,6 +25,7 @@ const outcomeCreateMock = mock(async ({ data }: { data: Record<string, unknown> 
 });
 const marketUpdateMock = mock(async () => ({ id: 'market-1' }));
 const marketFindManyMock = mock(async () => activeMarkets as any[]);
+const marketCountMock = mock(async () => activeMarkets.length);
 const auditCreateMock = mock(async () => ({ id: 'audit-1' }));
 const tradeCandidateCountMock = mock(async () => 1);
 const tradeCandidateUpdateManyMock = mock(async () => ({ count: 1 }));
@@ -56,7 +57,7 @@ const positionUpdateMock = mock(async ({ where, data }: { where: { id: string },
 mock.module('@/lib/db', () => ({
   db: {
     outcome: { findFirst: outcomeFindFirstMock, findMany: outcomeFindManyMock, create: outcomeCreateMock },
-    market: { update: marketUpdateMock, findMany: marketFindManyMock },
+    market: { update: marketUpdateMock, findMany: marketFindManyMock, count: marketCountMock },
     auditLog: { create: auditCreateMock },
     tradeCandidate: {
       count: tradeCandidateCountMock,
@@ -166,6 +167,36 @@ describe('settlement flows', () => {
     expect(paperBetUpdateMock).toHaveBeenCalledTimes(1);
   });
 
+  it('settles NO positions with the same contract payoff formula as paper bets', async () => {
+    paperBets = [{
+      ...paperBets[0],
+      marketId: 'market-no-win',
+      predictedSide: 'NO',
+      entryPrice: 0.2,
+    }];
+    positions = [{
+      id: 'pos-no',
+      marketId: 'market-no-win',
+      status: 'OPEN',
+      side: 'NO',
+      entryPrice: 0.2,
+      currentSize: 100,
+    }];
+    const { reconcileMarketResolution } = await import('../resolution-poller');
+
+    await reconcileMarketResolution({
+      marketId: 'market-no-win',
+      outcome: 'NO',
+      resolvedProb: 0,
+      source: 'TEST',
+    });
+
+    expect(positionUpdateMock).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'pos-no' },
+      data: expect.objectContaining({ realizedPnl: 80 }),
+    }));
+  });
+
   it('POST /api/outcomes rejects duplicate manual outcomes', async () => {
     currentOutcome = { id: 'outcome-dupe', marketId: 'market-route', result: 'YES', resolvedProb: 1 };
     const { POST } = await import('../../../app/api/outcomes/route');
@@ -217,6 +248,20 @@ describe('settlement flows', () => {
     expect(payload.checked).toBe(1);
     expect(payload.scored).toBe(1);
     expect(paperBetUpdateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolution cycle excludes quarantined Kalshi combo markets', async () => {
+    activeMarkets = [];
+    const { runResolutionCycle } = await import('../resolution-poller');
+
+    await runResolutionCycle({ limit: 5 });
+
+    const findManyCalls = (marketFindManyMock as any).mock.calls as Array<Array<{ where?: Record<string, any> }>>;
+    expect(findManyCalls.length).toBeGreaterThanOrEqual(2);
+    expect(findManyCalls[0]?.[0]?.where?.OR).toContainEqual({ duplicateStatus: null });
+    expect(findManyCalls[0]?.[0]?.where?.OR).toContainEqual({ duplicateStatus: { not: 'INVALID_KALSHI_COMBO' } });
+    expect(findManyCalls[1]?.[0]?.where?.AND?.[0]?.OR).toContainEqual({ duplicateStatus: null });
+    expect(findManyCalls[1]?.[0]?.where?.AND?.[0]?.OR).toContainEqual({ duplicateStatus: { not: 'INVALID_KALSHI_COMBO' } });
   });
 
   it('queued SETTLE with existing outcome reconciles directly', async () => {

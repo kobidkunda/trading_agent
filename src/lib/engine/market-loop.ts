@@ -255,8 +255,16 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
       const correlationRiskPenalty =
         existingCandidate?.correlationRiskPenalty ??
         Math.min(20, market.positions.reduce((sum, position) => sum + position.currentSize, 0) / 1000);
+      // A snapshot with no depth data and no fill probability is a degenerate placeholder
+      // (Kalshi markets with yes_bid=0, yes_ask=1 and no real liquidity).
+      // Treat them like no-orderbook (quality=10) instead of penalising at quality=0.
+      const isDegenObBook =
+        latestOrderbook != null &&
+        (latestOrderbook.bidDepth == null || latestOrderbook.bidDepth <= 0) &&
+        (latestOrderbook.askDepth == null || latestOrderbook.askDepth <= 0) &&
+        (latestOrderbook.fillProbability == null || latestOrderbook.fillProbability <= 0);
       const orderbookQuality =
-        latestOrderbook == null
+        latestOrderbook == null || isDegenObBook
           ? 10
           : Math.max(
               0,
@@ -293,7 +301,8 @@ export async function runMarketLoopOnce(): Promise<MarketLoopResult> {
       const manipulationRiskPenalty =
         existingCandidate?.manipulationRiskPenalty ??
         clamp(
-          (latestOrderbook?.thinBookDanger ? 7 : 0) +
+          // Skip thinBookDanger from degenerate snapshots — they aren't real thin books
+          (latestOrderbook?.thinBookDanger && !isDegenObBook ? 7 : 0) +
             (spread > 0.08 ? 5 : 0) +
             (liquidity < 2_500 ? 4 : 0),
           0,

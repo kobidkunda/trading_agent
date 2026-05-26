@@ -45,5 +45,6 @@ describe('trading settings helpers', () => {
     expect(update.tradingConfig.executionMode).toBe('REAL');
     expect(update.tradingConfig.candidateThreshold).toBe(90);
     expect(update.strategySettings.dryRun).toBe(false);
+    expect(update.strategySettings.maxResolutionDays).toBe(30);
   });
 });

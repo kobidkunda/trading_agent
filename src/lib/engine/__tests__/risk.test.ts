@@ -54,6 +54,55 @@ describe('risk engine configuration', () => {
     expect(result.reasonCode).toBe('WIDE_SPREAD');
   });
 
+  it('skips markets that resolve beyond the configured window', () => {
+    const now = new Date('2026-05-26T00:00:00.000Z');
+    const result = computeRisk({
+      impliedProbability: 0.5,
+      judgeProbability: 0.62,
+      confidence: 0.8,
+      uncertainty: 0.1,
+      fees: 0.01,
+      slippage: 0.01,
+      venue: 'POLYMARKET',
+      category: 'politics',
+      dailyExposure: 0,
+      categoryExposure: 0,
+      openPositions: 0,
+      marketLiquidity: 10000,
+      marketSpread: 0.01,
+      marketResolutionTime: new Date('2026-07-01T00:00:00.000Z'),
+      maxResolutionDays: 30,
+      now,
+    });
+
+    expect(result.action).toBe('SKIP');
+    expect(result.reasonCode).toBe('RESOLUTION_TOO_FAR');
+  });
+
+  it('allows bids inside the configured resolution window', () => {
+    const now = new Date('2026-05-26T00:00:00.000Z');
+    const result = computeRisk({
+      impliedProbability: 0.5,
+      judgeProbability: 0.62,
+      confidence: 0.8,
+      uncertainty: 0.1,
+      fees: 0.01,
+      slippage: 0.01,
+      venue: 'POLYMARKET',
+      category: 'politics',
+      dailyExposure: 0,
+      categoryExposure: 0,
+      openPositions: 0,
+      marketLiquidity: 10000,
+      marketSpread: 0.01,
+      marketResolutionTime: new Date('2026-06-10T00:00:00.000Z'),
+      maxResolutionDays: 30,
+      now,
+    });
+
+    expect(result.action).toBe('BID');
+  });
+
   it('hard-stops zero-liquidity bids even if DB thresholds are loose', () => {
     const result = computeRisk({
       impliedProbability: 0.5,
@@ -117,6 +166,76 @@ describe('risk engine configuration', () => {
 
     expect(result.action).toBe('WATCH');
     expect(result.reasonCode).toBe('HIGH_UNCERTAINTY');
+  });
+
+  it('uses supplied effective thresholds for paper order re-checks without bypassing edge floors', () => {
+    const defaultResult = computeRisk({
+      impliedProbability: 0.001,
+      judgeProbability: 0.002,
+      confidence: 0.6,
+      uncertainty: 0.4,
+      fees: 0,
+      slippage: 0,
+      venue: 'KALSHI',
+      category: 'politics',
+      dailyExposure: 0,
+      categoryExposure: 0,
+      openPositions: 0,
+      marketLiquidity: 566659,
+      marketSpread: 0.001,
+    });
+
+    const tinyEdgeConfiguredResult = computeRisk({
+      impliedProbability: 0.001,
+      judgeProbability: 0.002,
+      confidence: 0.6,
+      uncertainty: 0.4,
+      fees: 0,
+      slippage: 0,
+      venue: 'KALSHI',
+      category: 'politics',
+      dailyExposure: 0,
+      categoryExposure: 0,
+      openPositions: 0,
+      minLiquidity: 0,
+      maxSpread: 0.05,
+      bidEdgeThreshold: 0,
+      watchEdgeThreshold: 0.001,
+      bidConfidenceThreshold: 0.1,
+      watchConfidenceThreshold: 0.1,
+      maxUncertaintyThreshold: 1,
+      marketLiquidity: 566659,
+      marketSpread: 0.001,
+    });
+
+    const configuredResult = computeRisk({
+      impliedProbability: 0.002,
+      judgeProbability: 0.01,
+      confidence: 0.85,
+      uncertainty: 0.4,
+      fees: 0,
+      slippage: 0,
+      venue: 'KALSHI',
+      category: 'politics',
+      dailyExposure: 0,
+      categoryExposure: 0,
+      openPositions: 0,
+      minLiquidity: 0,
+      maxSpread: 0.05,
+      bidEdgeThreshold: 0,
+      watchEdgeThreshold: 0.001,
+      bidConfidenceThreshold: 0.1,
+      watchConfidenceThreshold: 0.1,
+      maxUncertaintyThreshold: 1,
+      marketLiquidity: 566659,
+      marketSpread: 0.001,
+    });
+
+    expect(defaultResult.action).toBe('WATCH');
+    expect(defaultResult.reasonCode).toBe('HIGH_UNCERTAINTY');
+    expect(tinyEdgeConfiguredResult.action).toBe('WATCH');
+    expect(tinyEdgeConfiguredResult.reasonCode).toBe('MODERATE_EDGE');
+    expect(configuredResult.action).toBe('BID');
   });
 
   it('blocks bids when cluster exposure breaches utilization threshold', () => {

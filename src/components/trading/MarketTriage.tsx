@@ -57,7 +57,12 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import type { Venue, TriageStatus, CandidateStage } from '@/lib/types';
 import { VENUE_OPTIONS, STAGE_COLORS } from '@/lib/constants';
-import { buildMarketTriageDetails } from '@/lib/engine/market-triage-view-model';
+import {
+  buildMarketTriageDetails,
+  formatMarketTriageStageChange,
+  normalizeMarketTriageStatus,
+  type MarketTriageDisplayStatus,
+} from '@/lib/engine/market-triage-view-model';
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -201,7 +206,7 @@ interface MarketRow {
   liquidity: number;
   spread: number;
   impliedProb: number;
-  triageStatus: TriageStatus;
+  triageStatus: MarketTriageDisplayStatus;
   triageReason: string;
   researchQueued: boolean;
   stage: CandidateStage;
@@ -241,7 +246,7 @@ function flattenMarketRecord(m: MarketApiRecord): MarketRow {
     liquidity: snapshot?.liquidity ?? 0,
     spread: snapshot?.spread ?? 0,
     impliedProb: snapshot?.impliedProb ?? 0,
-    triageStatus: (candidate?.triageStatus as TriageStatus) ?? 'IRRELEVANT',
+    triageStatus: normalizeMarketTriageStatus(candidate?.triageStatus),
     triageReason: candidate?.triageReason ?? '',
     researchQueued: candidate?.researchQueued ?? false,
     stage: (candidate?.stage as CandidateStage) ?? 'SCANNED',
@@ -478,7 +483,7 @@ function InlineMarketDetail({
           </div>
           <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
             <p className="text-[11px] text-gray-500">Candidate Score</p>
-            <p className="mt-1 text-sm font-bold text-gray-200">{market.candidateScore ?? '—'}</p>
+            <p className="mt-1 text-sm font-bold text-gray-200">{formatCandidateScore(market.candidateScore)}</p>
           </div>
           <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
             <p className="text-[11px] text-gray-500">Data Source</p>
@@ -921,8 +926,14 @@ function formatCurrency(n: number): string {
   return `$${n.toFixed(0)}`;
 }
 
-function triageBadge(status: TriageStatus) {
-  const styles: Record<TriageStatus, string> = {
+function formatCandidateScore(score: number | null): string {
+  if (score === null || score === undefined || !Number.isFinite(score)) return 'Unscored';
+  return `${score.toFixed(1)}/100`;
+}
+
+function triageBadge(status: MarketRow['triageStatus']) {
+  const styles: Record<MarketRow['triageStatus'], string> = {
+    PENDING: 'border-slate-500/30 bg-slate-500/10 text-slate-400',
     RELEVANT: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
     IRRELEVANT: 'border-gray-500/30 bg-gray-500/10 text-gray-500',
     AMBIGUOUS: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
@@ -972,6 +983,12 @@ export function MarketTriage() {
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [apiSummaryStats, setApiSummaryStats] = useState<{
+    total: number;
+    relevant: number;
+    researchQueued: number;
+    totalLiquidity: number;
+  } | null>(null);
 
   const {
     data: markets,
@@ -995,6 +1012,16 @@ export function MarketTriage() {
       if (!res.ok) throw new Error('Failed to fetch markets');
       const data = await res.json();
       const rows = (data.data ?? data.markets ?? []).map(flattenMarketRecord);
+      if (data.summaryStats) {
+        setApiSummaryStats({
+          total: Number(data.summaryStats.total ?? data.total ?? 0),
+          relevant: Number(data.summaryStats.relevant ?? 0),
+          researchQueued: Number(data.summaryStats.researchQueued ?? 0),
+          totalLiquidity: Number(data.summaryStats.totalLiquidity ?? 0),
+        });
+      } else {
+        setApiSummaryStats(null);
+      }
       return { ...data, data: rows };
     },
     [search, venueFilter, statusFilter, priorityFilter],
@@ -1006,11 +1033,11 @@ export function MarketTriage() {
   }, [search, venueFilter, statusFilter, priorityFilter, setPage]);
 
   const summaryStats = useMemo(() => ({
-    total,
-    relevant: markets.filter((m) => m.triageStatus === 'RELEVANT').length,
-    queued: markets.filter((m) => m.researchQueued).length,
-    totalLiq: markets.reduce((s, m) => s + m.liquidity, 0),
-  }), [markets, total]);
+    total: apiSummaryStats?.total ?? total,
+    relevant: apiSummaryStats?.relevant ?? markets.filter((m) => m.triageStatus === 'RELEVANT').length,
+    queued: apiSummaryStats?.researchQueued ?? markets.filter((m) => m.researchQueued).length,
+    totalLiq: apiSummaryStats?.totalLiquidity ?? markets.reduce((s, m) => s + m.liquidity, 0),
+  }), [apiSummaryStats, markets, total]);
 
   if (loading && markets.length === 0) {
     return (
@@ -1213,7 +1240,9 @@ export function MarketTriage() {
                         </TableCell>
                       </TableRow>
                     ) : (
-                      markets.map((m) => (
+                      markets.map((m) => {
+                        const reprocess = formatMarketTriageStageChange(m.reprocessReason);
+                        return (
                         <Fragment key={m.id}>
                           <TableRow
                             key={m.id}
@@ -1284,16 +1313,16 @@ export function MarketTriage() {
                                 {m.lastDecisionAt && (
                                   <p>Dec: {new Date(m.lastDecisionAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</p>
                                 )}
-                                <p>Score: {m.candidateScore ?? '—'}</p>
+                                <p>Score: {formatCandidateScore(m.candidateScore)}</p>
                                 <p>Src: {m.dataSource}</p>
                               </div>
                             </TableCell>
                             <TableCell>{triageBadge(m.triageStatus)}</TableCell>
                             <TableCell>{stageBadge(m.stage)}</TableCell>
                             <TableCell>
-                              {m.reprocessReason ? (
-                                <Badge className="text-[9px] border-amber-500/30 bg-amber-500/10 text-amber-400 max-w-24 truncate" title={m.reprocessReason}>
-                                  {m.reprocessReason}
+                              {reprocess ? (
+                                <Badge className="max-w-36 truncate border-amber-500/30 bg-amber-500/10 text-[9px] text-amber-400" title={reprocess.title}>
+                                  {reprocess.label}
                                 </Badge>
                               ) : (
                                 <span className="text-[10px] text-gray-700">—</span>
@@ -1308,7 +1337,8 @@ export function MarketTriage() {
                             </TableRow>
                           )}
                         </Fragment>
-                      ))
+                        );
+                      })
                     )}
                   </TableBody>
                 </Table>

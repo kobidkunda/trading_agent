@@ -51,6 +51,44 @@ interface OutcomeRecord {
   } | null;
 }
 
+interface OutcomeMeta {
+  totalDecisions: number;
+  resolved: number;
+  unresolved: number;
+  dueForResolution: number;
+  pendingFuture: number;
+  nextResolutionAt: string | null;
+  nextResolutionMarket: { id: string; title: string } | null;
+  profitEvidence: {
+    status: string;
+    canEvaluateProfit: boolean;
+    reason: string;
+    resolvedPaperBets: number;
+    executedUnresolvedPaperBets: number;
+    historicalResolvedWithPredictions: number;
+  } | null;
+  settlementReadiness: {
+    executedUnresolvedPaperBets: number;
+    executedUnresolvedWithArchivedPrediction: number;
+    missingArchivedPrediction: number;
+    executedUnresolvedPaperBetMarkets: number;
+    activeResolutionJobMarkets: number;
+    missingResolutionJobs: number;
+    dueResolutionJobs: number;
+    nextResolutionAt: string | null;
+    nextResolutionMarket: { id: string; title: string } | null;
+  } | null;
+}
+
+interface PaperBetMeta {
+  totalBets: number;
+  resolvedBets: number;
+  pendingBets: number;
+  directionAccuracy: number | null;
+  avgBrierScore: number | null;
+  totalPnl: number | null;
+}
+
 type SortField = 'predictedProb' | 'brierScore' | 'pnl' | 'resolvedAt';
 
 function SortIndicator({ active, order }: { active: boolean; order: 'asc' | 'desc' }) {
@@ -74,7 +112,7 @@ function outcomeBadge(result: string) {
 function correctBadge(correct: boolean | null) {
   if (correct === null) {
     return (
-      <Badge variant="outline" className="border-gray-700 text-[10px] text-gray-500">\u2014</Badge>
+      <Badge variant="outline" className="border-gray-700 text-[10px] text-gray-500">&mdash;</Badge>
     );
   }
   return correct ? (
@@ -116,6 +154,8 @@ function formatPnl(val: number | null): string {
 
 export function OutcomesDashboard() {
   const [searchTerm, setSearchTerm] = useState('');
+  const [meta, setMeta] = useState<OutcomeMeta | null>(null);
+  const [paperBetMeta, setPaperBetMeta] = useState<PaperBetMeta | null>(null);
 
   const {
     data: outcomes,
@@ -143,6 +183,59 @@ export function OutcomesDashboard() {
       const res = await fetch(`/api/outcomes?${query}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
+      setMeta({
+        totalDecisions: Number(json.totalDecisions ?? 0),
+        resolved: Number(json.resolved ?? 0),
+        unresolved: Number(json.unresolved ?? 0),
+        dueForResolution: Number(json.dueForResolution ?? 0),
+        pendingFuture: Number(json.pendingFuture ?? 0),
+        nextResolutionAt: typeof json.nextResolutionAt === 'string' ? json.nextResolutionAt : null,
+        nextResolutionMarket: json.nextResolutionMarket && typeof json.nextResolutionMarket === 'object'
+          ? {
+              id: String(json.nextResolutionMarket.id ?? ''),
+              title: String(json.nextResolutionMarket.title ?? ''),
+            }
+          : null,
+        profitEvidence: json.profitEvidence && typeof json.profitEvidence === 'object'
+          ? {
+              status: String(json.profitEvidence.status ?? 'UNAVAILABLE'),
+              canEvaluateProfit: Boolean(json.profitEvidence.canEvaluateProfit),
+              reason: String(json.profitEvidence.reason ?? ''),
+              resolvedPaperBets: Number(json.profitEvidence.resolvedPaperBets ?? 0),
+              executedUnresolvedPaperBets: Number(json.profitEvidence.executedUnresolvedPaperBets ?? 0),
+              historicalResolvedWithPredictions: Number(json.profitEvidence.historicalResolvedWithPredictions ?? 0),
+            }
+          : null,
+        settlementReadiness: json.settlementReadiness && typeof json.settlementReadiness === 'object'
+          ? {
+              executedUnresolvedPaperBets: Number(json.settlementReadiness.executedUnresolvedPaperBets ?? 0),
+              executedUnresolvedWithArchivedPrediction: Number(json.settlementReadiness.executedUnresolvedWithArchivedPrediction ?? 0),
+              missingArchivedPrediction: Number(json.settlementReadiness.missingArchivedPrediction ?? 0),
+              executedUnresolvedPaperBetMarkets: Number(json.settlementReadiness.executedUnresolvedPaperBetMarkets ?? 0),
+              activeResolutionJobMarkets: Number(json.settlementReadiness.activeResolutionJobMarkets ?? 0),
+              missingResolutionJobs: Number(json.settlementReadiness.missingResolutionJobs ?? 0),
+              dueResolutionJobs: Number(json.settlementReadiness.dueResolutionJobs ?? 0),
+              nextResolutionAt: typeof json.settlementReadiness.nextResolutionAt === 'string' ? json.settlementReadiness.nextResolutionAt : null,
+              nextResolutionMarket: json.settlementReadiness.nextResolutionMarket && typeof json.settlementReadiness.nextResolutionMarket === 'object'
+                ? {
+                    id: String(json.settlementReadiness.nextResolutionMarket.id ?? ''),
+                    title: String(json.settlementReadiness.nextResolutionMarket.title ?? ''),
+                  }
+                : null,
+            }
+          : null,
+      });
+      const paperBets = json.paperBets && typeof json.paperBets === 'object'
+        ? json.paperBets as Record<string, unknown>
+        : null;
+      setPaperBetMeta(paperBets ? {
+        totalBets: Number(paperBets.totalBets ?? 0),
+        resolvedBets: Number(paperBets.resolvedBets ?? 0),
+        pendingBets: Number(paperBets.pendingBets ?? 0),
+        directionAccuracy: typeof paperBets.directionAccuracy === 'number' ? paperBets.directionAccuracy : null,
+        avgBrierScore: typeof paperBets.avgBrierScore === 'number' ? paperBets.avgBrierScore : null,
+        totalPnl: typeof paperBets.totalPnl === 'number' ? paperBets.totalPnl : null,
+      } : null);
       const rawList = json.data ?? json.outcomes ?? json.recentResolved ?? json;
       const list = Array.isArray(rawList) ? rawList : [];
       const normalized = list.map((entry: Record<string, unknown>, index: number) => ({
@@ -224,6 +317,9 @@ export function OutcomesDashboard() {
   const avgBrier = outcomes.length > 0
     ? outcomes.reduce((sum, o) => sum + (o.brierScore ?? 0), 0) / Math.max(1, outcomes.filter((o) => o.brierScore !== null).length)
     : 0;
+  const hasResolvedOutcomes = outcomes.length > 0;
+  const nextSettlementAt = meta?.settlementReadiness?.nextResolutionAt ?? meta?.nextResolutionAt ?? null;
+  const nextSettlementMarket = meta?.settlementReadiness?.nextResolutionMarket ?? meta?.nextResolutionMarket ?? null;
 
   return (
     <div className="space-y-6">
@@ -232,27 +328,49 @@ export function OutcomesDashboard() {
         <p className="mt-1 text-sm text-gray-500">
           Resolved market outcomes with prediction accuracy and PnL
         </p>
+        {meta && meta.resolved === 0 && (
+          <p className="mt-2 text-xs text-amber-300">
+            {meta.settlementReadiness && meta.settlementReadiness.dueResolutionJobs > 0
+              ? `${meta.settlementReadiness.dueResolutionJobs} paper resolution job${meta.settlementReadiness.dueResolutionJobs === 1 ? '' : 's'} are due now.`
+              : `No paper bet is due to settle yet. Next scheduled check: ${nextSettlementAt ? new Date(nextSettlementAt).toLocaleString() : 'not scheduled'}.`}
+          </p>
+        )}
+        {meta?.profitEvidence && !meta.profitEvidence.canEvaluateProfit && (
+          <p className="mt-1 text-xs text-amber-300">
+            {meta.profitEvidence.reason}
+          </p>
+        )}
+        {meta?.settlementReadiness && (
+          <p className="mt-1 text-xs text-gray-500">
+            Settlement readiness: {meta.settlementReadiness.executedUnresolvedWithArchivedPrediction}/{meta.settlementReadiness.executedUnresolvedPaperBets} bets have archived predictions, {meta.settlementReadiness.activeResolutionJobMarkets}/{meta.settlementReadiness.executedUnresolvedPaperBetMarkets} markets have resolution jobs, {meta.settlementReadiness.dueResolutionJobs} due now.
+          </p>
+        )}
       </div>
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-6">
         <Card className="border-gray-800 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Total Resolved</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{total}</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-white">{meta?.resolved ?? total}</p>
+            {meta && (
+              <p className="text-[10px] text-gray-600">{meta.dueForResolution} due · {meta.pendingFuture} future</p>
+            )}
           </CardContent>
         </Card>
-        <Card className={cn('border bg-gray-900', winRatePct >= 60 ? 'border-emerald-500/20' : winRatePct >= 50 ? 'border-amber-500/20' : 'border-red-500/20')}>
+        <Card className={cn('border bg-gray-900', !hasResolvedOutcomes ? 'border-gray-800' : winRatePct >= 60 ? 'border-emerald-500/20' : winRatePct >= 50 ? 'border-amber-500/20' : 'border-red-500/20')}>
           <CardContent className="p-4">
             <div className="flex items-center gap-2">
-              <Award className={cn('h-4 w-4', winRatePct >= 60 ? 'text-emerald-400' : winRatePct >= 50 ? 'text-amber-400' : 'text-red-400')} />
+              <Award className={cn('h-4 w-4', !hasResolvedOutcomes ? 'text-gray-500' : winRatePct >= 60 ? 'text-emerald-400' : winRatePct >= 50 ? 'text-amber-400' : 'text-red-400')} />
               <p className="text-xs text-gray-500">Win Rate</p>
             </div>
             <p className={cn('mt-1 text-2xl font-bold tabular-nums',
-              winRatePct >= 60 ? 'text-emerald-400' : winRatePct >= 50 ? 'text-amber-400' : 'text-red-400'
+              !hasResolvedOutcomes ? 'text-gray-400' : winRatePct >= 60 ? 'text-emerald-400' : winRatePct >= 50 ? 'text-amber-400' : 'text-red-400'
             )}>
-              {winRatePct.toFixed(1)}%
+              {hasResolvedOutcomes ? `${winRatePct.toFixed(1)}%` : '\u2014'}
             </p>
-            <p className="text-[10px] text-gray-600">{correctCount} of {outcomes.length} correct</p>
+            <p className="text-[10px] text-gray-600">
+              {hasResolvedOutcomes ? `${correctCount} of ${outcomes.length} correct` : 'waiting for first settlement'}
+            </p>
             <Progress value={winRatePct} className={cn(
               'mt-1.5 h-1.5 bg-gray-800',
               winRatePct >= 60 ? '[&>div]:bg-emerald-500' : winRatePct >= 50 ? '[&>div]:bg-amber-500' : '[&>div]:bg-red-500'
@@ -269,15 +387,34 @@ export function OutcomesDashboard() {
         </Card>
         <Card className="border-gray-800 bg-gray-900">
           <CardContent className="p-4">
-            <p className="text-xs text-gray-500">Correct</p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-emerald-400">{correctCount}</p>
+            <p className="text-xs text-gray-500">Pending Bets</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-amber-400">{paperBetMeta?.pendingBets ?? 0}</p>
+            <p className="text-[10px] text-gray-600">{paperBetMeta?.totalBets ?? 0} filled tracked</p>
           </CardContent>
         </Card>
         <Card className={cn('border bg-gray-900', totalPnl >= 0 ? 'border-emerald-500/20' : 'border-red-500/20')}>
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Total PnL</p>
             <p className={cn('mt-1 text-2xl font-bold tabular-nums', pnlColor(totalPnl))}>
-              {formatPnl(totalPnl)}
+              {hasResolvedOutcomes ? formatPnl(totalPnl) : '\u2014'}
+            </p>
+            {meta?.profitEvidence && !meta.profitEvidence.canEvaluateProfit && (
+              <p className="text-[10px] text-gray-600">{meta.profitEvidence.status.toLowerCase().replace('_', ' ')}</p>
+            )}
+          </CardContent>
+        </Card>
+        <Card className="border-gray-800 bg-gray-900">
+          <CardContent className="p-4">
+            <p className="text-xs text-gray-500">Settlement Ready</p>
+            <p className="mt-1 text-2xl font-bold tabular-nums text-cyan-400">
+              {meta?.settlementReadiness
+                ? `${meta.settlementReadiness.activeResolutionJobMarkets}/${meta.settlementReadiness.executedUnresolvedPaperBetMarkets}`
+                : '\u2014'}
+            </p>
+            <p className="text-[10px] text-gray-600">
+              {meta?.settlementReadiness
+                ? `${meta.settlementReadiness.missingResolutionJobs} missing jobs · ${meta.settlementReadiness.missingArchivedPrediction} missing predictions`
+                : 'waiting for settlement audit'}
             </p>
           </CardContent>
         </Card>
@@ -309,12 +446,21 @@ export function OutcomesDashboard() {
                 <CheckCircle className="h-6 w-6 text-gray-500" />
               </div>
               <p className="text-xs font-medium text-gray-400">No resolved outcomes yet</p>
-              <p className="mt-1 text-[11px] text-gray-600">Outcomes appear after markets resolve.</p>
+              <p className="mt-1 max-w-md text-center text-[11px] text-gray-600">
+                {meta?.dueForResolution
+                  ? 'Resolution polling is due for one or more markets. Run the settlement cycle to score filled paper bets.'
+                  : `Outcomes appear after traded markets settle and the scheduled paper resolution check runs${nextSettlementAt ? `; next check is ${new Date(nextSettlementAt).toLocaleString()}` : ''}.`}
+              </p>
+              {nextSettlementMarket && (
+                <p className="mt-2 max-w-md truncate text-center text-[11px] text-gray-500">
+                  {nextSettlementMarket.title}
+                </p>
+              )}
             </div>
           ) : (
             <>
               <p className="px-6 pb-2 text-xs text-gray-600">
-                Showing {((page - 1) * limit) + 1}\u2013{Math.min(page * limit, total)} of {total}
+                Showing {((page - 1) * limit) + 1}&ndash;{Math.min(page * limit, total)} of {total}
               </p>
               <div className="max-h-[600px] overflow-y-auto">
                 <Table>

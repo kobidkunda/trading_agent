@@ -28,6 +28,35 @@ type LegacyAgentOutput = {
 
 type ProviderKey = 'deerflow' | 'reddit' | 'twitter' | 'agentReach' | 'searxng';
 
+type StageTransition = {
+  from: string;
+  to: string;
+  timestamp: string;
+  reason?: string;
+  jobId?: string;
+};
+
+const SOURCE_RELEVANCE_STOPWORDS = new Set([
+  'will', 'the', 'and', 'for', 'with', 'from', 'that', 'this', 'market', 'markets',
+  'prediction', 'predict', 'advance', 'before', 'after', 'over', 'under', 'yes',
+  'win', 'wins', 'winner', 'score', 'points', 'primary', 'nominee', 'election',
+  'between', 'margin', 'victory', 'target', 'price', 'picked', 'round', 'top',
+  'republican', 'republicans', 'democratic', 'democrat', 'democrats', 'senate',
+  'house', 'runoff', 'governor', 'texas',
+]);
+
+const GENERIC_SOURCE_TITLES = new Set([
+  'twitter',
+  'twitter it s what s happening twitter',
+  'x twitter post',
+  'reddit post',
+]);
+
+const WEAK_ENTITY_TOKENS = new Set([
+  'china', 'india', 'russia', 'israel', 'iran', 'japan', 'google', 'spotify',
+  'trump', 'biden', 'democrat', 'republican',
+]);
+
 function safeJsonParse<T>(value: string | null | undefined): T | null {
   if (!value) return null;
   try {
@@ -35,6 +64,92 @@ function safeJsonParse<T>(value: string | null | undefined): T | null {
   } catch {
     return null;
   }
+}
+
+function extractStructuredFailure(output: LegacyAgentOutput): string | null {
+  const parsed = safeJsonParse<{ status?: string; error?: string; message?: string; summary?: string }>(output.output);
+  if (parsed?.status && ['failed', 'error'].includes(String(parsed.status).toLowerCase())) {
+    return parsed.summary || parsed.message || parsed.error || output.summary || output.rawOutput || output.output || null;
+  }
+  return output.failureReason || null;
+}
+
+function parseStageTransitions(value: string | null | undefined): StageTransition[] {
+  const parsed = safeJsonParse<unknown>(value);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((item): item is StageTransition => {
+    const row = item as Partial<StageTransition>;
+    return typeof row.from === 'string' && typeof row.to === 'string' && typeof row.timestamp === 'string';
+  });
+}
+
+function toIso(value: unknown): string | null {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'string') return value;
+  return null;
+}
+
+function normalizeRelevanceText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function stripSourceDiagnostics(value: string): string {
+  return value
+    .replace(/\bMissing:\s*[^"'\n.]+/gi, ' ')
+    .replace(/\bShow results with:\s*[^"'\n.]+/gi, ' ');
+}
+
+function marketNamedTokens(marketTitle: string): string[] {
+  return Array.from(new Set(
+    marketTitle
+      .replace(/['']/g, '')
+      .split(/[^A-Za-z0-9]+/)
+      .filter((token) =>
+        /^[A-Z][A-Za-z0-9]{2,}$/.test(token) &&
+        !SOURCE_RELEVANCE_STOPWORDS.has(token.toLowerCase()) &&
+        !['Will', 'Game'].includes(token)
+      )
+      .map((token) => token.toLowerCase()),
+  ));
+}
+
+function sourceMatchesMarket(marketTitle: string, sourceText: string): boolean {
+  const haystack = normalizeRelevanceText(stripSourceDiagnostics(sourceText));
+  if (!haystack || GENERIC_SOURCE_TITLES.has(haystack)) return false;
+
+  const tokens = normalizeRelevanceText(marketTitle)
+    .split(' ')
+    .filter((token) => /[a-z]/.test(token) && token.length >= 4 && !SOURCE_RELEVANCE_STOPWORDS.has(token));
+  const namedTokens = marketNamedTokens(marketTitle);
+  const namedHits = namedTokens.filter((token) => haystack.includes(token)).length;
+  const strongNamedHits = namedTokens.filter((token) => !WEAK_ENTITY_TOKENS.has(token) && haystack.includes(token)).length;
+  const tokenHits = tokens.filter((token) => haystack.includes(token)).length;
+  const adjacentHit = tokens.some((token, index) => {
+    const next = tokens[index + 1];
+    return next ? haystack.includes(`${token} ${next}`) : false;
+  });
+
+  if (namedTokens.length > 0) {
+    const requiredHits = tokens.length <= 2 ? 1 : Math.min(3, tokens.length);
+    const weakEntityFullMatch = tokenHits >= Math.min(4, Math.max(3, tokens.length));
+    const hasReliableEntityMatch = strongNamedHits > 0 || namedHits >= 2 || weakEntityFullMatch;
+    return hasReliableEntityMatch && (tokenHits >= requiredHits || adjacentHit);
+  }
+  return tokenHits >= Math.min(2, tokens.length);
+}
+
+function filterSourcesForMarket<T extends LegacySource>(marketTitle: string, items: T[]): T[] {
+  return items.filter((source) =>
+    sourceMatchesMarket(
+      marketTitle,
+      [source.title, source.content, source.url].filter(Boolean).join(' '),
+    ),
+  );
+}
+
+function filterSourcesForMarketWithFallback<T extends LegacySource>(marketTitle: string, items: T[]): T[] {
+  return filterSourcesForMarket(marketTitle, items);
 }
 
 export async function GET(
@@ -65,6 +180,10 @@ export async function GET(
         outcomes: {
           orderBy: { resolvedAt: 'desc' },
         },
+        paperBets: {
+          orderBy: { updatedAt: 'desc' },
+          take: 1,
+        },
         postmortems: {
           orderBy: { createdAt: 'desc' },
         },
@@ -84,6 +203,7 @@ export async function GET(
     }) | undefined;
     const latestDecision = marketAny.decisions[0] as Record<string, any> | undefined;
     const latestOutcome = marketAny.outcomes[0] as Record<string, any> | undefined;
+    const latestPaperBet = marketAny.paperBets[0] as Record<string, any> | undefined;
 
     const researchRuns = (marketAny.researchRuns || []) as Array<Record<string, any> & {
       sources?: LegacySource[];
@@ -133,6 +253,13 @@ export async function GET(
     const searxngSources = sourcesWithProvider.filter(s => 
       s.provider === 'SEARXNG' || s.sourceType === 'SEARXNG' || s.provider === 'WEB' || s.sourceType === 'SEARCH' || s.sourceType === 'WEB'
     );
+    const rawProviderCounts = {
+      deerflow: deerflowSources.length,
+      reddit: redditSources.length,
+      twitter: twitterSources.length,
+      agentReach: agentReachSources.length,
+      searxng: searxngSources.length,
+    };
 
     if (allAgentOutputs.length) {
       for (const output of allAgentOutputs) {
@@ -224,10 +351,11 @@ export async function GET(
       });
     };
 
-    deerflowSources = dedupeByUrl(deerflowSources);
-    redditSources = dedupeByUrl(redditSources);
-    twitterSources = dedupeByUrl(twitterSources);
-    agentReachSources = dedupeByUrl(agentReachSources);
+    deerflowSources = dedupeByUrl(filterSourcesForMarketWithFallback(market.title, deerflowSources));
+    redditSources = dedupeByUrl(filterSourcesForMarketWithFallback(market.title, redditSources));
+    twitterSources = dedupeByUrl(filterSourcesForMarketWithFallback(market.title, twitterSources));
+    agentReachSources = dedupeByUrl(filterSourcesForMarketWithFallback(market.title, agentReachSources));
+    const filteredSearxngSources = dedupeByUrl(filterSourcesForMarketWithFallback(market.title, searxngSources));
 
     const sourceErrors: Record<ProviderKey, Array<{ role: string; serviceName: string | null; message: string; modelUsed: string | null }>> = {
       deerflow: [],
@@ -251,8 +379,9 @@ export async function GET(
     for (const output of allAgentOutputs) {
       const key = providerKeyForOutput(output);
       if (!key) continue;
-      const text = output.failureReason || output.summary || output.rawOutput || output.output || '';
-      const failed = Boolean(output.failureReason) || /\bFAILED\b|\berror\b|unavailable|timeout|aborted/i.test(text);
+      const structuredFailure = extractStructuredFailure(output);
+      const text = structuredFailure || output.summary || output.rawOutput || output.output || '';
+      const failed = Boolean(structuredFailure) || /\bFAILED\b|\berror\b|unavailable|timeout|aborted/i.test(text);
       if (!failed) continue;
       sourceErrors[key].push({
         role: output.role,
@@ -280,7 +409,78 @@ export async function GET(
       ensureFailure('reddit', redditSources.length > 0);
       ensureFailure('twitter', twitterSources.length > 0);
       ensureFailure('agentReach', agentReachSources.length > 0);
-      ensureFailure('searxng', searxngSources.length > 0);
+      ensureFailure('searxng', filteredSearxngSources.length > 0);
+    }
+
+    const explainFilteredSources = (key: ProviderKey, rawCount: number, usableCount: number) => {
+      if (rawCount > 0 && usableCount === 0 && sourceErrors[key].length === 0) {
+        sourceErrors[key].push({
+          role: 'FILTERED_NOISY_SOURCES',
+          serviceName: key,
+          message: `${rawCount} raw source${rawCount === 1 ? '' : 's'} captured, but 0 matched this market after relevance filtering. Hidden to avoid noisy or duplicate research evidence.`,
+          modelUsed: null,
+        });
+      }
+    };
+    explainFilteredSources('deerflow', rawProviderCounts.deerflow, deerflowSources.length);
+    explainFilteredSources('reddit', rawProviderCounts.reddit, redditSources.length);
+    explainFilteredSources('twitter', rawProviderCounts.twitter, twitterSources.length);
+    explainFilteredSources('agentReach', rawProviderCounts.agentReach, agentReachSources.length);
+    explainFilteredSources('searxng', rawProviderCounts.searxng, filteredSearxngSources.length);
+
+    const explainEmptyProviderOutput = (
+      key: ProviderKey,
+      hasSources: boolean,
+      matchingOutputs: LegacyAgentOutput[],
+      itemLabel: string,
+    ) => {
+      if (hasSources || sourceErrors[key].length > 0 || matchingOutputs.length === 0) return;
+
+      const providerOutput = matchingOutputs.find((output) => {
+        const parsed = safeJsonParse<Record<string, unknown>>(output.output);
+        if (!parsed) return false;
+        if (['failed', 'error'].includes(String(parsed.status || '').toLowerCase())) return true;
+        const possibleLists = ['posts', 'tweets', 'sources', 'results']
+          .map((field) => parsed[field])
+          .filter(Array.isArray) as unknown[][];
+        return possibleLists.some((items) => items.length === 0);
+      }) ?? matchingOutputs[0];
+      const structuredFailure = extractStructuredFailure(providerOutput);
+
+      sourceErrors[key].push({
+        role: providerOutput.role,
+        serviceName: providerOutput.serviceName || providerOutput.provider || key,
+        message: structuredFailure || `${providerOutput.role} ran, but returned 0 usable ${itemLabel} for this market. The panel is empty because the provider output had no matching evidence to persist.`,
+        modelUsed: providerOutput.modelUsed || null,
+      });
+    };
+
+    explainEmptyProviderOutput(
+      'reddit',
+      redditSources.length > 0,
+      allAgentOutputs.filter((output) => output.role.toUpperCase().includes('REDDIT')),
+      'Reddit posts',
+    );
+    explainEmptyProviderOutput(
+      'twitter',
+      twitterSources.length > 0,
+      allAgentOutputs.filter((output) => output.role.toUpperCase().includes('X_ANALYST') || output.role.toUpperCase().includes('TWITTER')),
+      'X/Twitter posts',
+    );
+    explainEmptyProviderOutput(
+      'agentReach',
+      agentReachSources.length > 0,
+      allAgentOutputs.filter((output) => output.role.toUpperCase().includes('AGENT_REACH') || (output.serviceName || '').toUpperCase().includes('AGENT_REACH')),
+      'Agent-Reach sources',
+    );
+
+    if (deerflowSources.length === 0 && sourceErrors.deerflow.length === 0) {
+      sourceErrors.deerflow.push({
+        role: 'DEERFLOW_UNAVAILABLE',
+        serviceName: 'deerflow',
+        message: 'DeerFlow is unavailable/disabled in this environment, so the engine does not persist DeerFlow sources. The active FULL path uses SearXNG, TradingAgents, Agent-Reach, synthesis, debate, judge, and risk instead.',
+        modelUsed: null,
+      });
     }
 
     // Parse synthesis from latest research
@@ -396,22 +596,27 @@ export async function GET(
 
     // Paper bet data
     let paperBet: Record<string, unknown> | null = null;
-    if (includePaperBet && latestOutcome) {
+    if (includePaperBet && latestPaperBet) {
       paperBet = {
-        id: latestOutcome.id,
-        stake: latestOutcome.stake || 0,
-        entryPrice: latestOutcome.entryPrice || 0,
-        predictedSide: latestOutcome.predictedSide as 'YES' | 'NO',
-        actualOutcome: latestOutcome.actualOutcome as 'YES' | 'NO' | 'CANCELLED' | null,
-        resolvedProb: latestOutcome.resolvedProb || null,
-        pnl: latestOutcome.pnl || null,
-        brierScore: latestOutcome.brierScore || null,
-        directionCorrect: latestOutcome.directionCorrect || null,
-        resolvedAt: latestOutcome.resolvedAt?.toISOString() || null,
+        id: latestPaperBet.id,
+        orderId: latestPaperBet.orderId || null,
+        executionStatus: latestPaperBet.executionStatus || null,
+        stake: latestPaperBet.stake || 0,
+        entryPrice: latestPaperBet.entryPrice || 0,
+        predictedProb: latestPaperBet.predictedProb || null,
+        predictedSide: latestPaperBet.predictedSide as 'YES' | 'NO',
+        actualOutcome: latestPaperBet.actualOutcome as 'YES' | 'NO' | 'CANCELLED' | null,
+        resolvedProb: latestPaperBet.resolvedProb || null,
+        pnl: latestPaperBet.pnl || null,
+        brierScore: latestPaperBet.brierScore || null,
+        directionCorrect: latestPaperBet.directionCorrect || null,
+        createdAt: latestPaperBet.createdAt?.toISOString() || null,
+        executedAt: latestPaperBet.executedAt?.toISOString() || null,
+        resolvedAt: latestPaperBet.resolvedAt?.toISOString() || null,
       };
     }
 
-    // Pipeline stages from transparency stages in research
+    // Pipeline stages from transparency stages plus durable DB milestones.
     const explicitStages = ((latestResearch?.transparencyStages as any[]) || []).map((stage: any) => ({
         stage: stage.stage || 'UNKNOWN',
         status: stage.status || 'completed',
@@ -424,54 +629,171 @@ export async function GET(
         message: stage.message || '',
         failureReason: stage.failureReason || null,
       }));
-    const derivedStages = latestResearch && explicitStages.length === 0
-      ? [
-          {
+    const transitionStages = parseStageTransitions(latestCandidate?.reprocessReason).map((transition) => ({
+      stage: transition.to,
+      status: 'completed',
+      startedAt: transition.timestamp,
+      endedAt: transition.timestamp,
+      duration: 0,
+      serviceName: transition.jobId ? `job:${transition.jobId}` : 'worker',
+      provider: 'system',
+      model: '',
+      message: `${transition.from} → ${transition.to}${transition.reason ? `: ${transition.reason}` : ''}`,
+      failureReason: null,
+    }));
+    const derivedMilestones = [
+      latestCandidate
+        ? {
+            stage: latestCandidate.stage || 'SCANNED',
+            status: 'completed',
+            startedAt: toIso(latestCandidate.createdAt) || toIso(latestCandidate.updatedAt),
+            endedAt: toIso(latestCandidate.updatedAt),
+            duration: 0,
+            serviceName: 'candidate-engine',
+            provider: 'system',
+            model: '',
+            message: latestCandidate.skipReason
+              ? `Candidate stage ${latestCandidate.stage || 'SCANNED'}: ${latestCandidate.skipReason}`
+              : `Candidate stage ${latestCandidate.stage || 'SCANNED'} with score ${latestCandidate.candidateScore ?? '—'}.`,
+            failureReason: latestCandidate.lastError || null,
+          }
+        : null,
+      latestResearch
+        ? {
             stage: `RESEARCH_${latestResearch.depth || 'UNKNOWN'}`,
             status: latestResearch.status || 'UNKNOWN',
-            startedAt: latestResearch.startedAt?.toISOString() || latestResearch.createdAt?.toISOString() || null,
-            endedAt: latestResearch.completedAt?.toISOString() || null,
+            startedAt: toIso(latestResearch.startedAt) || toIso(latestResearch.createdAt),
+            endedAt: toIso(latestResearch.completedAt),
             duration: 0,
             serviceName: 'research-run',
             provider: 'system',
             model: '',
             message: latestResearch.status === 'FAILED'
               ? 'Research failed. See provider errors and agent outputs below.'
-              : `Research status: ${latestResearch.status}`,
+              : `Research status: ${latestResearch.status}; sources=${sources.length}; agentOutputs=${allAgentOutputs.length}.`,
             failureReason: latestResearch.status === 'FAILED' ? 'Research run failed before producing required sources/decision.' : null,
-          },
-          ...(latestResearch.agentOutputs || [])
-            .filter((output) => output.failureReason || /\bFAILED\b|\berror\b|unavailable|timeout|aborted/i.test(output.summary || output.rawOutput || output.output || ''))
-            .map((output) => ({
-              stage: output.stage || output.role || 'AGENT_OUTPUT',
-              status: 'FAILED',
-              startedAt: output.startedAt?.toISOString() || latestResearch.startedAt?.toISOString() || latestResearch.createdAt?.toISOString() || null,
-              endedAt: output.endedAt?.toISOString() || latestResearch.completedAt?.toISOString() || null,
-              duration: 0,
-              serviceName: output.serviceName || '',
-              provider: output.provider || '',
-              model: output.modelUsed || '',
-              message: output.summary || output.rawOutput || output.output || '',
-              failureReason: output.failureReason || output.summary || output.rawOutput || null,
-            })),
-        ]
+          }
+        : null,
+      latestDecision
+        ? {
+            stage: `DECISION_${latestDecision.action || 'UNKNOWN'}`,
+            status: 'completed',
+            startedAt: toIso(latestDecision.createdAt),
+            endedAt: toIso(latestDecision.createdAt),
+            duration: 0,
+            serviceName: 'judge-risk',
+            provider: 'system',
+            model: '',
+            message: `${latestDecision.action || 'UNKNOWN'} ${latestDecision.side || ''} edge=${latestDecision.edge ?? '—'} confidence=${latestDecision.confidence ?? '—'}. ${latestDecision.reason || ''}`.trim(),
+            failureReason: latestDecision.reasonCode && latestDecision.action === 'SKIP' ? latestDecision.reasonCode : null,
+          }
+        : null,
+      risk
+        ? {
+            stage: 'RISK_CHECKED',
+            status: risk.finalDecision === 'SKIP' ? 'blocked' : 'completed',
+            startedAt: toIso(latestDecision?.createdAt),
+            endedAt: toIso(latestDecision?.createdAt),
+            duration: 0,
+            serviceName: 'risk-engine',
+            provider: 'system',
+            model: '',
+            message: `Risk final decision: ${risk.finalDecision}; edge=${risk.edge ?? '—'}.`,
+            failureReason: risk.finalDecision === 'SKIP' ? latestDecision?.reasonCode || latestDecision?.reason || null : null,
+          }
+        : null,
+      latestPaperBet
+        ? {
+            stage: 'PAPER_EXECUTED',
+            status: latestPaperBet.executionStatus || 'UNKNOWN',
+            startedAt: toIso(latestPaperBet.createdAt),
+            endedAt: toIso(latestPaperBet.executedAt) || toIso(latestPaperBet.updatedAt),
+            duration: 0,
+            serviceName: 'paper-execution',
+            provider: 'system',
+            model: '',
+            message: `Paper bet ${latestPaperBet.executionStatus || 'UNKNOWN'} ${latestPaperBet.predictedSide || ''}; stake=${latestPaperBet.stake ?? '—'} entry=${latestPaperBet.entryPrice ?? '—'}.`,
+            failureReason: ['FAILED', 'CANCELLED', 'EXPIRED'].includes(String(latestPaperBet.executionStatus || '').toUpperCase())
+              ? String(latestPaperBet.actualOutcome || latestPaperBet.executionStatus || '')
+              : null,
+          }
+        : null,
+      latestOutcome
+        ? {
+            stage: 'RESOLVED',
+            status: 'completed',
+            startedAt: toIso(latestOutcome.resolvedAt),
+            endedAt: toIso(latestOutcome.resolvedAt),
+            duration: 0,
+            serviceName: latestOutcome.source || 'resolution',
+            provider: 'system',
+            model: '',
+            message: `Outcome resolved as ${latestOutcome.result || latestOutcome.outcome || 'UNKNOWN'}.`,
+            failureReason: null,
+          }
+        : null,
+    ].filter(Boolean) as Array<{
+      stage: string;
+      status: string;
+      startedAt: string | null;
+      endedAt: string | null;
+      duration: number;
+      serviceName: string;
+      provider: string;
+      model: string;
+      message: string;
+      failureReason: string | null;
+    }>;
+    const failureStages = latestResearch
+      ? (latestResearch.agentOutputs || [])
+          .filter((output) => extractStructuredFailure(output) || /\bFAILED\b|\berror\b|unavailable|timeout|aborted/i.test(output.summary || output.rawOutput || output.output || ''))
+          .map((output) => ({
+            stage: output.stage || output.role || 'AGENT_OUTPUT',
+            status: 'FAILED',
+            startedAt: toIso(output.startedAt) || toIso(latestResearch.startedAt) || toIso(latestResearch.createdAt),
+            endedAt: toIso(output.endedAt) || toIso(latestResearch.completedAt),
+            duration: 0,
+            serviceName: output.serviceName || '',
+            provider: output.provider || '',
+            model: output.modelUsed || '',
+            message: output.summary || output.rawOutput || output.output || '',
+            failureReason: extractStructuredFailure(output) || output.summary || output.rawOutput || null,
+          }))
       : [];
+    const dedupeStages = (stages: typeof derivedMilestones) => {
+      const seen = new Set<string>();
+      return stages.filter((stage) => {
+        const key = `${stage.stage}|${stage.startedAt || ''}|${stage.message || ''}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
     const pipeline = {
-      stages: explicitStages.length > 0 ? explicitStages : derivedStages,
+      stages: dedupeStages([
+        ...transitionStages,
+        ...derivedMilestones,
+        ...explicitStages,
+        ...failureStages,
+      ]).sort((a, b) => {
+        const aTime = Date.parse(a.startedAt || a.endedAt || '') || 0;
+        const bTime = Date.parse(b.startedAt || b.endedAt || '') || 0;
+        return aTime - bTime;
+      }),
     };
 
     // Agent outputs
     const agentOutputs = (latestResearch?.agentOutputs || []).map((a) => ({
       role: a.role,
       stage: a.role,
-      serviceName: 'TradingAgents',
+      serviceName: a.serviceName || a.provider || '',
       provider: a.provider || '',
       modelUsed: a.modelUsed || '',
       output: a.output || '',
       rawOutput: a.rawOutput || '',
       summary: a.summary || null,
       referencesJson: a.referencesJson || null,
-      failureReason: a.failureReason || null,
+      failureReason: extractStructuredFailure(a) || a.failureReason || null,
       startedAt: a.startedAt?.toISOString() || null,
       endedAt: a.endedAt?.toISOString() || null,
     }));
@@ -517,6 +839,16 @@ export async function GET(
         postmortems: marketAny.postmortems.length,
         orderbookSnapshots: await db.orderbookSnapshot.count({ where: { marketId: id } }),
       },
+      researchRuns: researchRuns.map((run) => ({
+        id: run.id,
+        status: run.status,
+        depth: run.depth,
+        startedAt: toIso(run.startedAt),
+        completedAt: toIso(run.completedAt),
+        createdAt: toIso(run.createdAt),
+        sourceCount: (run.sources || []).length,
+        agentOutputCount: (run.agentOutputs || []).length,
+      })),
       pipeline,
       sources: {
         deerflow: deerflowSources.map(s => ({
@@ -564,7 +896,7 @@ export async function GET(
           snippet: s.content || '',
           provider: s.provider || 'AGENT_REACH',
         })),
-        searxng: searxngSources.map(s => ({
+        searxng: filteredSearxngSources.map(s => ({
           title: s.title || '',
           url: s.url || '',
           snippet: s.content || '',

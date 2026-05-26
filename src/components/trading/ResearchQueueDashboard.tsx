@@ -47,12 +47,13 @@ import { PaginationBar } from '@/components/trading/PaginationBar';
 import type { PaginationParams, PaginatedResponse } from '@/lib/types';
 
 type ResearchTier = 'QUICK' | 'STANDARD' | 'DEEP';
+type ResearchDepth = ResearchTier | 'DEERFLOW' | 'FULL';
 
 interface ResearchJob {
   id: string;
   marketId: string;
   status: string;
-  depth: ResearchTier;
+  depth: ResearchDepth;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
@@ -62,6 +63,8 @@ interface ResearchJob {
     venue: string;
     category: string;
   } | null;
+  totalSourceCount?: number;
+  agentOutputCount?: number;
 }
 
 interface TierBudget {
@@ -82,6 +85,12 @@ function tierBadge(tier: ResearchTier) {
       {tier}
     </Badge>
   );
+}
+
+function normalizeTier(depth: ResearchDepth | string | null | undefined): ResearchTier {
+  if (depth === 'QUICK' || depth === 'STANDARD' || depth === 'DEEP') return depth;
+  if (depth === 'DEERFLOW' || depth === 'FULL') return 'DEEP';
+  return 'STANDARD';
 }
 
 function statusBadge(status: string) {
@@ -158,6 +167,7 @@ export function ResearchQueueDashboard() {
       });
       if (debouncedSearch.trim()) query.set('search', debouncedSearch.trim());
       if (statusFilter !== 'ALL') query.set('status', statusFilter);
+      query.set('view', 'queue');
 
       const res = await fetch(`/api/research?${query}`);
       if (!res.ok) throw new Error('Failed to fetch research runs');
@@ -207,7 +217,7 @@ export function ResearchQueueDashboard() {
   const jobsByTier = useMemo(() => {
     const groups: Record<ResearchTier, ResearchJob[]> = { QUICK: [], STANDARD: [], DEEP: [] };
     for (const job of jobs) {
-      const tier: ResearchTier = job.depth ?? 'STANDARD';
+      const tier = normalizeTier(job.depth);
       groups[tier].push(job);
     }
     return groups;
@@ -439,6 +449,8 @@ export function ResearchQueueDashboard() {
                       <TableHead className="text-gray-500">Market</TableHead>
                       <TableHead className="text-gray-500">Tier</TableHead>
                       <TableHead className="text-gray-500">Status</TableHead>
+                      <TableHead className="text-right text-gray-500">Sources</TableHead>
+                      <TableHead className="text-right text-gray-500">Agents</TableHead>
                       <TableHead
                         className="cursor-pointer text-right text-gray-500 hover:text-gray-300 select-none"
                         onClick={() => handleSort('startedAt')}
@@ -481,8 +493,14 @@ export function ResearchQueueDashboard() {
                               )}
                             </div>
                           </TableCell>
-                          <TableCell>{tierBadge(job.depth)}</TableCell>
+                          <TableCell>{tierBadge(normalizeTier(job.depth))}</TableCell>
                           <TableCell>{statusBadge(stuck ? 'STUCK' : dead ? 'DEAD' : job.status)}</TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs tabular-nums text-gray-400">{job.totalSourceCount ?? 0}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-xs tabular-nums text-gray-400">{job.agentOutputCount ?? 0}</span>
+                          </TableCell>
                           <TableCell className="text-right">
                             <span className="text-xs tabular-nums text-gray-500">{formatTime(job.startedAt)}</span>
                           </TableCell>

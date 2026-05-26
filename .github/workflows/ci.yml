@@ -13,13 +13,14 @@ jobs:
 
     env:
       DATABASE_URL: file:./db/custom.db
+      SEARXNG_SECRET_KEY: ci_searxng_config_render_secret_000000000000000000000000
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: oven-sh/setup-bun@v1
         with:
-          bun-version: latest
+          bun-version: 1.3.11
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -29,6 +30,12 @@ jobs:
 
       - name: Prisma validate
         run: npx prisma validate
+
+      - name: Production safety checks
+        run: npm run check:production
+
+      - name: High severity dependency audit
+        run: bun audit --audit-level high
 
       - name: TypeScript type check
         run: npx tsc --noEmit

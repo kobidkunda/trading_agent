@@ -125,7 +125,7 @@ async function getProviderConfig(preferredModel?: string): Promise<ProviderConfi
 
   const rawApiKey = String(parsedData.apiKey || '');
   const allowsNoAuth = isPrivateOrLocalUrl(llmCred.serviceUrl);
-  const apiKey = allowsNoAuth && isInvalidApiKey(rawApiKey) ? '' : rawApiKey;
+  const apiKey = rawApiKey.trim();
 
   if (!allowsNoAuth && isInvalidApiKey(apiKey)) {
     throw new Error('Invalid or placeholder API key in credential. Please update the LLM credential with a valid API key');
@@ -160,7 +160,7 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
   }
 
   const maxRetries = options.maxRetries ?? 0;
-  const timeoutMs = options.timeoutMs ?? 12_000;
+  const timeoutMs = options.timeoutMs ?? 60_000;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -189,17 +189,43 @@ export async function callLLM(options: LLMCallOptions): Promise<LLMCallResult> {
       let content = '';
       let tokenCount = 0;
 
+      // Strip reasoning_content BEFORE JSON.parse — reasoning models (DeepSeek R1, QwQ, etc.)
+      // embed a long thinking block there that can contain unescaped characters and break parsing.
+      const sanitized = responseText.replace(/"reasoning_content"\s*:\s*"(?:[^"\\]|\\.)*"/g, '"reasoning_content":""');
+
       try {
-        const data = JSON.parse(responseText);
+        const data = JSON.parse(sanitized);
+        // Prefer actual content over reasoning trace
         content = data.choices?.[0]?.message?.content || '';
         tokenCount = data.usage?.total_tokens || 0;
       } catch {
-        const streamed = parseStreamingChatCompletion(responseText);
-        if (!streamed) {
-          throw new Error(`LLM response was not valid JSON or SSE chat completion: ${responseText.slice(0, 500)}`);
+        // sanitized regex failed (content > regex limit) — fall back to targeted extraction
+        const contentMatch = responseText.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*?)"\s*,\s*"role"/);
+        if (contentMatch) {
+          content = contentMatch[1]
+            .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
+            .replace(/\\"/g, '"').replace(/\\\\/g, '\\');
         }
-        content = streamed.content;
-        tokenCount = streamed.tokenCount;
+
+        if (!content) {
+          try {
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              const data = JSON.parse(jsonMatch[0]);
+              content = data.choices?.[0]?.message?.content || data.choices?.[0]?.delta?.content || '';
+              tokenCount = data.usage?.total_tokens || 0;
+            }
+          } catch {}
+        }
+
+        if (!content) {
+          const streamed = parseStreamingChatCompletion(responseText);
+          if (!streamed) {
+            throw new Error(`LLM response was not valid JSON or SSE chat completion: ${responseText.slice(0, 500)}`);
+          }
+          content = streamed.content;
+          tokenCount = streamed.tokenCount;
+        }
       }
 
       let parsedJson: Record<string, unknown> | null = null;
@@ -239,6 +265,7 @@ export async function callLLMJson<T = Record<string, unknown>>(
   prompt: string,
   systemPrompt?: string,
   model?: string,
+  timeoutMs?: number,
 ): Promise<{ data: T; meta: { model: string; tokenCount: number; latencyMs: number } }> {
   const result = await callLLM({
     prompt,
@@ -246,6 +273,7 @@ export async function callLLMJson<T = Record<string, unknown>>(
     model,
     responseFormat: 'json',
     temperature: 0.3,
+    timeoutMs: timeoutMs ?? 120_000,  // 2 min default — reasoning models need extra time
   });
 
   return {

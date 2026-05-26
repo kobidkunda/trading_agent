@@ -26,7 +26,6 @@ export interface PostDebatePredictionResult {
 // Constants
 // ============================================================================
 
-const MIROFISH_BASE_URL = process.env.MIROFISH_URL || '';
 const MIROFISH_TIMEOUT_MS = 30_000;
 const DEFAULT_MODEL = 'free_ling';
 
@@ -204,7 +203,12 @@ async function callMiroFish(
   prompt: string,
   signal?: AbortSignal
 ): Promise<string> {
-  const url = `${MIROFISH_BASE_URL}/api/llm/test/${encodeURIComponent(model)}?prompt=${encodeURIComponent(prompt)}`;
+  const baseUrl = process.env.MIROFISH_URL || '';
+  if (!baseUrl) {
+    throw new Error('MiroFish URL not configured');
+  }
+
+  const url = `${baseUrl}/api/llm/test/${encodeURIComponent(model)}?prompt=${encodeURIComponent(prompt)}`;
   
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), MIROFISH_TIMEOUT_MS);
@@ -258,6 +262,10 @@ export async function runPostDebatePrediction(
   const model = mirofishModel || DEFAULT_MODEL;
   const prompt = buildPredictionPrompt(debateResult, researchContext);
 
+  if (!process.env.MIROFISH_URL) {
+    return synthesizeFromDebate(debateResult, researchContext);
+  }
+
   const attemptWithModel = async (modelName: string): Promise<PostDebatePredictionResult | null> => {
     try {
       const rawResponse = await callMiroFish(modelName, prompt);
@@ -294,8 +302,8 @@ export async function runPostDebatePrediction(
     if (fallbackResult) return fallbackResult;
   }
 
-  // All MiroFish models failed — throw so caller can retry
-  throw new Error(`Post-debate prediction failed: all MiroFish models exhausted (${model}, ${FALLBACK_MODELS.join(', ')})`);
+  console.warn(`[PostDebatePrediction] All MiroFish models failed; using debate synthesis fallback (${model}, ${FALLBACK_MODELS.join(', ')})`);
+  return synthesizeFromDebate(debateResult, researchContext);
 }
 
 function isValidRecommendation(value: string): value is PostDebatePredictionResult['recommendation'] {

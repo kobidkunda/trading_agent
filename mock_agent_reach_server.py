@@ -80,6 +80,90 @@ async def research_endpoint(request: dict):
     print(f"[Mock Agent-Reach] Returning {len(sources)} sources")
     return result
 
+def mcp_text_response(request_id: Any, payload: dict) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(payload),
+                }
+            ]
+        },
+    }
+
+@app.post("/mcp")
+async def mcp_endpoint(request: dict):
+    """Minimal MCP tools/list + tools/call surface for local Agent-Reach."""
+    method = request.get("method", "")
+    request_id = request.get("id")
+
+    if method == "tools/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "tools": [
+                    {
+                        "name": "research",
+                        "description": "Run broad research and return normalized sources",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string"},
+                                "targetSourceCount": {"type": "integer", "default": 100},
+                            },
+                            "required": ["query"],
+                        },
+                    },
+                    {
+                        "name": "get_status",
+                        "description": "Get Agent-Reach channel status",
+                        "inputSchema": {"type": "object", "properties": {}},
+                    },
+                ]
+            },
+        }
+
+    if method != "tools/call":
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32601, "message": "Method not found"},
+        }
+
+    params = request.get("params", {})
+    tool_name = params.get("name", "")
+    arguments = params.get("arguments", {}) or {}
+
+    if tool_name == "get_status":
+        return mcp_text_response(
+            request_id,
+            {
+                "web": {"status": "ok", "message": "SearXNG-backed web research"},
+                "research": {"status": "ok", "message": "Broad research available"},
+            },
+        )
+
+    if tool_name != "research":
+        return mcp_text_response(request_id, {"error": f"Unknown tool: {tool_name}"})
+
+    query = arguments.get("query", "")
+    target_count = int(arguments.get("targetSourceCount", 100) or 100)
+    sources = await fetch_searxng_sources(query, min(target_count, 100))
+    return mcp_text_response(
+        request_id,
+        {
+            "status": "completed",
+            "summary": f"Agent-Reach (local): Found {len(sources)} sources for '{query[:50]}...'",
+            "sources": sources,
+            "source_count": len(sources),
+            "channels": ["web", "search"],
+        },
+    )
+
 @app.get("/sse")
 async def sse_endpoint():
     """SSE endpoint for MCP protocol"""

@@ -53,7 +53,7 @@ describe('trading mode api', () => {
     expect(payload.mode).toBe('PAPER');
     expect(payload.dataSource).toBe('REAL');
     expect(payload.executionMode).toBe('SIMULATED');
-    expect(payload.candidateThreshold).toBe(75);
+    expect(payload.candidateThreshold).toBe(20);
   });
 
   it('allows localhost trading mode bootstrap GET even when local bypass is disabled', async () => {
@@ -83,13 +83,13 @@ describe('trading mode api', () => {
     const payload = await response.json();
 
     expect(payload).toEqual({
-      mode: 'PAPER',
-      dataSource: 'REAL',
+      mode: 'DEMO',
+      dataSource: 'MOCK',
       executionMode: 'SIMULATED',
       globalKillSwitch: true,
       liveExecutionEnabled: false,
       scanIntervalMinutes: 5,
-      candidateThreshold: 75,
+      candidateThreshold: 20,
     });
 
     expect(upsertMock).toHaveBeenCalledTimes(3);

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 
 import {
+  ACTIVE_OPPOSITE_SIDE_PAPER_BET,
+  ACTIVE_SAME_SIDE_PAPER_BET,
+  classifyActivePaperBetExposure,
   isExecutedPaperBetStatus,
   scorePaperBet,
 } from '../paper-bets';
@@ -54,6 +57,23 @@ describe('executed status set integrity', () => {
     for (const s of invalid) {
       expect(isExecutedPaperBetStatus(s)).toBe(false);
     }
+  });
+});
+
+describe('active paper exposure classification', () => {
+  it('allows same-side unresolved paper exposure to be reused', () => {
+    expect(classifyActivePaperBetExposure('YES', 'YES')).toBe(ACTIVE_SAME_SIDE_PAPER_BET);
+    expect(classifyActivePaperBetExposure('NO', 'NO')).toBe(ACTIVE_SAME_SIDE_PAPER_BET);
+  });
+
+  it('blocks opposite-side unresolved paper exposure explicitly', () => {
+    expect(classifyActivePaperBetExposure('YES', 'NO')).toBe(ACTIVE_OPPOSITE_SIDE_PAPER_BET);
+    expect(classifyActivePaperBetExposure('NO', 'YES')).toBe(ACTIVE_OPPOSITE_SIDE_PAPER_BET);
+  });
+
+  it('treats missing or unknown existing side as no active exposure', () => {
+    expect(classifyActivePaperBetExposure(null, 'YES')).toBe('NONE');
+    expect(classifyActivePaperBetExposure('MAYBE', 'NO')).toBe('NONE');
   });
 });
 

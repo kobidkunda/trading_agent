@@ -34,7 +34,9 @@ export type RiskReasonCode =
   | 'CLUSTER_EXPOSURE_EXCEEDED'
   | 'TAIL_RISK_HIGH'
   | 'CORRELATION_CLUSTER_OVERLAP'
-  | 'MANUAL_REVIEW_REQUIRED';
+  | 'RESOLUTION_TOO_FAR'
+  | 'MANUAL_REVIEW_REQUIRED'
+  | 'EXTREME_MARKET_PROBABILITY';
 
 // Agent roles
 export type AgentRole = 'TRIAGE' | 'BULL' | 'BEAR' | 'CONTRADICTION' | 'JUDGE' | 'DEERFLOW' | 'NEWS_ANALYST' | 'SENTIMENT_ANALYST' | 'TECHNICAL_ANALYST' | 'REDDIT_ANALYST' | 'X_ANALYST' | 'TRADINGAGENTS_NATIVE';
@@ -133,6 +135,7 @@ export interface TradingAgentsMetadataResponse {
   models: MetadataOption[];
   source: 'tradingagents' | 'llm-fallback';
   error?: string;
+  warning?: string;
 }
 
 export type TransparencyStageStatus = 'running' | 'completed' | 'failed' | 'skipped' | 'timeout';
@@ -194,6 +197,28 @@ export interface StageServiceMapping {
   analystQuickThinkFallbackModels?: string[];
   analystLlmProvider?: string;
   analystMaxDebateRounds?: number;
+  analystMaxRiskRounds?: number;
+  analystOutputLanguage?: string;
+  analystCheckpointEnabled?: boolean;
+  analystSelectedAnalysts?: Array<'market' | 'social' | 'news' | 'fundamentals'>;
+  analystBenchmarkTicker?: string;
+  analystBenchmarkMap?: Record<string, string>;
+  analystAssetType?: 'stock' | 'crypto';
+  analystMaxRecurLimit?: number;
+  analystMemoryLogMaxEntries?: number;
+  analystConcurrencyLimit?: number;
+  analystNewsArticleLimit?: number;
+  analystGlobalNewsArticleLimit?: number;
+  analystGlobalNewsLookbackDays?: number;
+  analystGlobalNewsQueries?: string[];
+  analystOpenAIReasoningEffort?: 'low' | 'medium' | 'high';
+  analystGoogleThinkingLevel?: string;
+  analystAnthropicEffort?: 'low' | 'medium' | 'high';
+  analystCoreStockVendor?: 'yfinance' | 'alpha_vantage';
+  analystTechnicalIndicatorsVendor?: 'yfinance' | 'alpha_vantage';
+  analystFundamentalDataVendor?: 'yfinance' | 'alpha_vantage';
+  analystNewsDataVendor?: 'yfinance' | 'alpha_vantage';
+  analystToolVendorOverrides?: Record<string, 'yfinance' | 'alpha_vantage'>;
   searchService?: string;
   searchMaxResults?: number;
   agentReachEnabled?: boolean;
@@ -231,6 +256,7 @@ export interface StrategySettings {
   scanRateLimitMs?: number;
   scanTimeoutMs?: number;
   orderExpiryMinutes?: number;
+  maxResolutionDays?: number;
   orderbookPenaltyMode?: 'STRICT' | 'BALANCED' | 'LENIENT';
   missingOrderbookPenalty?: number;
 }
@@ -264,6 +290,9 @@ export interface RiskEngineInput {
   remainingCategoryCapacity?: number;
   marketLiquidity: number;
   marketSpread: number;
+  marketResolutionTime?: Date | string | null;
+  maxResolutionDays?: number;
+  now?: Date;
   catalystTiming?: string;
 }
 
@@ -298,6 +327,11 @@ export interface JudgeOutput {
 // System health metrics
 export interface SystemHealth {
   queueDepth: number;
+  dueQueueDepth?: number;
+  scheduledQueueDepth?: number;
+  scheduledResolutionChecks?: number;
+  nextScheduledJobAt?: string | null;
+  nextResolutionCheckAt?: string | null;
   failingJobs: number;
   stuckJobsCount: number;
   lockedJobsCount: number;
@@ -526,6 +560,7 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
       '/api/paper-bets',
       '/api/positions',
       '/api/prompts',
+      '/api/proxy-relays',
       '/api/proxy-settings',
       '/api/qdrant/collections',
       '/api/qdrant/collections/[name]',
@@ -539,8 +574,6 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
       '/api/simulation',
       '/api/strategy',
       '/api/strategy-config',
-      '/api/test/quick-sources',
-      '/api/test/sources',
       '/api/trading/mode',
       '/api/trading/candidates',
       '/api/trading/candidates/[id]',
@@ -624,6 +657,8 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
       '/api/mode',
       '/api/trading/mode',
       '/api/prompts',
+      '/api/proxy-relays',
+      '/api/proxy-relays/[id]',
       '/api/proxy-settings',
     ],
     ['PUT'],
@@ -635,6 +670,8 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
       '/api/credentials',
       '/api/credentials/test',
       '/api/prompts',
+      '/api/proxy-relays/deploy',
+      '/api/proxy-relays/[id]/test',
       '/api/qdrant/collections',
       '/api/settings',
       '/api/strategy-config',
@@ -651,13 +688,25 @@ export const API_PERMISSION_MATRIX: ApiPermission[] = [
     'dangerous',
   ),
   ...expandPermissions(
-    ['/api/credentials'],
+    ['/api/credentials', '/api/proxy-relays/[id]'],
     ['GET', 'PUT', 'DELETE'],
     ADMIN_ONLY_ROLES,
     'dangerous',
   ),
   ...expandPermissions(
     ['/api/dbtest'],
+    ['GET'],
+    ADMIN_ONLY_ROLES,
+    'dangerous',
+  ),
+  ...expandPermissions(
+    ['/api/reset'],
+    ['GET', 'POST'],
+    ADMIN_ONLY_ROLES,
+    'dangerous',
+  ),
+  ...expandPermissions(
+    ['/api/test/quick-sources', '/api/test/sources'],
     ['GET'],
     ADMIN_ONLY_ROLES,
     'dangerous',

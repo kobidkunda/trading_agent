@@ -1,8 +1,39 @@
 import { db } from '@/lib/db';
 import type { PaperBetExecutionStatus } from '@/lib/types';
+import { PAPER_LOOP_TEST_MARKET_EXTERNAL_ID, PAPER_LOOP_TEST_MARKET_TITLE } from '@/lib/engine/paper-loop-test-market';
+import { scheduleResolutionCheckForMarket } from '@/lib/engine/resolution-jobs';
+import { clampContractPrice } from '@/lib/engine/paper-execution';
 
 const EXECUTED_PAPER_BET_STATUSES: PaperBetExecutionStatus[] = ['FILLED', 'PARTIAL'];
 const RESOLVED_PAPER_BET_STATUSES: PaperBetExecutionStatus[] = ['FILLED', 'PARTIAL'];
+export const UNRESOLVED_PAPER_BET_STATUSES: PaperBetExecutionStatus[] = ['SUBMITTED', 'FILLED', 'PARTIAL'];
+
+export const ACTIVE_SAME_SIDE_PAPER_BET = 'ACTIVE_SAME_SIDE_PAPER_BET';
+export const ACTIVE_OPPOSITE_SIDE_PAPER_BET = 'ACTIVE_OPPOSITE_SIDE_PAPER_BET';
+
+export class ActivePaperBetConflictError extends Error {
+  existingBetId: string;
+  existingSide: 'YES' | 'NO';
+  requestedSide: 'YES' | 'NO';
+
+  constructor(params: { marketId: string; existingBetId: string; existingSide: 'YES' | 'NO'; requestedSide: 'YES' | 'NO' }) {
+    super(
+      `Active opposite-side paper bet ${params.existingBetId} (${params.existingSide}) already exists for market ${params.marketId}; requested ${params.requestedSide}`,
+    );
+    this.name = 'ActivePaperBetConflictError';
+    this.existingBetId = params.existingBetId;
+    this.existingSide = params.existingSide;
+    this.requestedSide = params.requestedSide;
+  }
+}
+
+export function classifyActivePaperBetExposure(
+  existingSide: string | null | undefined,
+  requestedSide: 'YES' | 'NO',
+): 'NONE' | typeof ACTIVE_SAME_SIDE_PAPER_BET | typeof ACTIVE_OPPOSITE_SIDE_PAPER_BET {
+  if (existingSide !== 'YES' && existingSide !== 'NO') return 'NONE';
+  return existingSide === requestedSide ? ACTIVE_SAME_SIDE_PAPER_BET : ACTIVE_OPPOSITE_SIDE_PAPER_BET;
+}
 
 export interface PaperBetScore {
   betId: string;
@@ -30,6 +61,55 @@ export async function createPaperBet(params: {
   stake: number;
   entryPrice: number;
 }): Promise<string> {
+  const existingForOrderOrDecision = await db.paperBet.findFirst({
+    where: {
+      OR: [
+        ...(params.orderId ? [{ orderId: params.orderId }] : []),
+        { decisionId: params.decisionId },
+      ],
+    },
+    select: { id: true },
+  });
+
+  if (existingForOrderOrDecision) {
+    await scheduleResolutionCheckForMarket({
+      marketId: params.marketId,
+      trigger: 'existing_paper_bet_reused',
+    }).catch((error) => console.error('[PaperBet] Failed to schedule resolution check:', error));
+    return existingForOrderOrDecision.id;
+  }
+
+  const existingUnresolvedMarketBet = await db.paperBet.findFirst({
+    where: {
+      marketId: params.marketId,
+      actualOutcome: null,
+      executionStatus: { in: UNRESOLVED_PAPER_BET_STATUSES },
+    },
+    orderBy: [{ confidence: 'desc' }, { edge: 'desc' }, { createdAt: 'desc' }],
+    select: { id: true, predictedSide: true },
+  });
+
+  if (existingUnresolvedMarketBet) {
+    const exposure = classifyActivePaperBetExposure(existingUnresolvedMarketBet.predictedSide, params.predictedSide);
+    if (exposure === ACTIVE_OPPOSITE_SIDE_PAPER_BET) {
+      throw new ActivePaperBetConflictError({
+        marketId: params.marketId,
+        existingBetId: existingUnresolvedMarketBet.id,
+        existingSide: existingUnresolvedMarketBet.predictedSide as 'YES' | 'NO',
+        requestedSide: params.predictedSide,
+      });
+    }
+
+    console.warn(
+      `[PaperBet] Skipping same-side duplicate unresolved bet for market ${params.marketId}; existing bet ${existingUnresolvedMarketBet.id}`,
+    );
+    await scheduleResolutionCheckForMarket({
+      marketId: params.marketId,
+      trigger: 'existing_same_side_paper_bet_reused',
+    }).catch((error) => console.error('[PaperBet] Failed to schedule resolution check:', error));
+    return existingUnresolvedMarketBet.id;
+  }
+
   const bet = await db.paperBet.create({
     data: {
       marketId: params.marketId,
@@ -46,14 +126,18 @@ export async function createPaperBet(params: {
       edge: params.edge,
       confidence: params.confidence,
       stake: params.stake,
-      entryPrice: params.entryPrice,
+      entryPrice: clampContractPrice(params.entryPrice),
     },
   });
+  await scheduleResolutionCheckForMarket({
+    marketId: params.marketId,
+    trigger: 'paper_bet_created',
+  }).catch((error) => console.error('[PaperBet] Failed to schedule resolution check:', error));
   return bet.id;
 }
 
 export function isExecutedPaperBetStatus(status: string | null | undefined): status is PaperBetExecutionStatus {
-return RESOLVED_PAPER_BET_STATUSES.includes(status as PaperBetExecutionStatus) || EXECUTED_PAPER_BET_STATUSES.includes(status as PaperBetExecutionStatus);
+  return EXECUTED_PAPER_BET_STATUSES.includes(status as PaperBetExecutionStatus);
 }
 
 export function scorePaperBet(
@@ -82,13 +166,15 @@ export function scorePaperBet(
 
   let pnl: number;
   if (predictedSide === 'YES') {
+    // YES contract at entryPrice (46¢): profit = (1-price)*stake, loss = price*stake
     pnl = directionCorrect
       ? (1 - entryPrice) * stake
       : -entryPrice * stake;
   } else {
+    // NO contract at entryPrice (6¢): profit = (1-price)*stake, loss = price*stake (same formula)
     pnl = directionCorrect
-      ? entryPrice * stake
-      : -(1 - entryPrice) * stake;
+      ? (1 - entryPrice) * stake
+      : -entryPrice * stake;
   }
 
   return { directionCorrect, probError, brierScore, pnl };
@@ -101,7 +187,7 @@ export async function resolvePaperBet(betId: string, actualOutcome: 'YES' | 'NO'
   const score = scorePaperBet(
     bet.predictedProb,
     bet.predictedSide as 'YES' | 'NO',
-    bet.entryPrice,
+    clampContractPrice(bet.entryPrice),
     bet.stake,
     actualOutcome,
     resolvedProb,
@@ -142,8 +228,8 @@ export async function resolveAllPaperBetsForMarket(marketId: string, actualOutco
     const realizedPnl = actualOutcome === 'CANCELLED'
       ? 0
       : pos.side === actualOutcome
-        ? (pos.side === 'YES' ? (1 - pos.entryPrice) : pos.entryPrice) * pos.currentSize
-        : (pos.side === 'YES' ? -pos.entryPrice : -(1 - pos.entryPrice)) * pos.currentSize;
+        ? (1 - clampContractPrice(pos.entryPrice)) * pos.currentSize
+        : -clampContractPrice(pos.entryPrice) * pos.currentSize;
 
     await db.position.update({
       where: { id: pos.id },
@@ -202,7 +288,11 @@ export interface AccuracyMetrics {
 export async function getAccuracyMetrics(limit: number = 100): Promise<AccuracyMetrics> {
   const bets = await db.paperBet.findMany({
     where: {
-      market: { dataSource: 'REAL' },
+      market: {
+        dataSource: 'REAL',
+        externalId: { not: PAPER_LOOP_TEST_MARKET_EXTERNAL_ID },
+        title: { not: PAPER_LOOP_TEST_MARKET_TITLE },
+      },
       decision: { mode: 'PAPER' },
       executionStatus: { in: EXECUTED_PAPER_BET_STATUSES },
     },
@@ -214,7 +304,7 @@ export async function getAccuracyMetrics(limit: number = 100): Promise<AccuracyM
   const resolved = bets.filter((b) => b.actualOutcome !== null && b.actualOutcome !== undefined);
   const scoredResolved = resolved.filter((b) => b.actualOutcome !== 'CANCELLED');
   const pending = bets.filter((b) => b.actualOutcome === null || b.actualOutcome === undefined);
-  const aPlusResolved = resolved.filter((b) => b.setupType === 'A_PLUS_BET' || b.aPlusStatus === 'PASSED');
+  const aPlusResolved = scoredResolved.filter((b) => b.setupType === 'A_PLUS_BET' || b.aPlusStatus === 'PASSED');
   const aPlusPending = pending.filter((b) => b.setupType === 'A_PLUS_BET' || b.aPlusStatus === 'PASSED');
 
   let directionCorrect = 0;
@@ -256,16 +346,16 @@ export async function getAccuracyMetrics(limit: number = 100): Promise<AccuracyM
 
   return {
     totalBets: bets.length,
-    resolvedBets: resolved.length,
+    resolvedBets: scoredResolved.length,
     pendingBets: pending.length,
     aPlusResolvedBets: aPlusResolved.length,
     aPlusPendingBets: aPlusPending.length,
     aPlusDirectionAccuracy: aPlusResolved.length > 0 ? Math.round((aPlusDirectionCorrect / aPlusResolved.length) * 10000) / 100 : 0,
     aPlusAvgBrierScore: aPlusResolved.length > 0 ? Math.round((aPlusTotalBrier / aPlusResolved.length) * 10000) / 10000 : 0,
     aPlusTotalPnl: Math.round(aPlusTotalPnl * 100) / 100,
-    directionAccuracy: resolved.length > 0 ? Math.round((directionCorrect / resolved.length) * 10000) / 100 : 0,
-    avgBrierScore: resolved.length > 0 ? Math.round((totalBrier / resolved.length) * 10000) / 10000 : 0,
-    avgProbError: resolved.length > 0 ? Math.round((totalProbError / resolved.length) * 10000) / 10000 : 0,
+    directionAccuracy: scoredResolved.length > 0 ? Math.round((directionCorrect / scoredResolved.length) * 10000) / 100 : 0,
+    avgBrierScore: scoredResolved.length > 0 ? Math.round((totalBrier / scoredResolved.length) * 10000) / 10000 : 0,
+    avgProbError: scoredResolved.length > 0 ? Math.round((totalProbError / scoredResolved.length) * 10000) / 10000 : 0,
     totalPnl: Math.round(totalPnl * 100) / 100,
     bidCount,
     bidCorrect,

@@ -46,3 +46,25 @@ export async function updateTradingModeOnBackend(mode: 'DEMO' | 'PAPER' | 'LIVE'
     state.setGlobalKillSwitch(payload.globalKillSwitch);
   }
 }
+
+export async function updateGlobalKillSwitchOnBackend(globalKillSwitch: boolean): Promise<void> {
+  const response = await fetch('/api/trading/mode', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-role': 'Admin',
+    },
+    body: JSON.stringify({ globalKillSwitch }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to update trading kill switch');
+  }
+
+  const payload = (await response.json()) as TradingModeApiResponse;
+  const state = useTradingStore.getState();
+  state.setTradingMode(normalizeTradingMode(payload.mode));
+  if (typeof payload.globalKillSwitch === 'boolean') {
+    state.setGlobalKillSwitch(payload.globalKillSwitch);
+  }
+}

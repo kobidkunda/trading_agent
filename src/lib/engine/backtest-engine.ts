@@ -10,6 +10,12 @@ import { computeCandidateScore } from './candidate-scoring';
 import type { CandidateScoreInput } from './candidate-scoring';
 import { computeRisk } from './risk';
 import type { RiskEngineInput } from '@/lib/types';
+import {
+  pollKalshiResolutions,
+  pollPolymarketResolutions,
+  reconcileMarketResolution,
+} from './resolution-poller';
+import { summarizeProfitEvidence } from './profit-evidence';
 
 // ── Types ──
 
@@ -20,6 +26,7 @@ export interface BacktestConfig {
   maxSpread: number;
   confidenceThreshold: number;
   maxPositionSize: number;
+  maxResolutionDays?: number;
 }
 
 export const DEFAULT_BACKTEST_CONFIG: BacktestConfig = {
@@ -39,6 +46,8 @@ export interface ReplayResult {
   snapshotCount: number;
   wouldBet: boolean;
   predictedProb: number;
+  hasExplicitPrediction: boolean;
+  predictionSource: 'ARCHIVED_MODEL' | 'MARKET_IMPLIED_ONLY';
   impliedProb: number;
   edge: number;
   candidateScore: number;
@@ -64,6 +73,73 @@ export interface BacktestMetrics {
 // ── Engine ──
 
 export class BacktestEngine {
+  async backfillResolvedOutcomesForHistoricalSnapshots(options: {
+    periodStart?: Date;
+    periodEnd?: Date;
+    limit?: number;
+  } = {}): Promise<{
+    checked: number;
+    resolved: number;
+    scored: number;
+    results: Array<{ marketId: string; venue: string; outcome: 'YES' | 'NO' | 'CANCELLED' }>;
+  }> {
+    const periodStart = options.periodStart ?? new Date('2024-01-01');
+    const periodEnd = options.periodEnd ?? new Date();
+    const limit = Math.max(1, Math.min(250, Math.floor(options.limit ?? 100)));
+    const now = new Date();
+
+    const markets = await db.market.findMany({
+      where: {
+        OR: [
+          { duplicateStatus: null },
+          { duplicateStatus: { not: 'INVALID_KALSHI_COMBO' } },
+        ],
+        venue: { in: ['KALSHI', 'POLYMARKET'] },
+        outcomes: { none: {} },
+        resolutionTime: { lte: now },
+        historicalSnapshots: {
+          some: {
+            snapshotTime: { gte: periodStart, lte: periodEnd },
+          },
+        },
+      },
+      select: { id: true, venue: true, externalId: true },
+      orderBy: { resolutionTime: 'desc' },
+      take: limit,
+    });
+
+    const [kalshiResults, polymarketResults] = await Promise.all([
+      pollKalshiResolutions(markets.filter((m) => m.venue === 'KALSHI').map((m) => m.externalId)),
+      pollPolymarketResolutions(markets.filter((m) => m.venue === 'POLYMARKET').map((m) => m.externalId)),
+    ]);
+
+    const results = [...kalshiResults, ...polymarketResults];
+    let resolved = 0;
+    let scored = 0;
+
+    for (const result of results) {
+      const reconciled = await reconcileMarketResolution({
+        marketId: result.marketId,
+        outcome: result.outcome,
+        resolvedProb: result.resolvedProb,
+        source: `${result.venue}_HISTORICAL_BACKTEST_BACKFILL`,
+      });
+      if (reconciled.outcomeCreated) resolved++;
+      scored += reconciled.paperBetsScored;
+    }
+
+    return {
+      checked: markets.length,
+      resolved,
+      scored,
+      results: results.map((result) => ({
+        marketId: result.marketId,
+        venue: result.venue,
+        outcome: result.outcome,
+      })),
+    };
+  }
+
   /**
    * Run a full backtest over a time period with a given strategy config.
    * Loads all markets with HistoricalSnapshots + Outcomes in the period,
@@ -101,6 +177,15 @@ export class BacktestEngine {
     }
 
     const metrics = this.computeMetrics(replays);
+    const resolvedWithPredictions = replays.filter(
+      (r) => (r.actualOutcome === 'YES' || r.actualOutcome === 'NO') && r.hasExplicitPrediction,
+    ).length;
+    const profitEvidence = summarizeProfitEvidence({
+      resolvedPaperBets: 0,
+      executedUnresolvedPaperBets: 0,
+      historicalResolvedMarkets: replays.filter((r) => r.actualOutcome === 'YES' || r.actualOutcome === 'NO').length,
+      historicalResolvedWithPredictions: resolvedWithPredictions,
+    });
 
     await db.backtestRun.update({
       where: { id: run.id },
@@ -125,6 +210,16 @@ export class BacktestEngine {
           },
           byCategory: metrics.byCategory,
           config,
+          profitEvidence: metrics.totalBets > 0 && resolvedWithPredictions > 0
+            ? { ...profitEvidence, status: 'AVAILABLE', canEvaluateProfit: true }
+            : {
+                ...profitEvidence,
+                status: 'UNAVAILABLE',
+                canEvaluateProfit: false,
+                reason: resolvedWithPredictions === 0
+                  ? 'Backtest found resolved markets, but none had archived model predictions. Historical strategy ROI is unavailable; market-implied snapshots alone are not profit evidence.'
+                  : 'Backtest found resolved markets but placed zero historical bets with the current thresholds. ROI is unavailable, not breakeven.',
+              },
         }),
         completedAt: new Date(),
       },
@@ -144,7 +239,7 @@ export class BacktestEngine {
   ): Promise<ReplayResult> {
     const market = await db.market.findUnique({
       where: { id: marketId },
-      select: { id: true, title: true, category: true, venue: true },
+      select: { id: true, title: true, category: true, venue: true, resolutionTime: true },
     });
     if (!market) {
       return {
@@ -155,6 +250,8 @@ export class BacktestEngine {
         snapshotCount: 0,
         wouldBet: false,
         predictedProb: 0,
+        hasExplicitPrediction: false,
+        predictionSource: 'MARKET_IMPLIED_ONLY',
         impliedProb: 0,
         edge: 0,
         candidateScore: 0,
@@ -184,6 +281,8 @@ export class BacktestEngine {
         snapshotCount: 0,
         wouldBet: false,
         predictedProb: 0,
+        hasExplicitPrediction: false,
+        predictionSource: 'MARKET_IMPLIED_ONLY',
         impliedProb: 0,
         edge: 0,
         candidateScore: 0,
@@ -201,10 +300,11 @@ export class BacktestEngine {
 
     const priceMovePercent = last.impliedProb - first.impliedProb;
 
+    const hasExplicitPrediction = first.predictedProb != null;
     const predictedProb = first.predictedProb ?? first.impliedProb;
     const impliedProb = first.impliedProb;
     const rawEdge = predictedProb - impliedProb;
-    const adjustedEdge = first.predictedProb != null ? rawEdge : priceMovePercent;
+    const adjustedEdge = hasExplicitPrediction ? rawEdge : 0;
 
     const freshnessMinutes =
       (periodEnd.getTime() - first.snapshotTime.getTime()) / 60000;
@@ -242,6 +342,8 @@ export class BacktestEngine {
       openPositions: 0,
       marketLiquidity: first.liquidity,
       marketSpread: first.spread,
+      marketResolutionTime: market.resolutionTime,
+      maxResolutionDays: config.maxResolutionDays,
       minLiquidity: config.minLiquidity,
       maxSpread: config.maxSpread,
       maxPositionSize: config.maxPositionSize,
@@ -251,7 +353,7 @@ export class BacktestEngine {
 
     // ── Determine if we would bet ──
     const scorePass = candidateScore >= config.candidateScoreThreshold;
-    const edgePass = Math.abs(adjustedEdge) >= config.minAdjustedEdge;
+    const edgePass = hasExplicitPrediction && Math.abs(adjustedEdge) >= config.minAdjustedEdge;
     const riskPass = riskResult.action === 'BID' || riskResult.action === 'WATCH';
     const wouldBet = scorePass && edgePass && riskPass;
 
@@ -290,6 +392,8 @@ export class BacktestEngine {
       snapshotCount: snapshots.length,
       wouldBet,
       predictedProb,
+      hasExplicitPrediction,
+      predictionSource: hasExplicitPrediction ? 'ARCHIVED_MODEL' : 'MARKET_IMPLIED_ONLY',
       impliedProb,
       edge: adjustedEdge,
       candidateScore,
@@ -310,15 +414,15 @@ export class BacktestEngine {
    * Find all market IDs that have both HistoricalSnapshots and Outcomes within the period.
    */
   private async findBacktestableMarkets(periodStart: Date, periodEnd: Date): Promise<string[]> {
-    const rows = await db.historicalSnapshot.findMany({
-      where: {
-        snapshotTime: { gte: periodStart, lte: periodEnd },
-      },
-      select: { marketId: true },
-      distinct: ['marketId'],
-      orderBy: { marketId: 'asc' },
-    });
-    return rows.map((r) => r.marketId);
+    const rows = await db.$queryRaw<Array<{ marketId: string }>>`
+      SELECT DISTINCT h.marketId AS marketId
+      FROM HistoricalSnapshot h
+      INNER JOIN Outcome o ON o.marketId = h.marketId
+      WHERE h.snapshotTime >= ${periodStart}
+        AND h.snapshotTime <= ${periodEnd}
+      ORDER BY h.marketId ASC
+    `;
+    return rows.map((row) => row.marketId);
   }
 
   /**

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const getWorkerStateMock = mock(() => ({
   status: 'RUNNING',
@@ -6,7 +6,10 @@ const getWorkerStateMock = mock(() => ({
   errors: 0,
   lastActivity: '2026-05-15T00:00:00.000Z',
   currentJobType: 'SCAN_VENUE',
+  currentJobId: 'job-scan',
+  currentMarketId: null,
   error: null,
+  databaseRunningJob: null,
 }));
 
 const startWorkerMock = mock((intervalMs: number) => ({
@@ -48,6 +51,7 @@ mock.module('@/lib/db', () => ({
 
 mock.module('@/lib/engine/worker', () => ({
   getWorkerState: getWorkerStateMock,
+  getWorkerStatusSnapshot: getWorkerStateMock,
   startWorker: startWorkerMock,
   stopWorker: stopWorkerMock,
   processNextQueuedJobOnce: mock(async () => null),
@@ -55,12 +59,20 @@ mock.module('@/lib/engine/worker', () => ({
 }));
 
 describe('market loop route', () => {
+  const env = process.env as Record<string, string | undefined>;
+  const originalBypass = process.env.LOCAL_DEV_AUTH_BYPASS;
+
   beforeEach(() => {
+    env.LOCAL_DEV_AUTH_BYPASS = 'true';
     getWorkerStateMock.mockClear();
     startWorkerMock.mockClear();
     stopWorkerMock.mockClear();
     runWorkerFlowUntilIdleMock.mockClear();
     findUniqueMock.mockClear();
+  });
+
+  afterEach(() => {
+    env.LOCAL_DEV_AUTH_BYPASS = originalBypass;
   });
 
   it('returns worker state with mode metadata', async () => {
@@ -104,7 +116,35 @@ describe('market loop route', () => {
     expect(payload.jobsProcessed).toBe(1);
     expect(runWorkerFlowUntilIdleMock).toHaveBeenCalledWith({
       maxJobs: 12,
+      runMarketLoop: true,
       failOnNoWork: true,
+      failOnJobError: false,
     });
+  });
+
+  it('returns processing when synchronous flow exceeds maxWaitMs', async () => {
+    runWorkerFlowUntilIdleMock.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(() => resolve({
+        marketLoop: { scanned: 0, candidatesCreated: 0, candidatesSkipped: 0, jobsCreated: 0 },
+        processedJobs: [],
+        jobsProcessed: 0,
+        completed: false,
+      }), 50)),
+    );
+
+    const { POST } = await import('../../../app/api/trading/market-loop/route');
+    const res = await POST(
+      new Request('http://localhost/api/trading/market-loop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'start', waitUntilComplete: true, maxJobs: 5, maxWaitMs: 1 }),
+      }) as never,
+    );
+    const payload = await res.json();
+
+    expect(res.status).toBe(202);
+    expect(payload.action).toBe('processing');
+    expect(payload.timedOut).toBe(true);
+    expect(payload.worker.status).toBe('RUNNING');
   });
 });

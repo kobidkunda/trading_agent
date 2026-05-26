@@ -1,10 +1,17 @@
 import { db } from '@/lib/db';
 import { resolveAllPaperBetsForMarket } from '@/lib/engine/paper-bets';
 import { BrierCalibrationEngine } from '@/lib/engine/brier-calibration';
-import { getActiveVenueProxyUrl } from '@/lib/engine/venue-proxy-settings';
+import { fetchVenueWithRelayFallback } from '@/lib/engine/relay-pool';
+import { pruneObsoleteResolutionJobs } from '@/lib/engine/resolution-jobs';
 
 const POLYMARKET_DIRECT_API = 'https://clob.polymarket.com';
 const KALSHI_DIRECT_API = 'https://api.elections.kalshi.com/trade-api/v2';
+const VALID_MARKET_DUPLICATE_FILTER = {
+  OR: [
+    { duplicateStatus: null },
+    { duplicateStatus: { not: 'INVALID_KALSHI_COMBO' } },
+  ],
+};
 
 interface ResolutionResult {
   marketId: string;
@@ -109,13 +116,12 @@ export async function reconcileMarketResolution(params: {
 
 export async function pollPolymarketResolutions(externalIds: string[]): Promise<ResolutionResult[]> {
   const results: ResolutionResult[] = [];
-  const baseUrl = (await getActiveVenueProxyUrl('polymarket')) || POLYMARKET_DIRECT_API;
 
   for (const conditionId of externalIds) {
     try {
-      const response = await fetch(`${baseUrl}/markets/${conditionId}`, {
+      const response = await fetchVenueWithRelayFallback('polymarket', POLYMARKET_DIRECT_API, `/markets/${conditionId}`, {
         headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(10000),
+        timeoutMs: 10000,
       });
 
       if (!response.ok) continue;
@@ -167,12 +173,11 @@ export async function pollPolymarketResolutions(externalIds: string[]): Promise<
 
 export async function pollKalshiResolutions(tickers: string[]): Promise<ResolutionResult[]> {
   const results: ResolutionResult[] = [];
-  const baseUrl = (await getActiveVenueProxyUrl('kalshi')) || KALSHI_DIRECT_API;
 
   for (const ticker of tickers) {
     try {
-      const response = await fetch(`${baseUrl}/markets/${ticker}`, {
-        signal: AbortSignal.timeout(10000),
+      const response = await fetchVenueWithRelayFallback('kalshi', KALSHI_DIRECT_API, `/markets/${ticker}`, {
+        timeoutMs: 10000,
       });
 
       if (!response.ok) continue;
@@ -181,12 +186,16 @@ export async function pollKalshiResolutions(tickers: string[]): Promise<Resoluti
       const market = data.market;
       if (!market) continue;
 
-      if (market.status !== 'settled' && market.status !== 'closed') continue;
+      if (!['settled', 'closed', 'finalized'].includes(String(market.status))) continue;
 
       let outcome: 'YES' | 'NO' | 'CANCELLED' = 'CANCELLED';
       let resolvedProb: number | undefined;
 
-      if (market.settlement_price !== undefined && market.settlement_price !== null) {
+      const explicitResult = String(market.result ?? '').toLowerCase();
+      if (explicitResult === 'yes' || explicitResult === 'no') {
+        outcome = explicitResult === 'yes' ? 'YES' : 'NO';
+        resolvedProb = explicitResult === 'yes' ? 1 : 0;
+      } else if (market.settlement_price !== undefined && market.settlement_price !== null) {
         const settlePrice = market.settlement_price / 100;
         if (settlePrice >= 0.95) {
           outcome = 'YES';
@@ -198,7 +207,7 @@ export async function pollKalshiResolutions(tickers: string[]): Promise<Resoluti
           outcome = settlePrice >= 0.5 ? 'YES' : 'NO';
           resolvedProb = settlePrice >= 0.5 ? 1 : 0;
         }
-      } else if (market.status === 'settled') {
+      } else if (market.status === 'settled' || market.status === 'finalized') {
         outcome = market.last_price >= 50 ? 'YES' : 'NO';
         resolvedProb = market.last_price >= 50 ? 1 : 0;
       }
@@ -225,18 +234,64 @@ export async function pollKalshiResolutions(tickers: string[]): Promise<Resoluti
   return results;
 }
 
-export async function runResolutionCycle(): Promise<{
+export async function runResolutionCycle(options: { limit?: number } = {}): Promise<{
   checked: number;
   resolved: number;
   scored: number;
+  pendingFuture: number;
+  nextResolutionAt: string | null;
   results: ResolutionResult[];
 }> {
   console.log('[Resolution] Starting resolution cycle...');
+  const limit = options.limit != null ? Math.max(1, Math.min(500, Math.floor(options.limit))) : undefined;
+  const now = new Date();
+  const prunedResolutionJobs = await pruneObsoleteResolutionJobs().catch((error) => {
+    console.error('[Resolution] Failed to prune obsolete resolution jobs:', error);
+    return { checked: 0, pruned: 0 };
+  });
+  if (prunedResolutionJobs.pruned > 0) {
+    console.log(`[Resolution] Pruned ${prunedResolutionJobs.pruned}/${prunedResolutionJobs.checked} obsolete resolution jobs`);
+  }
+
+  const futureMarkets = await db.market.findMany({
+    where: {
+      ...VALID_MARKET_DUPLICATE_FILTER,
+      status: { in: ['ACTIVE', 'CLOSED', 'RESOLVED'] },
+      decisions: { some: { dryRun: true } },
+      outcomes: { none: {} },
+      venue: { in: ['POLYMARKET', 'KALSHI'] },
+      resolutionTime: { gt: now },
+    },
+    select: { resolutionTime: true },
+    orderBy: { resolutionTime: 'asc' },
+    take: 1,
+  });
+
+  const pendingFuture = await db.market.count({
+    where: {
+      ...VALID_MARKET_DUPLICATE_FILTER,
+      status: { in: ['ACTIVE', 'CLOSED', 'RESOLVED'] },
+      decisions: { some: { dryRun: true } },
+      outcomes: { none: {} },
+      venue: { in: ['POLYMARKET', 'KALSHI'] },
+      resolutionTime: { gt: now },
+    },
+  });
   
   // Find markets with dry-run decisions that need resolution
   // This includes ACTIVE, CLOSED, and RESOLVED markets that haven't been scored yet
   const activeMarkets = await db.market.findMany({
     where: {
+      AND: [
+        VALID_MARKET_DUPLICATE_FILTER,
+        {
+          OR: [
+            { outcomes: { some: {} } },
+            { status: { in: ['CLOSED', 'RESOLVED'] } },
+            { resolutionTime: { lte: now } },
+          ],
+        },
+      ],
       status: { in: ['ACTIVE', 'CLOSED', 'RESOLVED'] },
       decisions: { some: { dryRun: true } },
       venue: { in: ['POLYMARKET', 'KALSHI'] }, // Only venues we can poll
@@ -245,9 +300,11 @@ export async function runResolutionCycle(): Promise<{
       outcomes: true,
       decisions: { where: { dryRun: true } },
     },
+    orderBy: { updatedAt: 'asc' },
+    ...(limit ? { take: limit } : {}),
   });
 
-  console.log(`[Resolution] Found ${activeMarkets.length} markets with dry-run decisions`);
+  console.log(`[Resolution] Found ${activeMarkets.length} markets with dry-run decisions${limit ? ` (bounded limit ${limit})` : ''}`);
 
   const reconciliableMarkets = activeMarkets.filter((m) => m.outcomes.length > 0);
   const unresolvedMarkets = activeMarkets.filter((m) => m.outcomes.length === 0);
@@ -257,7 +314,14 @@ export async function runResolutionCycle(): Promise<{
 
   if (unresolvedMarkets.length === 0 && reconciliableMarkets.length === 0) {
     console.log('[Resolution] No markets to poll or reconcile, skipping');
-    return { checked: activeMarkets.length, resolved: 0, scored: 0, results: [] };
+    return {
+      checked: activeMarkets.length,
+      resolved: 0,
+      scored: 0,
+      pendingFuture,
+      nextResolutionAt: futureMarkets[0]?.resolutionTime?.toISOString() ?? null,
+      results: [],
+    };
   }
 
   const polymarketIds = unresolvedMarkets
@@ -307,6 +371,8 @@ export async function runResolutionCycle(): Promise<{
     checked: activeMarkets.length,
     resolved: resolvedCount,
     scored: scoredCount,
+    pendingFuture,
+    nextResolutionAt: futureMarkets[0]?.resolutionTime?.toISOString() ?? null,
     results: allResults,
   };
 }

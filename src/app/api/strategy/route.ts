@@ -32,7 +32,18 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    const update = buildTradingConfigUpdate(body);
+    const [currentStrategySetting, currentTradingConfigSetting, currentTradingModeSetting] = await Promise.all([
+      db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_MODE_KEY } }),
+    ]);
+    const currentConfig = getEffectiveTradingConfig({
+      strategySettings: currentStrategySetting ? JSON.parse(currentStrategySetting.value) : null,
+      tradingConfig: currentTradingConfigSetting ? JSON.parse(currentTradingConfigSetting.value) : null,
+      tradingMode: currentTradingModeSetting?.value ?? null,
+    });
+
+    const update = buildTradingConfigUpdate(body, currentConfig);
 
     await Promise.all([
       db.settings.upsert({

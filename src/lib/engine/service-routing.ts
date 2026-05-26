@@ -51,7 +51,10 @@ export async function getSearchConfig(routing: StageServiceMapping): Promise<{ b
   }
   const defaultCred = await getCredentialForService('searxng');
   if (defaultCred) return defaultCred;
-  return { baseUrl: process.env.SEARXNG_URL || 'http://192.168.88.97:7777', apiKey: '' };
+  return {
+    baseUrl: process.env.SEARXNG_URL || process.env.TA_SEARXNG_URL || process.env.SEARXNG_BASE_URL || 'http://localhost:8888',
+    apiKey: '',
+  };
 }
 
 export async function getVectorConfig(routing: StageServiceMapping): Promise<{ baseUrl: string; apiKey: string; collection: string }> {

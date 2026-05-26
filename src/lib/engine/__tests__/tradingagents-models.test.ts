@@ -188,7 +188,7 @@ describe('fetchTradingAgentsMetadata', () => {
     );
   });
 
-  it('returns empty arrays when response has no providers/models', async () => {
+  it('falls back when TradingAgents returns no providers/models', async () => {
     const { fetchTradingAgentsMetadata } = await import('../research/tradingagents-api');
 
     getCredentialForServiceMock.mockResolvedValue({
@@ -203,9 +203,37 @@ describe('fetchTradingAgentsMetadata', () => {
 
     const result = await fetchTradingAgentsMetadata();
 
-    expect(result).not.toBeNull();
-    expect(result?.providers).toEqual([]);
-    expect(result?.models).toEqual([]);
-    expect(result?.source).toBe('tradingagents');
+    expect(result).toBeNull();
+  });
+
+  it('handles string providers and model objects without id', async () => {
+    const { fetchTradingAgentsMetadata } = await import('../research/tradingagents-api');
+
+    getCredentialForServiceMock.mockResolvedValue({
+      baseUrl: 'http://tradingagents.local',
+      apiKey: 'test-key',
+    });
+
+    global.fetch = mock(async () => ({
+      ok: true,
+      json: async () => ({
+        providers: ['openai', 'ollama'],
+        models: [
+          { name: 'paper_lite' },
+          { model: 'paper_proglm', label: 'Paper Pro GLM' },
+        ],
+      }),
+    })) as unknown as typeof fetch;
+
+    const result = await fetchTradingAgentsMetadata();
+
+    expect(result?.providers).toEqual([
+      { id: 'openai', label: 'openai' },
+      { id: 'ollama', label: 'ollama' },
+    ]);
+    expect(result?.models).toEqual([
+      { id: 'paper_lite', label: 'paper_lite' },
+      { id: 'paper_proglm', label: 'Paper Pro GLM' },
+    ]);
   });
 });

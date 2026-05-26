@@ -32,22 +32,32 @@ export interface FullResearchResult {
 export async function runFullResearch(input: FullResearchInput): Promise<FullResearchResult> {
   const providers: Array<'deerflow' | 'tradingagents' | 'agent_reach'> = [];
   const skippedProviders: Array<{ provider: string; reason: string }> = [];
+  const deerflowExplicitlyConfigured = Boolean(
+    input.routing.deerflowApiModel?.trim()
+      || input.routing.deerflowModel?.trim()
+      || process.env.DEERFLOW_URL?.trim()
+      || process.env.DEERFLOW_ENABLED === 'true',
+  );
 
   // Health check: DeerFlow
-  const deerflowHealth = await canRunStage('DEERFLOW');
-  if (!deerflowHealth.canRun) {
-    // Fallback: try direct connectivity check
-    const fallbackUrl = process.env.DEERFLOW_URL || 'http://localhost:2026';
-    const reachable = await isServiceReachable('deerflow', fallbackUrl);
-    if (reachable) {
-      console.warn(`[FullResearch] DeerFlow canRunStage failed but service is reachable, proceeding...`);
-      providers.push('deerflow');
-    } else {
-      console.warn(`[FullResearch] Skipping DeerFlow: ${deerflowHealth.skipReason}`);
-      skippedProviders.push({ provider: 'deerflow', reason: deerflowHealth.skipReason || 'Service unavailable' });
-    }
+  if (!deerflowExplicitlyConfigured) {
+    skippedProviders.push({ provider: 'deerflow', reason: 'DeerFlow not configured; using SearXNG, TradingAgents, and Agent-Reach instead' });
   } else {
-    providers.push('deerflow');
+    const deerflowHealth = await canRunStage('DEERFLOW');
+    if (!deerflowHealth.canRun) {
+      // Fallback: try direct connectivity check
+      const fallbackUrl = process.env.DEERFLOW_URL || 'http://localhost:2026';
+      const reachable = await isServiceReachable('deerflow', fallbackUrl);
+      if (reachable) {
+        console.warn(`[FullResearch] DeerFlow canRunStage failed but service is reachable, proceeding...`);
+        providers.push('deerflow');
+      } else {
+        console.warn(`[FullResearch] Skipping DeerFlow: ${deerflowHealth.skipReason}`);
+        skippedProviders.push({ provider: 'deerflow', reason: deerflowHealth.skipReason || 'Service unavailable' });
+      }
+    } else {
+      providers.push('deerflow');
+    }
   }
 
   // Health check: TradingAgents (always required for FULL)
@@ -70,7 +80,7 @@ export async function runFullResearch(input: FullResearchInput): Promise<FullRes
   if (input.routing.agentReachEnabled) {
     const arHealth = await canRunStage('AGENT_REACH');
     if (!arHealth.canRun) {
-      const fallbackUrl = process.env.AGENT_REACH_URL || '';
+      const fallbackUrl = input.routing.agentReachServiceUrl || process.env.AGENT_REACH_URL || '';
       const reachable = await isServiceReachable('agent-reach', fallbackUrl);
       if (reachable) {
         console.warn(`[FullResearch] Agent-Reach canRunStage failed but service is reachable, proceeding...`);
@@ -103,13 +113,14 @@ export async function runFullResearch(input: FullResearchInput): Promise<FullRes
     : Promise.resolve(null);
 
   const tradingagentsPromise = providers.includes('tradingagents')
-    ? runTradingAgentsSimple(
+      ? runTradingAgentsSimple(
         input.marketTitle,
         new Date().toISOString().split('T')[0],
         input.routing.analystDeepThinkLlm,
         input.routing.analystQuickThinkLlm,
         input.routing.analystLlmProvider,
         input.routing.analystMaxDebateRounds,
+        input.routing,
       )
     : Promise.resolve(null);
 
@@ -149,7 +160,10 @@ export async function runFullResearch(input: FullResearchInput): Promise<FullRes
 
   // Native graph analysis for financial/crypto markets
   let tradingagentsNative: TradingAgentsNativeResult | null = null;
-  if (isNativeAnalysisCandidate(input.marketCategory)) {
+  const shouldRunNativeGraph = isNativeAnalysisCandidate(input.marketCategory)
+    || input.routing.analystAssetType === 'stock'
+    || input.routing.analystAssetType === 'crypto';
+  if (shouldRunNativeGraph) {
     console.log(`[FullResearch] Market category "${input.marketCategory}" qualifies for native graph analysis`);
     try {
       tradingagentsNative = await runTradingAgentsNative(
@@ -158,6 +172,7 @@ export async function runFullResearch(input: FullResearchInput): Promise<FullRes
         input.routing.analystDeepThinkLlm,
         input.routing.analystQuickThinkLlm,
         input.routing.analystLlmProvider,
+        input.routing,
       );
       if (tradingagentsNative && tradingagentsNative.status !== 'failed') {
         console.log(`[FullResearch] Native analysis completed: confidence=${tradingagentsNative.confidence}, probability=${tradingagentsNative.probability}`);

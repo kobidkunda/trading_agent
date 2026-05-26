@@ -53,6 +53,10 @@ interface CredentialSummary {
 
 interface HealthData {
   queueDepth: number;
+  scheduledQueueDepth?: number;
+  scheduledResolutionChecks?: number;
+  nextScheduledJobAt?: string | null;
+  nextResolutionCheckAt?: string | null;
   failingJobs: number;
   apiHealth: Record<string, 'UP' | 'DOWN' | 'DEGRADED'>;
   dbStatus: 'UP' | 'DOWN';
@@ -109,6 +113,16 @@ function formatTime(iso: string | null): string {
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
+  });
+}
+
+function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
   });
 }
 
@@ -442,6 +456,11 @@ export function PipelineSettings() {
             {REQUIRED_SERVICES.map((svc) => {
               const cred = getCredStatus(svc.credServices);
               const apiStatus = healthApi[svc.healthKey];
+              const detail = cred.has
+                ? (cred.url ? `${cred.label} - ${cred.url}` : cred.label)
+                : apiStatus
+                  ? 'Runtime/env configuration'
+                  : 'Not configured';
               const Icon = svc.icon;
               return (
                 <div key={svc.key} className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-800/30 px-4 py-3">
@@ -451,28 +470,26 @@ export function PipelineSettings() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-white">{svc.label}</p>
-                      <p className="text-xs text-gray-500">{cred.has ? (cred.url ? `${cred.label} — ${cred.url}` : cred.label) : 'Not configured'}</p>
+                      <p className="text-xs text-gray-500">{detail}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    {cred.has && cred.status === 'SUCCESS' ? (
-                      apiStatus === 'UP' ? (
-                        <Badge className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-400">
-                          <CheckCircle2 className="h-3 w-3" /> UP
-                        </Badge>
-                      ) : apiStatus === 'DEGRADED' ? (
-                        <Badge className="gap-1 border-amber-500/30 bg-amber-500/10 text-[10px] text-amber-400">
-                          <AlertTriangle className="h-3 w-3" /> DEGRADED
-                        </Badge>
-                      ) : apiStatus === 'DOWN' ? (
-                        <Badge className="gap-1 border-red-500/30 bg-red-500/10 text-[10px] text-red-400">
-                          <XCircle className="h-3 w-3" /> DOWN
-                        </Badge>
-                      ) : (
-                        <Badge className="gap-1 border-gray-600/30 bg-gray-800 text-[10px] text-gray-400">
-                          <WifiOff className="h-3 w-3" /> UNKNOWN
-                        </Badge>
-                      )
+                    {apiStatus === 'UP' ? (
+                      <Badge className="gap-1 border-emerald-500/30 bg-emerald-500/10 text-[10px] text-emerald-400">
+                        <CheckCircle2 className="h-3 w-3" /> UP
+                      </Badge>
+                    ) : apiStatus === 'DEGRADED' ? (
+                      <Badge className="gap-1 border-amber-500/30 bg-amber-500/10 text-[10px] text-amber-400">
+                        <AlertTriangle className="h-3 w-3" /> DEGRADED
+                      </Badge>
+                    ) : apiStatus === 'DOWN' ? (
+                      <Badge className="gap-1 border-red-500/30 bg-red-500/10 text-[10px] text-red-400">
+                        <XCircle className="h-3 w-3" /> DOWN
+                      </Badge>
+                    ) : cred.has && cred.status === 'SUCCESS' ? (
+                      <Badge className="gap-1 border-gray-600/30 bg-gray-800 text-[10px] text-gray-400">
+                        <WifiOff className="h-3 w-3" /> UNKNOWN
+                      </Badge>
                     ) : (
                       <Badge className="gap-1 border-gray-600/30 bg-gray-800 text-[10px] text-gray-500">
                         <WifiOff className="h-3 w-3" /> NOT SET
@@ -542,8 +559,20 @@ export function PipelineSettings() {
         <CardContent>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
-              <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500">Queue Depth</p>
+              <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500">Due Queue</p>
               <p className="mt-1 font-mono text-lg font-semibold text-white">{health?.queueDepth ?? 0}</p>
+            </div>
+            <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+              <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500">Scheduled</p>
+              <p className="mt-1 font-mono text-lg font-semibold text-cyan-400">{health?.scheduledQueueDepth ?? 0}</p>
+            </div>
+            <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+              <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500">Resolution Checks</p>
+              <p className="mt-1 font-mono text-lg font-semibold text-emerald-400">{health?.scheduledResolutionChecks ?? 0}</p>
+            </div>
+            <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
+              <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500">Next Resolution</p>
+              <p className="mt-1 font-mono text-sm font-semibold text-emerald-400">{formatDateTime(health?.nextResolutionCheckAt)}</p>
             </div>
             <div className="rounded-lg border border-gray-800 bg-gray-800/40 p-3">
               <p className="text-[11px] font-medium uppercase tracking-wider text-gray-500">Failing Jobs</p>

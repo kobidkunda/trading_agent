@@ -137,6 +137,7 @@ async function preFlightCheck(marketId: string): Promise<NextResponse> {
     openPositions: openPositions.length,
     marketLiquidity: snapshot?.liquidity ?? 0,
     marketSpread: snapshot?.spread ?? 0.05,
+    marketResolutionTime: market.resolutionTime,
   };
 
   const result = computeRisk(riskInput, {

@@ -49,17 +49,25 @@ import type { PaginationParams, PaginatedResponse } from '@/lib/types';
 
 interface BacktestRun {
   id: string;
-  name: string;
-  period: string;
+  name?: string | null;
+  period?: string | null;
+  mode?: string | null;
+  periodStart?: string | null;
+  periodEnd?: string | null;
   totalBets: number;
-  winRate: number;
-  roi: number;
+  winRate: number | null;
+  roi: number | null;
   brierScore: number | null;
-  drawdown: number;
+  drawdown: number | null;
   status: string;
   startedAt: string;
   completedAt: string | null;
   config: Record<string, unknown> | null;
+  result?: string | null;
+  profitEvidence?: {
+    canEvaluateProfit: boolean;
+    reason: string;
+  } | null;
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -103,7 +111,8 @@ function statusBadge(status: string) {
   }
 }
 
-function roiColor(roi: number): string {
+function roiColor(roi: number | null): string {
+  if (roi === null) return 'text-gray-500';
   if (roi > 0) return 'text-emerald-400';
   if (roi < 0) return 'text-red-400';
   return 'text-gray-400';
@@ -132,6 +141,41 @@ function formatDuration(started: string, completed: string | null): string {
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
   return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+function formatRunPeriod(run: BacktestRun): string {
+  if (run.period) return run.period;
+  if (!run.periodStart || !run.periodEnd) return '—';
+  return `${new Date(run.periodStart).toLocaleDateString()} – ${new Date(run.periodEnd).toLocaleDateString()}`;
+}
+
+function getRunError(run: BacktestRun): string | null {
+  if (!run.result) return null;
+  try {
+    const parsed = JSON.parse(run.result) as { error?: string };
+    return parsed.error || null;
+  } catch {
+    return null;
+  }
+}
+
+function getRunProfitEvidenceReason(run: BacktestRun): string | null {
+  if (run.profitEvidence?.canEvaluateProfit === false) return run.profitEvidence.reason;
+  if (run.status === 'COMPLETED' && run.totalBets === 0) {
+    return 'No historical bets qualified; ROI is unavailable, not 0%.';
+  }
+  if (!run.result) return null;
+  try {
+    const parsed = JSON.parse(run.result) as { profitEvidence?: { canEvaluateProfit?: boolean; reason?: string } };
+    if (parsed.profitEvidence?.canEvaluateProfit === false) return parsed.profitEvidence.reason ?? null;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function hasCompletedMetrics(run: BacktestRun): boolean {
+  return run.status === 'COMPLETED' && run.totalBets > 0 && run.profitEvidence?.canEvaluateProfit !== false;
 }
 
 // ── component ────────────────────────────────────────────────────────────────
@@ -201,6 +245,7 @@ export function BacktestsDashboard() {
       await fetchData();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to start backtest');
+      await fetchData();
     } finally {
       setStarting(false);
     }
@@ -245,10 +290,11 @@ export function BacktestsDashboard() {
     );
   }
 
-  const completedRuns = runs.filter((r) => r.status === 'COMPLETED');
+  const completedRuns = runs.filter(hasCompletedMetrics);
+  const completedNoEvidenceRuns = runs.filter((r) => r.status === 'COMPLETED' && r.totalBets === 0).length;
   const runningCount = runs.filter((r) => r.status === 'RUNNING').length;
   const avgRoi = completedRuns.length > 0
-    ? completedRuns.reduce((sum, r) => sum + r.roi, 0) / completedRuns.length
+    ? completedRuns.reduce((sum, r) => sum + (r.roi ?? 0), 0) / completedRuns.length
     : 0;
 
   return (
@@ -298,6 +344,9 @@ export function BacktestsDashboard() {
             <p className={cn('mt-1 text-2xl font-bold tabular-nums', roiColor(avgRoi))}>
               {completedRuns.length > 0 ? formatPct(avgRoi) : '—'}
             </p>
+            {completedNoEvidenceRuns > 0 && (
+              <p className="text-[10px] text-amber-300">{completedNoEvidenceRuns} run{completedNoEvidenceRuns === 1 ? '' : 's'} lack trade evidence</p>
+            )}
           </CardContent>
         </Card>
         <Card className={cn(
@@ -417,31 +466,41 @@ export function BacktestsDashboard() {
                         )}
                       >
                         <TableCell>
-                          <p className="text-xs font-medium text-gray-200">{r.name}</p>
+                          <p className="text-xs font-medium text-gray-200">{r.name || r.mode || 'Deterministic backtest'}</p>
+                          {getRunError(r) && (
+                            <p className="mt-1 max-w-xs text-[11px] text-red-300">{getRunError(r)}</p>
+                          )}
+                          {getRunProfitEvidenceReason(r) && (
+                            <p className="mt-1 max-w-xs text-[11px] text-amber-300">{getRunProfitEvidenceReason(r)}</p>
+                          )}
                         </TableCell>
                         <TableCell>
-                          <span className="text-xs text-gray-400">{r.period}</span>
+                          <span className="text-xs text-gray-400">{formatRunPeriod(r)}</span>
                         </TableCell>
                         <TableCell className="text-right">
                           <span className="text-xs tabular-nums text-gray-300">{r.totalBets.toLocaleString()}</span>
                         </TableCell>
                         <TableCell className="text-right">
-                          <span className={cn(
-                            'text-xs font-medium tabular-nums',
-                            r.winRate >= 0.55 ? 'text-emerald-400' : r.winRate >= 0.50 ? 'text-amber-400' : 'text-red-400'
-                          )}>
-                            {formatPct(r.winRate)}
-                          </span>
+                          {hasCompletedMetrics(r) && r.winRate !== null ? (
+                            <span className={cn(
+                              'text-xs font-medium tabular-nums',
+                              r.winRate >= 0.55 ? 'text-emerald-400' : r.winRate >= 0.50 ? 'text-amber-400' : 'text-red-400'
+                            )}>
+                              {formatPct(r.winRate)}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-500">—</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
-                            {r.roi > 0 ? (
+                            {hasCompletedMetrics(r) && r.roi !== null && r.roi > 0 ? (
                               <TrendingUp className="h-3 w-3 text-emerald-400" />
-                            ) : r.roi < 0 ? (
+                            ) : hasCompletedMetrics(r) && r.roi !== null && r.roi < 0 ? (
                               <TrendingDown className="h-3 w-3 text-red-400" />
                             ) : null}
                             <span className={cn('text-xs font-medium tabular-nums', roiColor(r.roi))}>
-                              {formatPct(r.roi)}
+                              {hasCompletedMetrics(r) && r.roi !== null ? formatPct(r.roi) : '—'}
                             </span>
                           </div>
                         </TableCell>
@@ -449,12 +508,16 @@ export function BacktestsDashboard() {
                           <span className="text-xs tabular-nums text-gray-400">{formatScore(r.brierScore)}</span>
                         </TableCell>
                         <TableCell className="text-right">
-                          <span className={cn(
-                            'text-xs tabular-nums',
-                            Math.abs(r.drawdown) > 0.2 ? 'text-red-400' : Math.abs(r.drawdown) > 0.1 ? 'text-amber-400' : 'text-emerald-400'
-                          )}>
-                            {formatDrawdown(r.drawdown)}
-                          </span>
+                          {hasCompletedMetrics(r) && r.drawdown !== null ? (
+                            <span className={cn(
+                              'text-xs tabular-nums',
+                              Math.abs(r.drawdown) > 0.2 ? 'text-red-400' : Math.abs(r.drawdown) > 0.1 ? 'text-amber-400' : 'text-emerald-400'
+                            )}>
+                              {formatDrawdown(r.drawdown)}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-500">—</span>
+                          )}
                         </TableCell>
                         <TableCell>{statusBadge(r.status)}</TableCell>
                         <TableCell className="text-right">

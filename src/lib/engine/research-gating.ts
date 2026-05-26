@@ -31,9 +31,9 @@ export class ResearchGate {
   }
 
   getResearchDepth(score: number): ResearchTier {
-    if (score < 50) return 'NONE';
-    if (score < 70) return 'NONE';
-    if (score < 85) return 'QUICK';
+    if (score < 40) return 'NONE';
+    if (score < 70) return 'QUICK';
+    if (score < 85) return 'STANDARD';
     if (score < 90) return 'STANDARD';
     return 'DEEP';
   }

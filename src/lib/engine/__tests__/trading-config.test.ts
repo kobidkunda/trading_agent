@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
+import { buildTradingConfigUpdate } from '../trading-settings';
 import {
   DEFAULT_TRADING_CONFIG,
   getTradingConfigModeState,
@@ -20,7 +21,20 @@ describe('trading config normalization', () => {
     expect(config.executionMode).toBe('SIMULATED');
     expect(config.globalKillSwitch).toBe(true);
     expect(config.scanIntervalMinutes).toBe(5);
-    expect(config.candidateThreshold).toBe(75);
+    expect(config.candidateThreshold).toBe(20);
+  });
+
+  it('normalizes blank Agent-Reach route settings to the local docker service', () => {
+    const config = normalizeTradingConfig({
+      stageRouting: {
+        agentReachEnabled: true,
+        agentReachServiceUrl: '',
+        agentReachToolName: 'web_read',
+      },
+    });
+
+    expect(config.stageRouting?.agentReachServiceUrl).toBe('http://localhost:6504');
+    expect(config.stageRouting?.agentReachToolName).toBe('research');
   });
 
   it('derives mode state from config values', () => {
@@ -60,5 +74,25 @@ describe('trading config normalization', () => {
       executionMode: 'REAL',
       liveExecutionEnabled: false,
     });
+  });
+
+  it('preserves existing config when only kill switch is updated', () => {
+    const update = buildTradingConfigUpdate(
+      { globalKillSwitch: false },
+      {
+        ...DEFAULT_TRADING_CONFIG,
+        mode: 'LIVE',
+        liveExecutionEnabled: true,
+        scanIntervalMinutes: 17,
+        candidateThreshold: 42,
+      }
+    );
+
+    expect(update.tradingConfig.globalKillSwitch).toBe(false);
+    expect(update.tradingConfig.mode).toBe('LIVE');
+    expect(update.tradingConfig.executionMode).toBe('REAL');
+    expect(update.tradingConfig.liveExecutionEnabled).toBe(true);
+    expect(update.tradingConfig.scanIntervalMinutes).toBe(17);
+    expect(update.tradingConfig.candidateThreshold).toBe(42);
   });
 });

@@ -66,6 +66,42 @@ function getSnapshotPricing(market: ScannerMarketInput) {
   };
 }
 
+function scannerBackgroundMaintenanceEnabled(): boolean {
+  return ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.SCANNER_BACKGROUND_MAINTENANCE ?? '').toLowerCase(),
+  );
+}
+
+let scannerMaintenanceQueue: Promise<void> = Promise.resolve();
+
+export function enqueueScannerBackgroundMaintenance(market: {
+  id: string;
+  title: string;
+  category: string;
+  resolutionTime?: Date | string | null;
+  venue: string;
+}): void {
+  if (!scannerBackgroundMaintenanceEnabled()) {
+    return;
+  }
+
+  scannerMaintenanceQueue = scannerMaintenanceQueue
+    .catch(() => undefined)
+    .then(async () => {
+      try {
+        await scanRelatedMarkets(market.id);
+      } catch (err) {
+        console.error('Related market scan failed for', market.id, err);
+      }
+
+      try {
+        await correlationClusterManager.clusterAndLink(market);
+      } catch (err) {
+        console.error('Correlation cluster linking failed for', market.id, err);
+      }
+    });
+}
+
 export async function upsertScannedMarket(params: {
   market: ScannerMarketInput;
   scanRunId: string;
@@ -265,18 +301,13 @@ export async function upsertScannedMarket(params: {
         console.warn(`[Scanner] TradeCandidate race condition for market ${created.id}, skipping`);
       }
 
-      scanRelatedMarkets(created.id).catch(err =>
-        console.error('Related market scan failed for', created.id, err),
-      );
-      correlationClusterManager.clusterAndLink({
+      enqueueScannerBackgroundMaintenance({
         id: created.id,
         title: created.title,
         category: created.category,
         resolutionTime: created.resolutionTime,
         venue: created.venue,
-      }).catch((err) =>
-        console.error('Correlation cluster linking failed for', created.id, err),
-      );
+      });
 
       return { created: true, updated: false, scoreAction, score: scoreBreakdown.totalScore };
     }

@@ -58,6 +58,7 @@ mock.module('@/lib/db', () => ({
 
 describe('scanner upsert', () => {
   beforeEach(() => {
+    delete process.env.SCANNER_BACKGROUND_MAINTENANCE;
     marketFindFirstMock.mockClear();
     marketFindFirstMock.mockImplementation(async () => null);
     marketUpsertMock.mockClear();
@@ -131,5 +132,52 @@ describe('scanner upsert', () => {
     expect(result.created).toBe(true);
     expect(result.scoreAction).toBeDefined();
     expect(jobCreateMock).not.toHaveBeenCalled();
+  });
+
+  it('does not run scan-side relation maintenance unless explicitly enabled', async () => {
+    const { upsertScannedMarket } = await import('../scanner-upsert');
+
+    await upsertScannedMarket({
+      scanRunId: 'scan-1',
+      market: {
+        externalId: 'poly-3',
+        title: 'No background maintenance market',
+        description: 'sample',
+        category: 'crypto',
+        venue: 'POLYMARKET',
+        status: 'ACTIVE',
+        impliedProb: 0.61,
+        liquidity: 250000,
+        spread: 0.005,
+        volume24h: 240000,
+        bestBid: 0.6,
+        bestAsk: 0.62,
+      },
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(marketFindUniqueMock).not.toHaveBeenCalled();
+    expect(correlationClusterCreateMock).not.toHaveBeenCalled();
+    expect(clusterMarketLinkUpsertMock).not.toHaveBeenCalled();
+  });
+
+  it('runs scan-side relation maintenance through the bounded opt-in queue', async () => {
+    process.env.SCANNER_BACKGROUND_MAINTENANCE = '1';
+    const { enqueueScannerBackgroundMaintenance } = await import('../scanner-upsert');
+
+    enqueueScannerBackgroundMaintenance({
+      id: 'market-1',
+      title: 'Queued maintenance market',
+      category: 'crypto',
+      venue: 'POLYMARKET',
+      resolutionTime: null,
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(marketFindUniqueMock).toHaveBeenCalled();
+    expect(correlationClusterCreateMock).toHaveBeenCalled();
+    expect(clusterMarketLinkUpsertMock).toHaveBeenCalled();
   });
 });

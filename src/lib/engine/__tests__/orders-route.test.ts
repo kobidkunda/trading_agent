@@ -42,12 +42,24 @@ const filterOrders = (orders: typeof defaultOrders, where?: any) => {
 
 const findManyMock = mock(async ({ where }: { where?: any }) => filterOrders(defaultOrders, where));
 const countMock = mock(async () => 1);
+const groupByMock = mock(async ({ where }: { where?: any }) => {
+  const orders = filterOrders(defaultOrders, where);
+  const counts = new Map<string, number>();
+  for (const order of orders) {
+    counts.set(order.lifecycleStatus, (counts.get(order.lifecycleStatus) ?? 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([lifecycleStatus, count]) => ({
+    lifecycleStatus,
+    _count: { _all: count },
+  }));
+});
 
 mock.module('@/lib/db', () => ({
   db: {
     order: {
       findMany: findManyMock,
       count: countMock,
+      groupBy: groupByMock,
     },
   },
 }));
@@ -56,6 +68,7 @@ describe('orders route', () => {
   beforeEach(() => {
     findManyMock.mockClear();
     countMock.mockClear();
+    groupByMock.mockClear();
   });
 
   it('returns orders with lifecycle metadata', async () => {
@@ -65,6 +78,8 @@ describe('orders route', () => {
     const payload = await res.json();
 
     expect(payload.data).toHaveLength(1);
+    expect(payload.orders).toHaveLength(1);
+    expect(payload.meta.filledCount).toBe(1);
     expect(payload.data[0].lifecycleStatus).toBe('FILLED');
     expect(payload.data[0].executionMode).toBe('SIMULATED');
     expect(payload.data[0].dataSource).toBe('REAL');

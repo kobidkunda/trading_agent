@@ -62,6 +62,7 @@ export const REASON_CODE_DESCRIPTIONS: Record<string, string> = {
   CLUSTER_EXPOSURE_EXCEEDED: 'Exposure in a correlation cluster exceeds the configured limit',
   TAIL_RISK_HIGH: 'Single position loss could wipe out multiple winning positions',
   CORRELATION_CLUSTER_OVERLAP: 'Market belongs to too many overlapping risk clusters',
+  RESOLUTION_TOO_FAR: 'Market resolution is outside the configured trading window',
   MANUAL_REVIEW_REQUIRED: 'Edge case detected, requires human review',
 };
 
@@ -78,7 +79,8 @@ Respond in JSON format:
 {
   "status": "RELEVANT" | "IRRELEVANT" | "AMBIGUOUS",
   "reason": "One-line explanation",
-  "worthResearch": true/false
+  "worthResearch": true/false,
+  "score": <0-100 integer — 0 = no value, 100 = high-value tradeable opportunity>
 }`,
 
   bull: `You are the BULL case advocate. Make the strongest possible argument FOR this prediction market outcome.

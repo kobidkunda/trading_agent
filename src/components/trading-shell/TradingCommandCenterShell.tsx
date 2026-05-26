@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   Settings,
@@ -50,7 +50,11 @@ import {
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { getModeDisplayCopy, getModeToggleTarget } from '@/lib/engine/trading-view-model';
-import { syncTradingModeFromBackend, updateTradingModeOnBackend } from '@/lib/engine/trading-mode-client';
+import {
+  syncTradingModeFromBackend,
+  updateGlobalKillSwitchOnBackend,
+  updateTradingModeOnBackend,
+} from '@/lib/engine/trading-mode-client';
 import { StrategyHub } from '@/components/trading/StrategyHub';
 import { CredentialManager } from '@/components/trading/CredentialManager';
 import { MarketTriage } from '@/components/trading/MarketTriage';
@@ -135,7 +139,6 @@ function TopBar() {
     toggleSidebar,
   } = useTradingStore();
   const [currentTime, setCurrentTime] = useState(() => '');
-  const killSwitchManualOverride = useRef(false);
 
   useEffect(() => {
     const tick = () => {
@@ -154,40 +157,19 @@ function TopBar() {
   }, []);
 
   useEffect(() => {
-    syncTradingModeFromBackend().catch(() => {
-      // keep local defaults when backend mode unavailable
-    });
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const syncSimulationStatus = async () => {
-      try {
-        if (killSwitchManualOverride.current) return;
-
-        const response = await fetch('/api/simulation', { cache: 'no-store' });
-        if (!response.ok || cancelled) return;
-
-        const payload = (await response.json()) as { status?: string };
-        const simRunning = payload.status === 'RUNNING';
-        setGlobalKillSwitch(!simRunning);
-        killSwitchManualOverride.current = false;
-      } catch {
-        // keep current UI state when simulation status is temporarily unavailable
-      }
+    const syncMode = () => {
+      syncTradingModeFromBackend().catch(() => {
+        // keep current UI state when trading mode is temporarily unavailable
+      });
     };
 
-    void syncSimulationStatus();
+    syncMode();
     const interval = setInterval(() => {
-      void syncSimulationStatus();
-    }, 2000);
+      syncMode();
+    }, 10000);
 
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [setGlobalKillSwitch]);
+    return () => clearInterval(interval);
+  }, []);
 
   const modeCopy = getModeDisplayCopy(tradingMode);
   const nextMode = getModeToggleTarget(tradingMode);
@@ -277,8 +259,11 @@ function TopBar() {
                     : 'text-red-400 hover:bg-red-500/10 hover:text-red-300'
                 )}
                 onClick={() => {
-                  killSwitchManualOverride.current = true;
-                  setGlobalKillSwitch(!globalKillSwitch);
+                  const nextKillSwitchState = !globalKillSwitch;
+                  setGlobalKillSwitch(nextKillSwitchState);
+                  updateGlobalKillSwitchOnBackend(nextKillSwitchState).catch(() => {
+                    setGlobalKillSwitch(globalKillSwitch);
+                  });
                 }}
               >
                 <OctagonX className="h-3.5 w-3.5" />

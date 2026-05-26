@@ -61,8 +61,47 @@ interface PaperBet {
   brierScore: number | null;
   pnl: number | null;
   actualOutcome: string | null;
+  executionStatus: string | null;
   predictionType: string;
   createdAt: string;
+}
+
+interface PaperBetMetrics {
+  totalBets: number;
+  executedBets: number;
+  resolvedBets: number;
+  pendingBets: number;
+  cancelledBets: number;
+  directionAccuracy: number;
+  avgBrierScore: number;
+  totalPnl: number;
+  executionStatusCounts: Record<string, number>;
+}
+
+interface ProfitEvidence {
+  status: string;
+  canEvaluateProfit: boolean;
+  reason: string;
+  resolvedPaperBets: number;
+  executedUnresolvedPaperBets: number;
+  openPaperStake: number;
+  openModelExpectedValue: number;
+  openModelExpectedRoi: number | null;
+  openPositiveEvBets: number;
+  openNegativeEvBets: number;
+  openAverageEdge: number | null;
+}
+
+interface SettlementReadiness {
+  executedUnresolvedPaperBets: number;
+  executedUnresolvedWithArchivedPrediction: number;
+  missingArchivedPrediction: number;
+  executedUnresolvedPaperBetMarkets: number;
+  activeResolutionJobMarkets: number;
+  missingResolutionJobs: number;
+  dueResolutionJobs: number;
+  nextResolutionAt: string | null;
+  nextResolutionMarket: { id: string; title: string } | null;
 }
 
 type SortField = 'edge' | 'confidence' | 'brierScore' | 'pnl' | 'createdAt';
@@ -74,6 +113,11 @@ function formatPct(value: number): string {
 function formatPnl(value: number | null): string {
   if (value === null) return '\u2014';
   const prefix = value >= 0 ? '+' : '';
+  return `${prefix}$${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+}
+
+function formatSignedCurrency(value: number): string {
+  const prefix = value >= 0 ? '+' : '-';
   return `${prefix}$${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 }
 
@@ -96,8 +140,22 @@ function edgeColor(edge: number): string {
   return 'text-red-400';
 }
 
-function outcomeBadge(outcome: string | null) {
-  if (!outcome) return <span className="text-xs text-gray-600">Pending</span>;
+function outcomeBadge(outcome: string | null, executionStatus: string | null) {
+  if (!outcome) {
+    if (executionStatus === 'CANCELLED') {
+      return <Badge variant="outline" className="border-gray-700 text-gray-500 text-[10px]">CANCELLED</Badge>;
+    }
+    if (executionStatus === 'FAILED') {
+      return <Badge variant="outline" className="border-red-500/30 text-red-400 text-[10px]">FAILED</Badge>;
+    }
+    if (executionStatus === 'EXPIRED') {
+      return <Badge variant="outline" className="border-gray-700 text-gray-500 text-[10px]">EXPIRED</Badge>;
+    }
+    if (executionStatus === 'FILLED' || executionStatus === 'PARTIAL') {
+      return <span className="text-xs text-amber-400">Pending result</span>;
+    }
+    return <span className="text-xs text-gray-600">{executionStatus || 'Pending'}</span>;
+  }
   if (outcome === 'WIN') {
     return <Badge className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]">WIN</Badge>;
   }
@@ -114,9 +172,40 @@ function typeBadge(type: string) {
   return <Badge className="border-amber-500/30 bg-amber-500/10 text-amber-400 text-[10px]">WATCH</Badge>;
 }
 
+function statusBadge(status: string | null) {
+  if (status === 'FILLED') {
+    return (
+      <Badge className="border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-[10px]">
+        <CheckCircle className="mr-1 h-3 w-3" />
+        FILLED
+      </Badge>
+    );
+  }
+  if (status === 'PARTIAL') {
+    return (
+      <Badge className="border-cyan-500/30 bg-cyan-500/10 text-cyan-400 text-[10px]">
+        <Target className="mr-1 h-3 w-3" />
+        PARTIAL
+      </Badge>
+    );
+  }
+  if (status === 'CANCELLED') {
+    return (
+      <Badge variant="outline" className="border-gray-700 text-gray-500 text-[10px]">
+        <XOctagon className="mr-1 h-3 w-3" />
+        CANCELLED
+      </Badge>
+    );
+  }
+  return <Badge variant="outline" className="border-gray-700 text-gray-400 text-[10px]">{status || 'UNKNOWN'}</Badge>;
+}
+
 export function PaperBetsDashboard() {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('ALL');
+  const [metrics, setMetrics] = useState<PaperBetMetrics | null>(null);
+  const [profitEvidence, setProfitEvidence] = useState<ProfitEvidence | null>(null);
+  const [settlementReadiness, setSettlementReadiness] = useState<SettlementReadiness | null>(null);
   const [loopState, setLoopState] = useState<{
     status: string;
     ordersProcessed: number;
@@ -169,6 +258,54 @@ export function PaperBetsDashboard() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const raw = await res.json();
       const list = Array.isArray(raw.data) ? raw.data : (Array.isArray(raw.bets) ? raw.bets : (Array.isArray(raw.results) ? raw.results : (Array.isArray(raw) ? raw : [])));
+      setMetrics({
+        totalBets: Number(raw.totalBets ?? 0),
+        executedBets: Number(raw.executedBets ?? 0),
+        resolvedBets: Number(raw.resolvedBets ?? 0),
+        pendingBets: Number(raw.pendingBets ?? 0),
+        cancelledBets: Number(raw.cancelledBets ?? 0),
+        directionAccuracy: Number(raw.directionAccuracy ?? 0),
+        avgBrierScore: Number(raw.avgBrierScore ?? 0),
+        totalPnl: Number(raw.totalPnl ?? 0),
+        executionStatusCounts: raw.executionStatusCounts ?? {},
+      });
+      setProfitEvidence(raw.profitEvidence && typeof raw.profitEvidence === 'object'
+        ? {
+            status: String(raw.profitEvidence.status ?? 'UNAVAILABLE'),
+            canEvaluateProfit: Boolean(raw.profitEvidence.canEvaluateProfit),
+            reason: String(raw.profitEvidence.reason ?? ''),
+            resolvedPaperBets: Number(raw.profitEvidence.resolvedPaperBets ?? 0),
+            executedUnresolvedPaperBets: Number(raw.profitEvidence.executedUnresolvedPaperBets ?? 0),
+            openPaperStake: Number(raw.profitEvidence.openPaperStake ?? 0),
+            openModelExpectedValue: Number(raw.profitEvidence.openModelExpectedValue ?? 0),
+            openModelExpectedRoi: raw.profitEvidence.openModelExpectedRoi == null
+              ? null
+              : Number(raw.profitEvidence.openModelExpectedRoi),
+            openPositiveEvBets: Number(raw.profitEvidence.openPositiveEvBets ?? 0),
+            openNegativeEvBets: Number(raw.profitEvidence.openNegativeEvBets ?? 0),
+            openAverageEdge: raw.profitEvidence.openAverageEdge == null
+              ? null
+              : Number(raw.profitEvidence.openAverageEdge),
+          }
+        : null);
+      setSettlementReadiness(raw.settlementReadiness && typeof raw.settlementReadiness === 'object'
+        ? {
+            executedUnresolvedPaperBets: Number(raw.settlementReadiness.executedUnresolvedPaperBets ?? 0),
+            executedUnresolvedWithArchivedPrediction: Number(raw.settlementReadiness.executedUnresolvedWithArchivedPrediction ?? 0),
+            missingArchivedPrediction: Number(raw.settlementReadiness.missingArchivedPrediction ?? 0),
+            executedUnresolvedPaperBetMarkets: Number(raw.settlementReadiness.executedUnresolvedPaperBetMarkets ?? 0),
+            activeResolutionJobMarkets: Number(raw.settlementReadiness.activeResolutionJobMarkets ?? 0),
+            missingResolutionJobs: Number(raw.settlementReadiness.missingResolutionJobs ?? 0),
+            dueResolutionJobs: Number(raw.settlementReadiness.dueResolutionJobs ?? 0),
+            nextResolutionAt: typeof raw.settlementReadiness.nextResolutionAt === 'string' ? raw.settlementReadiness.nextResolutionAt : null,
+            nextResolutionMarket: raw.settlementReadiness.nextResolutionMarket && typeof raw.settlementReadiness.nextResolutionMarket === 'object'
+              ? {
+                  id: String(raw.settlementReadiness.nextResolutionMarket.id ?? ''),
+                  title: String(raw.settlementReadiness.nextResolutionMarket.title ?? ''),
+                }
+              : null,
+          }
+        : null);
       return { ...raw, data: list };
     },
     [search, typeFilter],
@@ -237,13 +374,16 @@ export function PaperBetsDashboard() {
   }
 
   // ── stats ──
-  const settledBets = bets.filter((b) => b.actualOutcome !== null);
-  const winCount = settledBets.filter((b) => b.actualOutcome === 'WIN').length;
-  const winRate = settledBets.length > 0 ? winCount / settledBets.length : 0;
-  const totalPnl = bets.reduce((sum, b) => sum + (b.pnl ?? 0), 0);
-  const avgBrier = bets.length > 0
-    ? bets.reduce((sum, b) => sum + (b.brierScore ?? 0), 0) / Math.max(1, bets.filter((b) => b.brierScore !== null).length)
-    : 0;
+  const resolvedBets = metrics?.resolvedBets ?? bets.filter((b) => b.actualOutcome !== null).length;
+  const executedBets = metrics?.executedBets ?? bets.filter((b) => b.executionStatus === 'FILLED' || b.executionStatus === 'PARTIAL').length;
+  const pendingBets = metrics?.pendingBets ?? bets.filter((b) => !b.actualOutcome && (b.executionStatus === 'FILLED' || b.executionStatus === 'PARTIAL')).length;
+  const cancelledBets = metrics?.cancelledBets ?? bets.filter((b) => b.executionStatus === 'CANCELLED').length;
+  const winRate = metrics?.directionAccuracy ?? 0;
+  const totalPnl = metrics?.totalPnl ?? 0;
+  const avgBrier = metrics?.avgBrierScore ?? 0;
+  const nextResolutionLabel = settlementReadiness?.nextResolutionAt
+    ? new Date(settlementReadiness.nextResolutionAt).toLocaleString()
+    : 'not scheduled';
 
   return (
     <div className="space-y-6">
@@ -341,24 +481,26 @@ export function PaperBetsDashboard() {
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Total Bets</p>
             <p className="mt-1 text-2xl font-bold tabular-nums text-white">{total}</p>
+            <p className="mt-1 text-[11px] text-gray-600">{executedBets} executed, {cancelledBets} cancelled</p>
           </CardContent>
         </Card>
         <Card className="border-emerald-500/20 bg-gray-900">
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Win Rate</p>
             <p className="mt-1 text-2xl font-bold tabular-nums text-emerald-400">
-              {settledBets.length > 0 ? formatPct(winRate) : '\u2014'}
+              {resolvedBets > 0 ? formatPct(winRate) : '\u2014'}
             </p>
+            <p className="mt-1 text-[11px] text-gray-600">{pendingBets} awaiting result</p>
           </CardContent>
         </Card>
         <Card className={cn(
           'bg-gray-900',
-          totalPnl >= 0 ? 'border-emerald-500/20' : 'border-red-500/20'
+          resolvedBets === 0 ? 'border-gray-800' : totalPnl >= 0 ? 'border-emerald-500/20' : 'border-red-500/20'
         )}>
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Total P&amp;L</p>
-            <p className={cn('mt-1 text-2xl font-bold tabular-nums', pnlColor(totalPnl))}>
-              {formatPnl(totalPnl)}
+            <p className={cn('mt-1 text-2xl font-bold tabular-nums', resolvedBets > 0 ? pnlColor(totalPnl) : 'text-gray-500')}>
+              {resolvedBets > 0 ? formatPnl(totalPnl) : '\u2014'}
             </p>
           </CardContent>
         </Card>
@@ -366,11 +508,60 @@ export function PaperBetsDashboard() {
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Avg Brier</p>
             <p className="mt-1 text-2xl font-bold tabular-nums text-cyan-400">
-              {bets.some((b) => b.brierScore !== null) ? avgBrier.toFixed(4) : '\u2014'}
+              {resolvedBets > 0 ? avgBrier.toFixed(4) : '\u2014'}
             </p>
           </CardContent>
         </Card>
       </div>
+
+      {(profitEvidence || settlementReadiness) && (
+        <div className="grid gap-3 lg:grid-cols-3">
+          <div className="rounded-lg border border-gray-800 bg-gray-900/70 p-4">
+            <p className="text-xs text-gray-500">Realized Profit Evidence</p>
+            <p className={cn(
+              'mt-1 text-sm font-medium',
+              profitEvidence?.canEvaluateProfit ? 'text-emerald-400' : 'text-amber-400',
+            )}>
+              {profitEvidence?.status.replace('_', ' ') ?? 'UNAVAILABLE'}
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-gray-500">
+              {profitEvidence?.reason ?? 'Paper profit evidence has not been computed yet.'}
+            </p>
+          </div>
+          <div className="rounded-lg border border-gray-800 bg-gray-900/70 p-4">
+            <p className="text-xs text-gray-500">Open Model EV</p>
+            <p className={cn(
+              'mt-1 text-lg font-semibold tabular-nums',
+              (profitEvidence?.openModelExpectedValue ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400',
+            )}>
+              {formatSignedCurrency(profitEvidence?.openModelExpectedValue ?? 0)}
+            </p>
+            <p className="mt-1 text-[11px] text-gray-600">
+              {profitEvidence?.openModelExpectedRoi == null ? '\u2014' : formatPct(profitEvidence.openModelExpectedRoi)} expected ROI on {formatSignedCurrency(profitEvidence?.openPaperStake ?? 0).replace('+', '')} open stake
+            </p>
+            <p className="mt-2 text-[11px] text-gray-600">
+              {profitEvidence?.openPositiveEvBets ?? 0} positive-EV open bets, {profitEvidence?.openNegativeEvBets ?? 0} negative-EV open bets
+            </p>
+          </div>
+          <div className="rounded-lg border border-gray-800 bg-gray-900/70 p-4">
+            <p className="text-xs text-gray-500">Settlement Readiness</p>
+            <p className="mt-1 text-sm font-medium text-cyan-400">
+              {settlementReadiness
+                ? `${settlementReadiness.activeResolutionJobMarkets}/${settlementReadiness.executedUnresolvedPaperBetMarkets} markets queued`
+                : '\u2014'}
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-gray-500">
+              {settlementReadiness
+                ? `${settlementReadiness.executedUnresolvedWithArchivedPrediction}/${settlementReadiness.executedUnresolvedPaperBets} bets have archived predictions; ${settlementReadiness.dueResolutionJobs} resolution jobs are due now.`
+                : 'Settlement readiness has not been computed yet.'}
+            </p>
+            <p className="mt-2 truncate text-[11px] text-gray-600">
+              Next resolution: {nextResolutionLabel}
+              {settlementReadiness?.nextResolutionMarket ? ` · ${settlementReadiness.nextResolutionMarket.title}` : ''}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -423,7 +614,7 @@ export function PaperBetsDashboard() {
           ) : (
             <>
               <p className="px-6 pb-2 text-xs text-gray-600">
-                Showing {((page - 1) * limit) + 1}\u2013{Math.min(page * limit, total)} of {total}
+                Showing {((page - 1) * limit) + 1}&ndash;{Math.min(page * limit, total)} of {total}
               </p>
               <div className="max-h-[600px] overflow-y-auto">
                 <Table>
@@ -431,6 +622,7 @@ export function PaperBetsDashboard() {
                     <TableRow className="border-gray-800 hover:bg-transparent">
                       <TableHead className="text-gray-500">Market</TableHead>
                       <TableHead className="text-gray-500">Type</TableHead>
+                      <TableHead className="text-gray-500">Status</TableHead>
                       <TableHead className="text-right text-gray-500">Predicted</TableHead>
                       <TableHead className="text-right text-gray-500">Implied</TableHead>
                       <TableHead className="cursor-pointer text-right text-gray-500 hover:text-gray-300" onClick={() => handleSort('edge')}>
@@ -472,6 +664,7 @@ export function PaperBetsDashboard() {
                           </p>
                         </TableCell>
                         <TableCell>{typeBadge(b.predictionType)}</TableCell>
+                        <TableCell>{statusBadge(b.executionStatus)}</TableCell>
                         <TableCell className="text-right">
                           <span className="text-xs tabular-nums text-gray-300">{formatPct(b.predictedProb)}</span>
                         </TableCell>
@@ -501,7 +694,7 @@ export function PaperBetsDashboard() {
                             {formatPnl(b.pnl)}
                           </span>
                         </TableCell>
-                        <TableCell className="text-right">{outcomeBadge(b.actualOutcome)}</TableCell>
+                        <TableCell className="text-right">{outcomeBadge(b.actualOutcome, b.executionStatus)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

@@ -126,6 +126,10 @@ describe('candidates routes', () => {
     expect(findManyMock.mock.calls[0]?.[0]?.where?.market?.NOT?.OR).toEqual([
       { externalId: { startsWith: 'live_' } },
       { externalId: { startsWith: 'sim_' } },
+      { title: { startsWith: 'yes ' } },
+      { title: { startsWith: 'no ' } },
+      { title: { contains: ',yes ' } },
+      { title: { contains: ',no ' } },
     ]);
     expect(payload.candidates).toHaveLength(2);
   });

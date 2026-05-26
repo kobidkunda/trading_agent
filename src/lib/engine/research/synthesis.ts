@@ -302,6 +302,8 @@ export function formatRedditAsSource(result: Record<string, unknown> | null): So
     }
   }
 
+  if (findings.length === 0) return null;
+
   return {
     source: 'Reddit Analysis',
     findings,
@@ -331,6 +333,8 @@ export function formatXAsSource(result: Record<string, unknown> | null): SourceF
       findings.push(`X: ${(t.title as string || '').slice(0, 100)}`);
     }
   }
+
+  if (findings.length === 0) return null;
 
   return {
     source: 'X/Twitter Analysis',

@@ -30,6 +30,8 @@ interface WorkerState {
   errors: number;
   lastActivity: string | null;
   currentJobType: string | null;
+  currentJobId: string | null;
+  currentMarketId: string | null;
   error: string | null;
   lastMarketLoopResult: {
     scanned: number;
@@ -39,12 +41,24 @@ interface WorkerState {
   } | null;
 }
 
+interface WorkerStatusSnapshot extends WorkerState {
+  databaseRunningJob: {
+    id: string;
+    type: string;
+    marketId: string | null;
+    heartbeatAt: Date | null;
+    lockExpiresAt: Date | null;
+  } | null;
+}
+
 const state: WorkerState = {
   status: 'STOPPED',
   jobsProcessed: 0,
   errors: 0,
   lastActivity: null,
   currentJobType: null,
+  currentJobId: null,
+  currentMarketId: null,
   error: null,
   lastMarketLoopResult: null,
 };
@@ -55,6 +69,47 @@ let tickInFlight = false;
 
 export function getWorkerState(): WorkerState {
   return { ...state };
+}
+
+export async function getWorkerStatusSnapshot(): Promise<WorkerStatusSnapshot> {
+  const runningJob = await db.job.findFirst({
+    where: { status: 'RUNNING' },
+    orderBy: { startedAt: 'desc' },
+    select: {
+      id: true,
+      type: true,
+      payload: true,
+      heartbeatAt: true,
+      lockExpiresAt: true,
+    },
+  });
+
+  if (!runningJob) {
+    return { ...state, databaseRunningJob: null };
+  }
+
+  const marketId = extractMarketId(runningJob.payload);
+  const heartbeatMs = runningJob.heartbeatAt ? new Date(runningJob.heartbeatAt).getTime() : 0;
+  const lockExpiryMs = runningJob.lockExpiresAt ? new Date(runningJob.lockExpiresAt).getTime() : 0;
+  const freshDatabaseJob = lockExpiryMs > Date.now() || (heartbeatMs > 0 && Date.now() - heartbeatMs < 120_000);
+
+  return {
+    ...state,
+    status: freshDatabaseJob ? 'RUNNING' : state.status,
+    currentJobType: freshDatabaseJob ? runningJob.type : state.currentJobType ?? runningJob.type,
+    currentJobId: freshDatabaseJob ? runningJob.id : state.currentJobId ?? runningJob.id,
+    currentMarketId: freshDatabaseJob ? marketId : state.currentMarketId ?? marketId,
+    lastActivity: freshDatabaseJob && runningJob.heartbeatAt
+      ? new Date(runningJob.heartbeatAt).toISOString()
+      : state.lastActivity ?? (runningJob.heartbeatAt ? new Date(runningJob.heartbeatAt).toISOString() : null),
+    databaseRunningJob: {
+      id: runningJob.id,
+      type: runningJob.type,
+      marketId,
+      heartbeatAt: runningJob.heartbeatAt,
+      lockExpiresAt: runningJob.lockExpiresAt,
+    },
+  };
 }
 
 export async function startWorker(intervalMs: number = 5000): Promise<WorkerState> {
@@ -77,6 +132,8 @@ export function stopWorker(): WorkerState {
     intervalHandle = null;
   }
   state.currentJobType = null;
+  state.currentJobId = null;
+  state.currentMarketId = null;
   tickInFlight = false;
   state.lastActivity = new Date().toISOString();
   return state;
@@ -101,6 +158,7 @@ export interface WorkerFlowOptions {
   maxJobs?: number;
   runMarketLoop?: boolean;
   failOnNoWork?: boolean;
+  failOnJobError?: boolean;
 }
 
 function extractMarketId(payload: string | null): string | null {
@@ -115,6 +173,42 @@ function extractMarketId(payload: string | null): string | null {
 
 function computeBackoffMs(retryCount: number): number {
   return Math.min(300_000, 60_000 * Math.pow(2, retryCount));
+}
+
+async function getResearchBlockReason(marketId: string): Promise<string | null> {
+  const [candidate, strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
+    db.tradeCandidate.findUnique({
+      where: { marketId },
+      select: {
+        id: true,
+        candidateScore: true,
+        skipReason: true,
+        rejectedCriteria: true,
+      },
+    }),
+    db.settings.findUnique({ where: { key: 'strategy_settings' } }),
+    db.settings.findUnique({ where: { key: 'trading_config' } }),
+    db.settings.findUnique({ where: { key: 'trading_mode' } }),
+  ]);
+
+  if (!candidate) return null;
+
+  const config = getEffectiveTradingConfig({
+    strategySettings: strategySetting ? JSON.parse(strategySetting.value) : null,
+    tradingConfig: tradingConfigSetting ? JSON.parse(tradingConfigSetting.value) : null,
+    tradingMode: tradingModeSetting?.value ?? null,
+  });
+  const candidateThreshold = config.candidateThreshold ?? 75;
+  const researchThreshold = Math.max(candidateThreshold, 25);
+  const candidateScore = typeof candidate.candidateScore === 'number' ? candidate.candidateScore : 0;
+  const thresholdBlocked =
+    candidateScore < researchThreshold
+    || candidate.skipReason?.startsWith('BELOW_CANDIDATE_THRESHOLD')
+    || candidate.rejectedCriteria?.includes('BELOW_CANDIDATE_THRESHOLD');
+
+  if (!thresholdBlocked) return null;
+
+  return `DETERMINISTIC_RESEARCH_BLOCK: candidate score ${candidateScore.toFixed(2)} below research threshold ${researchThreshold}`;
 }
 
 async function releaseAllStaleLocks(): Promise<void> {
@@ -132,7 +226,12 @@ async function releaseAllStaleLocks(): Promise<void> {
   for (const job of staleJobs) {
     await db.job.update({
       where: { id: job.id },
-      data: { status: 'FAILED', error: 'Stale lock released at startup' },
+      data: {
+        status: 'RETRYING',
+        error: 'Stale lock released at startup — retrying',
+        nextRetryAt: now,
+        lockExpiresAt: null,
+      },
     });
     const marketId = extractMarketId(job.payload);
     if (marketId) {
@@ -170,7 +269,12 @@ async function releaseAllStaleLocks(): Promise<void> {
     if (now > deadline) {
       await db.job.update({
         where: { id: job.id },
-        data: { status: 'FAILED', error: 'Heartbeat lost — stale job recovered at startup' },
+        data: {
+          status: 'RETRYING',
+          error: 'Heartbeat lost — stale job recovered at startup; retrying',
+          nextRetryAt: now,
+          lockExpiresAt: null,
+        },
       });
       const marketId = extractMarketId(job.payload);
       if (marketId) {
@@ -273,6 +377,12 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
 
   if (!job) return null;
 
+  const marketId = extractMarketId(job.payload);
+  state.currentJobType = job.type;
+  state.currentJobId = job.id;
+  state.currentMarketId = marketId;
+  state.lastActivity = new Date().toISOString();
+
   const maxRuntimeSec = job.maxRuntimeSec || 300;
   await db.job.update({
     where: { id: job.id },
@@ -284,8 +394,25 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
     },
   });
 
+  const heartbeatIntervalMs = Math.max(10_000, Math.min(60_000, Math.floor((maxRuntimeSec * 1000) / 3)));
+  const heartbeatTimer = setInterval(() => {
+    db.job.updateMany({
+      where: { id: job.id, status: 'RUNNING' },
+      data: {
+        heartbeatAt: new Date(),
+        lockExpiresAt: new Date(Date.now() + maxRuntimeSec * 1000),
+      },
+    }).catch((err) => {
+      console.error(`[Worker] Failed to refresh heartbeat for job ${job.id}:`, err);
+    });
+    if (state.currentJobId === job.id) {
+      state.lastActivity = new Date().toISOString();
+    }
+  }, heartbeatIntervalMs);
+
   try {
     const result = await processJob(job.type, job.payload, job.id);
+    clearInterval(heartbeatTimer);
     await db.job.update({
       where: { id: job.id },
       data: {
@@ -301,11 +428,12 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
     return {
       jobId: job.id,
       jobType: job.type,
-      marketId: extractMarketId(job.payload),
+      marketId,
       status: 'COMPLETED',
       error: null,
     };
   } catch (err) {
+    clearInterval(heartbeatTimer);
     const errorMessage = err instanceof Error ? err.message : 'Unknown error';
     const currentRetryCount = job.retryCount || 0;
     const maxRetries = job.maxRetries ?? 3;
@@ -327,10 +455,31 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
     const marketId = extractMarketId(job.payload);
 
     if (['RESEARCH_MARKET', 'QUICK_RESEARCH', 'STANDARD_RESEARCH', 'DEEP_RESEARCH'].includes(job.type) && marketId) {
-      await db.researchRun.updateMany({
+      const runningResearchRuns = await db.researchRun.findMany({
         where: { marketId, status: 'RUNNING' },
-        data: { status: 'FAILED', completedAt: new Date() },
-      }).catch(() => {});
+        orderBy: { createdAt: 'desc' },
+        take: 3,
+      }).catch(() => []);
+
+      for (const researchRun of runningResearchRuns) {
+        await db.agentOutput.create({
+          data: {
+            researchRunId: researchRun.id,
+            role: 'RESEARCH_JOB_FAILED',
+            stage: 'SYNTHESIS',
+            serviceName: 'worker',
+            provider: 'system',
+            output: JSON.stringify({ error: errorMessage, jobId: job.id, jobType: job.type }),
+            rawOutput: errorMessage,
+            summary: `Research job failed before usable sources were captured: ${errorMessage}`,
+            failureReason: errorMessage,
+          },
+        }).catch((error) => console.error('[Worker] Failed to write research failure AgentOutput:', error));
+        await db.researchRun.update({
+          where: { id: researchRun.id },
+          data: { status: 'FAILED', completedAt: new Date() },
+        }).catch((error) => console.error('[Worker] Failed to mark research run failed:', error));
+      }
     }
 
     await saveFailureCheckpoint(job.id, errorMessage, job.type, {
@@ -380,10 +529,17 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
     return {
       jobId: job.id,
       jobType: job.type,
-      marketId: extractMarketId(job.payload),
+      marketId,
       status: isRetryable ? 'RETRYING' : 'FAILED',
       error: errorMessage,
     };
+  } finally {
+    if (state.currentJobId === job.id) {
+      state.currentJobType = null;
+      state.currentJobId = null;
+      state.currentMarketId = null;
+      state.lastActivity = new Date().toISOString();
+    }
   }
 }
 
@@ -430,15 +586,28 @@ export async function runWorkerFlowUntilIdle(options: WorkerFlowOptions = {}): P
     if (processedJob.status !== 'COMPLETED') {
       state.errors++;
       state.error = processedJob.error;
-      throw new Error(
-        `Job ${processedJob.jobId} (${processedJob.jobType}) ${processedJob.status}: ${processedJob.error ?? 'unknown error'}`,
-      );
+      if (options.failOnJobError !== false) {
+        throw new Error(
+          `Job ${processedJob.jobId} (${processedJob.jobType}) ${processedJob.status}: ${processedJob.error ?? 'unknown error'}`,
+        );
+      }
+      return {
+        marketLoop,
+        processedJobs,
+        jobsProcessed: processedJobs.length,
+        completed: false,
+      };
     }
 
     state.jobsProcessed++;
   }
 
-  throw new Error(`Worker flow did not become idle after ${maxJobs} jobs`);
+  return {
+    marketLoop,
+    processedJobs,
+    jobsProcessed: processedJobs.length,
+    completed: false,
+  };
 }
 
 async function tick() {
@@ -497,27 +666,28 @@ async function lookupResearchRunForMarket(marketId: string, researchRunId?: stri
   researchContext: string;
   depth: ResearchDepth;
 } | null> {
-  const where: any = { marketId };
-  if (researchRunId) {
-    where.id = researchRunId;
-    where.status = { not: 'FAILED' };
-  } else {
-    where.status = 'COMPLETED';
-  }
+  const where: any = { marketId, status: 'COMPLETED' };
+  if (researchRunId) where.id = researchRunId;
   const researchRun = await db.researchRun.findFirst({
     where,
     orderBy: { completedAt: 'desc' },
   });
-  if (!researchRun) return null;
+  const completedRun = researchRun ?? (researchRunId
+    ? await db.researchRun.findFirst({
+        where: { marketId, status: 'COMPLETED' },
+        orderBy: { completedAt: 'desc' },
+      })
+    : null);
+  if (!completedRun) return null;
 
   // Gather research context from sources + agent outputs
   const [sources, agentOutputs] = await Promise.all([
     db.researchSource.findMany({
-      where: { researchRunId: researchRun.id },
+      where: { researchRunId: completedRun.id },
       orderBy: { extractedAt: 'asc' },
     }),
     db.agentOutput.findMany({
-      where: { researchRunId: researchRun.id },
+      where: { researchRunId: completedRun.id },
       orderBy: { createdAt: 'asc' },
     }),
   ]);
@@ -533,10 +703,35 @@ async function lookupResearchRunForMarket(marketId: string, researchRunId?: stri
   const researchContext = parts.join('\n\n');
 
   return {
-    researchRunId: researchRun.id,
+    researchRunId: completedRun.id,
     researchContext,
-    depth: (researchRun.depth as ResearchDepth) || 'STANDARD',
+    depth: (completedRun.depth as ResearchDepth) || 'STANDARD',
   };
+}
+
+async function requeueResearchForMarket(marketId: string, candidateId?: string): Promise<{ created: boolean; jobId?: string }> {
+  const existing = await db.job.findFirst({
+    where: {
+      type: { in: ['STANDARD_RESEARCH', 'RESEARCH_MARKET', 'RESEARCH'] },
+      status: { in: ['PENDING', 'RUNNING', 'RETRYING'] },
+      payload: { contains: marketId },
+    },
+  });
+  if (existing) return { created: false, jobId: existing.id };
+
+  const job = await db.job.create({
+    data: {
+      type: 'STANDARD_RESEARCH',
+      status: 'PENDING',
+      priority: 8,
+      payload: JSON.stringify({
+        marketId,
+        ...(candidateId ? { candidateId } : {}),
+        trigger: 'judge_missing_completed_research',
+      }),
+    },
+  });
+  return { created: true, jobId: job.id };
 }
 
 async function lookupJudgeParams(marketId: string): Promise<{
@@ -629,8 +824,25 @@ function validateMarket(marketId: string): Promise<boolean> {
 
 function resolveDepthFromType(jobType: string): ResearchDepth {
   if (jobType.includes('QUICK')) return 'QUICK';
-  if (jobType.includes('DEEP')) return 'DEEP';
+  if (jobType.includes('DEEP')) return 'FULL';
   return 'STANDARD';
+}
+
+async function resolveEffectiveResearchDepth(jobType: string, fallbackDepth: ResearchDepth): Promise<ResearchDepth> {
+  if (jobType.includes('QUICK')) return 'QUICK';
+  if (jobType.includes('DEEP')) return 'FULL';
+
+  const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
+    db.settings.findUnique({ where: { key: 'strategy_settings' } }),
+    db.settings.findUnique({ where: { key: 'trading_config' } }),
+    db.settings.findUnique({ where: { key: 'trading_mode' } }),
+  ]);
+  const config = getEffectiveTradingConfig({
+    strategySettings: strategySetting ? JSON.parse(strategySetting.value) : null,
+    tradingConfig: tradingConfigSetting ? JSON.parse(tradingConfigSetting.value) : null,
+    tradingMode: tradingModeSetting?.value ?? null,
+  });
+  return config.stageRouting?.researchDepth ?? fallbackDepth;
 }
 
 function resolveJudgeParamsFromPayload(data: Record<string, unknown>): {
@@ -707,7 +919,7 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
         });
         if (!existingResearchJob) {
           await db.job.create({
-            data: { type: 'STANDARD_RESEARCH', status: 'PENDING', priority: 7, payload: JSON.stringify({ marketId, candidateId: data.candidateId, trigger: 'triage_chain', triageStatus: result.triageStatus }) },
+            data: { type: 'STANDARD_RESEARCH', status: 'PENDING', priority: 8, payload: JSON.stringify({ marketId, candidateId: data.candidateId, trigger: 'triage_chain', triageStatus: result.triageStatus }) },
           });
         }
       }
@@ -723,7 +935,27 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       if (!(await validateMarket(marketId))) {
         throw new Error(`Market not found: ${marketId}`);
       }
-      const depth = resolveDepthFromType(jobType);
+      const depth = await resolveEffectiveResearchDepth(jobType, resolveDepthFromType(jobType));
+      const researchBlockReason = await getResearchBlockReason(marketId);
+      if (researchBlockReason) {
+        await db.tradeCandidate.updateMany({
+          where: { marketId },
+          data: {
+            stage: 'WATCHING',
+            researchQueued: false,
+            processingLock: null,
+            lockExpiresAt: null,
+            lastError: null,
+            skipReason: researchBlockReason,
+          },
+        });
+        return {
+          skipped: true,
+          marketId,
+          depth,
+          reason: researchBlockReason,
+        };
+      }
 
       let result: Record<string, unknown>;
 
@@ -771,6 +1003,25 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       if (!(await validateMarket(marketId))) {
         throw new Error(`Market not found: ${marketId}`);
       }
+      const researchBlockReason = await getResearchBlockReason(marketId);
+      if (researchBlockReason) {
+        await db.tradeCandidate.updateMany({
+          where: { marketId },
+          data: {
+            stage: 'WATCHING',
+            researchQueued: false,
+            processingLock: null,
+            lockExpiresAt: null,
+            lastError: null,
+            skipReason: researchBlockReason,
+          },
+        });
+        return {
+          skipped: true,
+          marketId,
+          reason: researchBlockReason,
+        };
+      }
       const research = await lookupResearchRunForMarket(marketId, data.researchRunId as string | undefined);
       if (!research) {
         // Check if research is still in progress — if so, retry instead of failing
@@ -781,7 +1032,17 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
         if (runningResearch) {
           throw new Error(`Research still in progress for ${marketId} (status: ${runningResearch.status}). Retrying JUDGE_MARKET.`);
         }
-        throw new Error(`No completed ResearchRun found for market: ${marketId}`);
+        const requeued = await requeueResearchForMarket(
+          marketId,
+          typeof data.candidateId === 'string' ? data.candidateId : undefined,
+        );
+        return {
+          status: 'RESEARCH_REQUEUED',
+          marketId,
+          jobId: requeued.jobId,
+          created: requeued.created,
+          reason: `No completed ResearchRun found for market: ${marketId}`,
+        };
       }
       const result = await runJudgeStage(marketId, research.researchRunId, research.researchContext, research.depth) as unknown as Record<string, unknown>;
       if (jobId) {
@@ -1150,14 +1411,25 @@ async function processOrderTracking(marketId?: string): Promise<Record<string, u
   }
 
   if (hasActiveOrders) {
-    await db.job.create({
-      data: {
+    const existingTracker = await db.job.findFirst({
+      where: {
         type: 'ORDER_TRACK',
-        status: 'PENDING',
-        priority: 10,
+        status: { in: ['PENDING', 'RUNNING', 'RETRYING'] },
         payload: JSON.stringify({ marketId }),
       },
-    }).catch((err) => console.error('[Worker] Failed to reschedule ORDER_TRACK:', err));
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!existingTracker) {
+      await db.job.create({
+        data: {
+          type: 'ORDER_TRACK',
+          status: 'PENDING',
+          priority: 10,
+          payload: JSON.stringify({ marketId }),
+        },
+      }).catch((err) => console.error('[Worker] Failed to reschedule ORDER_TRACK:', err));
+    }
   }
 
   return { status: 'ORDER_TRACK_COMPLETED', marketId, ordersTracked: tracked };

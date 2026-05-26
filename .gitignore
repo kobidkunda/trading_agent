@@ -86,3 +86,11 @@ db/custom.db
 db/*.db-journal
 db/*.db-shm
 db/*.db-wal
+
+# Generated QA evidence artifacts
+market-detail*.png
+market-triage*.png
+outcomes*.png
+paper-bets*.png
+research-queue-live.png
+*-snapshot*.md

@@ -78,6 +78,16 @@ function formatTime(iso: string | null): string {
   });
 }
 
+function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 function jobStatusBadge(status: string) {
   const styles: Record<string, string> = {
     PENDING: 'border-gray-500/30 bg-gray-500/10 text-gray-400',
@@ -276,7 +286,7 @@ export function SystemHealth() {
         {/* Queue Depth */}
         <StatusCard
           icon={Layers}
-          label="Queue Depth"
+          label="Due Queue"
           value={health.queueDepth}
           color={
             health.queueDepth > 20
@@ -292,6 +302,31 @@ export function SystemHealth() {
                 ? 'border-amber-500/20'
                 : 'border-emerald-500/20'
           }
+        />
+
+        <StatusCard
+          icon={Clock}
+          label="Scheduled"
+          value={health.scheduledQueueDepth ?? 0}
+          color="text-cyan-400"
+          borderColor="border-cyan-500/20"
+        />
+
+        <StatusCard
+          icon={Clock}
+          label="Resolution Checks"
+          value={health.scheduledResolutionChecks ?? 0}
+          color={(health.scheduledResolutionChecks ?? 0) > 0 ? 'text-emerald-400' : 'text-gray-400'}
+          borderColor={(health.scheduledResolutionChecks ?? 0) > 0 ? 'border-emerald-500/20' : 'border-gray-800'}
+        />
+
+        <StatusCard
+          icon={Clock}
+          label="Next Resolution"
+          value={formatDateTime(health.nextResolutionCheckAt)}
+          color={health.nextResolutionCheckAt ? 'text-emerald-400' : 'text-gray-400'}
+          borderColor={health.nextResolutionCheckAt ? 'border-emerald-500/20' : 'border-gray-800'}
+          isText
         />
 
         {/* Failing Jobs */}

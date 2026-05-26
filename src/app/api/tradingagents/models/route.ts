@@ -11,6 +11,17 @@ interface LlmModelsResponse {
   error?: string;
 }
 
+function mergeMetadataOptions(primary: MetadataOption[], secondary: MetadataOption[]): MetadataOption[] {
+  const seen = new Set<string>();
+  const merged: MetadataOption[] = [];
+  for (const option of [...primary, ...secondary]) {
+    if (!option.id || seen.has(option.id)) continue;
+    seen.add(option.id);
+    merged.push(option);
+  }
+  return merged;
+}
+
 /**
  * GET /api/tradingagents/models
  *
@@ -23,7 +34,7 @@ export async function GET(): Promise<NextResponse> {
   // Try native TradingAgents metadata first
   const nativeMetadata = await fetchTradingAgentsMetadata();
 
-  if (nativeMetadata) {
+  if (nativeMetadata && !nativeMetadata.error && !nativeMetadata.warning) {
     return NextResponse.json(nativeMetadata);
   }
 
@@ -35,7 +46,7 @@ export async function GET(): Promise<NextResponse> {
     });
 
     if (!llmCred?.serviceUrl) {
-      return NextResponse.json({
+      return NextResponse.json(nativeMetadata || {
         providers: [],
         models: [],
         source: 'llm-fallback',
@@ -82,10 +93,18 @@ export async function GET(): Promise<NextResponse> {
       };
     });
 
-    const fallbackResponse: TradingAgentsMetadataResponse = {
-      providers: llmData.provider
-        ? [{ id: llmData.provider, label: llmData.provider }]
-        : [{ id: 'llm', label: 'LLM Provider' }],
+    const fallbackProviders = llmData.provider
+      ? [{ id: llmData.provider, label: llmData.provider }]
+      : [{ id: 'llm', label: 'LLM Provider' }];
+
+    const fallbackResponse: TradingAgentsMetadataResponse = nativeMetadata ? {
+      providers: mergeMetadataOptions(nativeMetadata.providers, fallbackProviders),
+      models: mergeMetadataOptions(normalizedModels, nativeMetadata.models),
+      source: 'tradingagents',
+      ...(llmData.error ? { error: llmData.error } : {}),
+      ...(nativeMetadata.warning ? { warning: `${nativeMetadata.warning}; app LLM credential fallback succeeded` } : {}),
+    } : {
+      providers: fallbackProviders,
       models: normalizedModels,
       source: 'llm-fallback',
       ...(llmData.error ? { error: llmData.error } : {}),

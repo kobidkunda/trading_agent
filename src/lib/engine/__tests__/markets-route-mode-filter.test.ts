@@ -39,6 +39,7 @@ const findManyMock = mock(async ({ where }: { where?: { NOT?: { OR?: Array<{ ext
 });
 
 const countMock = mock(async () => 2);
+const aggregateMock = mock(async () => ({ _sum: { latestLiquidity: 0 } }));
 
 const findUniqueMock = mock(async ({ where }: { where: { key: string } }) => {
   if (where.key === 'trading_mode') {
@@ -58,6 +59,7 @@ mock.module('@/lib/db', () => ({
     market: {
       findMany: findManyMock,
       count: countMock,
+      aggregate: aggregateMock,
     },
     settings: {
       findUnique: findUniqueMock,
@@ -69,6 +71,7 @@ describe('markets route mode filtering', () => {
   beforeEach(() => {
     findManyMock.mockClear();
     countMock.mockClear();
+    aggregateMock.mockClear();
     findUniqueMock.mockClear();
   });
 

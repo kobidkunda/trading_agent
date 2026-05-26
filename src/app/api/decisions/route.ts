@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { computeRisk } from '@/lib/engine/risk';
+import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
 import { buildPaginatedResponse, parsePaginationParams, RiskEngineInput } from '@/lib/types';
 import { Prisma } from '@prisma/client';
 
@@ -106,6 +107,16 @@ export async function POST(request: NextRequest) {
     }
 
     const latestSnapshot = market.snapshots[0];
+    const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
+      db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_MODE_KEY } }),
+    ]);
+    const tradingConfig = getEffectiveTradingConfig({
+      strategySettings: strategySetting?.value ? JSON.parse(strategySetting.value) : null,
+      tradingConfig: tradingConfigSetting?.value ? JSON.parse(tradingConfigSetting.value) : null,
+      tradingMode: tradingModeSetting?.value ?? null,
+    });
 
     // Build risk engine input
     const riskInput: RiskEngineInput = {
@@ -120,8 +131,15 @@ export async function POST(request: NextRequest) {
       dailyExposure: body.dailyExposure ?? 0,
       categoryExposure: body.categoryExposure ?? 0,
       openPositions: body.openPositions ?? 0,
+      maxPositionSize: tradingConfig.maxExposurePerMarket,
+      maxDailyExposure: tradingConfig.maxDailyExposure,
+      maxCategoryExposure: tradingConfig.maxCategoryExposure,
+      minLiquidity: tradingConfig.minLiquidity,
+      maxSpread: tradingConfig.maxSpread,
       marketLiquidity: latestSnapshot?.liquidity ?? 0,
       marketSpread: latestSnapshot?.spread ?? 0.05,
+      marketResolutionTime: market.resolutionTime,
+      maxResolutionDays: tradingConfig.maxResolutionDays,
       catalystTiming: body.catalystTiming,
     };
 

@@ -30,6 +30,8 @@ const ABSOLUTE_MIN_BID_CONFIDENCE = 0.55;
 const ABSOLUTE_MIN_WATCH_CONFIDENCE = 0.35;
 const ABSOLUTE_MAX_UNCERTAINTY_THRESHOLD = 0.45;
 const ABSOLUTE_MIN_LIQUIDITY = 1;
+const ABSOLUTE_MIN_BID_EDGE = 0.005;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function computeRisk(
   input: RiskEngineInput,
@@ -44,7 +46,7 @@ export function computeRisk(
   const maxDailyExposure = input.maxDailyExposure ?? MAX_DAILY_EXPOSURE;
   const maxCategoryExposure = input.maxCategoryExposure ?? MAX_CATEGORY_EXPOSURE;
   const maxPositionSize = input.maxPositionSize ?? MAX_POSITION_SIZE;
-  const bidEdgeThreshold = input.bidEdgeThreshold ?? BID_EDGE_THRESHOLD;
+  const bidEdgeThreshold = Math.max(input.bidEdgeThreshold ?? BID_EDGE_THRESHOLD, ABSOLUTE_MIN_BID_EDGE);
   const watchEdgeThreshold = input.watchEdgeThreshold ?? WATCH_EDGE_THRESHOLD;
   const bidConfidenceThreshold = Math.max(
     input.bidConfidenceThreshold ?? BID_CONFIDENCE_THRESHOLD,
@@ -57,6 +59,29 @@ export function computeRisk(
   const maxUncertaintyThreshold = Math.min(input.maxUncertaintyThreshold ?? MAX_UNCERTAINTY_THRESHOLD, ABSOLUTE_MAX_UNCERTAINTY_THRESHOLD);
   const edge = Math.abs(input.judgeProbability - input.impliedProbability);
   const effectiveEdge = edge - input.fees - input.slippage;
+  const maxResolutionDays = input.maxResolutionDays;
+
+  if (typeof maxResolutionDays === 'number' && maxResolutionDays > 0) {
+    if (!input.marketResolutionTime) {
+      return skip('RESOLUTION_TOO_FAR', `Market resolution time is missing; max resolution window is ${maxResolutionDays} days`, edge, input);
+    }
+
+    const resolutionTime = new Date(input.marketResolutionTime).getTime();
+    if (!Number.isFinite(resolutionTime)) {
+      return skip('RESOLUTION_TOO_FAR', `Market resolution time is invalid; max resolution window is ${maxResolutionDays} days`, edge, input);
+    }
+
+    const now = input.now ?? new Date();
+    const daysUntilResolution = (resolutionTime - now.getTime()) / DAY_MS;
+    if (daysUntilResolution > maxResolutionDays) {
+      return skip(
+        'RESOLUTION_TOO_FAR',
+        `Market resolves in ${Math.ceil(daysUntilResolution)} days, above max ${maxResolutionDays} days`,
+        edge,
+        input,
+      );
+    }
+  }
 
   if (input.marketLiquidity < minLiquidity) {
     return skip('LOW_LIQUIDITY', `Market liquidity ${input.marketLiquidity} below minimum ${minLiquidity}`, edge, input);
@@ -208,7 +233,7 @@ export function computePositionSize(edge: number, confidence: number, uncertaint
   const size = MAX_POSITION_SIZE * conservativeKelly * confidenceMultiplier;
   const rounded = Math.round(Math.max(0, Math.min(size, MAX_POSITION_SIZE)) * 100) / 100;
   if (rounded > 0) return rounded;
-  if (edge > 0 && confidence >= 0.1) return 100;
+  if (edge >= ABSOLUTE_MIN_BID_EDGE && confidence >= ABSOLUTE_MIN_BID_CONFIDENCE) return 100;
   return 0;
 }
 
@@ -240,8 +265,8 @@ export const DEFAULT_STAGE_ROUTING: StageServiceMapping = {
   embeddingProvider: undefined,
   researchDepth: 'FULL',
   agentReachEnabled: true,
-  agentReachServiceUrl: process.env.AGENT_REACH_URL || '',
-  agentReachToolName: 'web_read',
+  agentReachServiceUrl: process.env.AGENT_REACH_URL || 'http://localhost:6504',
+  agentReachToolName: 'research',
   mirofishPredictionModel: undefined,
   researchFallbackProvider: 'firecrawl',
 };
@@ -276,6 +301,7 @@ export const DEFAULT_STRATEGY: StrategySettings = {
   scanRateLimitMs: 500,
   scanTimeoutMs: 15000,
   orderExpiryMinutes: 1440,
+  maxResolutionDays: 30,
   orderbookPenaltyMode: 'STRICT',
   missingOrderbookPenalty: 15,
   stageRouting: DEFAULT_STAGE_ROUTING,

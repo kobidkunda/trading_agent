@@ -230,12 +230,14 @@ export async function runAgentReachResearch(
 
   const cred = await getCredentialForService('agent-reach');
   const baseUrl = routing.agentReachServiceUrl || cred?.baseUrl || process.env.AGENT_REACH_URL;
-  const toolName = routing.agentReachToolName || 'research';
+  const configuredToolName = routing.agentReachToolName || 'research';
+  const toolName = configuredToolName === 'web_read' ? 'research' : configuredToolName;
   const credentialToolName = (cred as { toolName?: string } | null)?.toolName;
 
   console.log('[Agent-Reach] Configuration:', {
     baseUrl: baseUrl || 'NOT SET',
     toolName,
+    configuredToolName,
     targetSourceCount,
     enabled: routing.agentReachEnabled,
   });
@@ -277,6 +279,13 @@ export async function runAgentReachResearch(
     const result = data as Record<string, unknown>;
     const status = result?.status === 'failed' || result?.status === 'error' ? 'failed' : 'completed';
     const sources = normalizeSources(result?.sources);
+    const summary = normalizeSummary(status, result?.summary);
+    const error =
+      typeof result?.error === 'string'
+        ? result.error
+        : status === 'failed'
+          ? summary
+          : undefined;
     
     const duration = Date.now() - startTime;
     console.log(`[Agent-Reach] Research completed in ${duration}ms`);
@@ -289,11 +298,11 @@ export async function runAgentReachResearch(
     return {
       provider: 'agent_reach',
       status,
-      summary: normalizeSummary(status, result?.summary),
+      summary,
       sources,
       sourceCount: sources.length,
       channels: Array.isArray(result?.channels) ? result.channels : undefined,
-      error: typeof result?.error === 'string' ? result.error : undefined,
+      error,
     };
   } catch (error) {
     const duration = Date.now() - startTime;

@@ -1,7 +1,13 @@
 import { db } from '@/lib/db';
 import { updateOrderCompat } from '@/lib/engine/prisma-runtime-compat';
-import { normalizeFillModel } from '@/lib/engine/paper-execution';
+import { clampContractPrice, normalizeFillModel } from '@/lib/engine/paper-execution';
 import { computeRisk } from '@/lib/engine/risk';
+import {
+  getEffectiveTradingConfig,
+  STRATEGY_SETTINGS_KEY,
+  TRADING_CONFIG_KEY,
+  TRADING_MODE_KEY,
+} from '@/lib/engine/trading-settings';
 import type { FillModelInput, PaperBetExecutionStatus, Venue } from '@/lib/types';
 
 export type OrderTrackerLifecycle = 'PLANNED' | 'SUBMITTED' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELLED' | 'FAILED' | 'EXPIRED';
@@ -91,7 +97,7 @@ export async function processPaperOrderFill(params: {
 
 // Risk re-evaluation gate: PAPER fills must remain executable under current market conditions.
 // Fail closed when the latest snapshot / decision context is missing.
-  const [latestMarketSnapshot, paperBet] = await Promise.all([
+  const [latestMarketSnapshot, paperBet, strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
     db.marketSnapshot.findFirst({
       where: { marketId: params.marketId },
       orderBy: { timestamp: 'desc' },
@@ -100,15 +106,24 @@ export async function processPaperOrderFill(params: {
       where: { orderId: params.orderId },
       include: {
         decision: {
-          include: { market: { select: { venue: true, category: true } } },
+          include: { market: { select: { venue: true, category: true, resolutionTime: true } } },
         },
       },
     }),
+    db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
+    db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
+    db.settings.findUnique({ where: { key: TRADING_MODE_KEY } }),
   ]);
+  const tradingConfig = getEffectiveTradingConfig({
+    strategySettings: strategySetting?.value ? JSON.parse(strategySetting.value) : null,
+    tradingConfig: tradingConfigSetting?.value ? JSON.parse(tradingConfigSetting.value) : null,
+    tradingMode: tradingModeSetting?.value ?? null,
+  });
+  const riskConfig = tradingConfig as unknown as Record<string, unknown>;
 
   const latestDecision = paperBet?.decision ?? await db.decision.findFirst({
     where: { marketId: params.marketId },
-    include: { market: { select: { venue: true, category: true } } },
+    include: { market: { select: { venue: true, category: true, resolutionTime: true } } },
     orderBy: { createdAt: 'desc' },
   });
 
@@ -154,15 +169,27 @@ export async function processPaperOrderFill(params: {
       judgeProbability: latestDecision.judgeProbability,
       confidence: latestDecision.confidence,
       uncertainty: mktUncertainty,
-      fees: 0,
-      slippage: 0,
+      fees: typeof riskConfig.fees === 'number' ? riskConfig.fees : 0,
+      slippage: typeof riskConfig.slippage === 'number' ? riskConfig.slippage : 0,
       venue: latestDecision.market.venue as Venue,
       category: latestDecision.market.category,
       dailyExposure: 0,
       categoryExposure: 0,
       openPositions: 0,
+      maxPositionSize: tradingConfig.maxExposurePerMarket,
+      maxDailyExposure: tradingConfig.maxDailyExposure,
+      maxCategoryExposure: tradingConfig.maxCategoryExposure,
+      minLiquidity: tradingConfig.minLiquidity,
+      maxSpread: tradingConfig.maxSpread,
+      bidEdgeThreshold: typeof riskConfig.bidEdgeThreshold === 'number' ? riskConfig.bidEdgeThreshold : undefined,
+      watchEdgeThreshold: typeof riskConfig.watchEdgeThreshold === 'number' ? riskConfig.watchEdgeThreshold : undefined,
+      bidConfidenceThreshold: typeof riskConfig.bidConfidenceThreshold === 'number' ? riskConfig.bidConfidenceThreshold : undefined,
+      watchConfidenceThreshold: typeof riskConfig.watchConfidenceThreshold === 'number' ? riskConfig.watchConfidenceThreshold : undefined,
+      maxUncertaintyThreshold: typeof riskConfig.maxUncertaintyThreshold === 'number' ? riskConfig.maxUncertaintyThreshold : undefined,
       marketLiquidity: mktLiquidity,
       marketSpread: latestMarketSnapshot.spread,
+      marketResolutionTime: latestDecision.market.resolutionTime,
+      maxResolutionDays: tradingConfig.maxResolutionDays,
       catalystTiming: undefined,
     };
 
@@ -248,10 +275,10 @@ export async function processPaperOrderFill(params: {
   const nextRemainingSize = Math.max(0, order.size - nextFilledSize);
   const nextAvgFillPrice =
     nextFilledSize > 0
-      ? (
+      ? clampContractPrice((
           ((order.avgFillPrice ?? 0) * prevFilledSize) +
           (fillResult.avgFillPrice * incrementalFill)
-        ) / Math.max(nextFilledSize, 1)
+        ) / Math.max(nextFilledSize, 1))
       : order.avgFillPrice;
 
   const isFullFill = nextFilledSize >= order.size * 0.999;
@@ -322,7 +349,7 @@ export async function processPaperOrderFill(params: {
         executionStatus: paperBetExecutionStatus,
         executedAt: fillTimestamp,
         stake: nextFilledSize,
-        entryPrice: nextAvgFillPrice ?? order.price,
+        entryPrice: clampContractPrice(nextAvgFillPrice ?? order.price),
       },
     });
 
@@ -335,9 +362,9 @@ export async function processPaperOrderFill(params: {
         data: {
           marketId: params.marketId,
           side: order.side,
-          entryPrice: fillResult.avgFillPrice,
+          entryPrice: clampContractPrice(fillResult.avgFillPrice),
           currentSize: incrementalFill,
-          avgEntryPrice: fillResult.avgFillPrice,
+          avgEntryPrice: clampContractPrice(fillResult.avgFillPrice),
           unrealizedPnl: 0,
           realizedPnl: 0,
           status: 'OPEN',
@@ -346,7 +373,7 @@ export async function processPaperOrderFill(params: {
       });
     } else {
       const newSize = existingPosition.currentSize + incrementalFill;
-      const newAvgPrice = ((existingPosition.avgEntryPrice * existingPosition.currentSize) + (fillResult.avgFillPrice * incrementalFill)) / newSize;
+      const newAvgPrice = clampContractPrice(((existingPosition.avgEntryPrice * existingPosition.currentSize) + (fillResult.avgFillPrice * incrementalFill)) / newSize);
       await db.position.update({
         where: { id: existingPosition.id },
         data: {
@@ -370,7 +397,7 @@ export async function processPaperOrderFill(params: {
   if (newLifecycleStatus === 'FILLED') {
     await db.tradeCandidate.updateMany({
       where: { marketId: params.marketId },
-      data: { stage: 'EXECUTED', lastExecutionAt: fillTimestamp },
+      data: { stage: 'EXECUTED', skipReason: null, lastExecutionAt: fillTimestamp },
     });
   } else if (newLifecycleStatus === 'FAILED') {
     await db.tradeCandidate.updateMany({

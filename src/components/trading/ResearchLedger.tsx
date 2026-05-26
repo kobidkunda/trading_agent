@@ -421,7 +421,7 @@ export function ResearchLedger() {
                 color: 'text-amber-400',
               },
               {
-                label: 'Total Size',
+                label: 'Proposed Size',
                 value: formatCurrency(summaryStats.totalSize),
                 icon: Target,
                 color: 'text-cyan-400',

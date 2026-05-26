@@ -4,6 +4,11 @@ import { computePositionSize } from '@/lib/engine/risk';
 export type PaperExecutionSide = 'YES' | 'NO';
 export type PaperDataSource = 'MOCK' | 'REAL';
 
+export function clampContractPrice(price: number | null | undefined): number {
+  if (price == null || !Number.isFinite(price)) return 0;
+  return Math.min(1, Math.max(0, price));
+}
+
 export function normalizeFillModel(fillModel?: FillModelInput | null): FillModel {
   switch (fillModel) {
     case 'INSTANT':
@@ -71,7 +76,7 @@ export function buildPaperOrderRecord(params: {
     dataSource: params.dataSource,
     lifecycleStatus: 'SUBMITTED' as const, // Changed from FILLED to SUBMITTED (plan_12-00-0099: order lifecycle)
     side: params.side,
-    price: params.price,
+    price: clampContractPrice(params.price),
     size: params.size,
     filledSize: 0, // Changed from params.size to 0 (no instant fill)
     remainingSize: params.size, // Full size remaining
@@ -98,7 +103,7 @@ export function buildPaperPositionRecord(params: {
   return {
     marketId: params.marketId,
     side: params.side,
-    entryPrice: params.entryPrice,
+    entryPrice: clampContractPrice(params.entryPrice),
     currentSize: 0, // Position not yet opened
     avgEntryPrice: 0, // Not filled yet
     unrealizedPnl: 0,
@@ -144,7 +149,7 @@ export function resolvePaperFill(params: {
     // DEMO_INSTANT: full instant fill (only for demo mode)
     return {
       filledSize: params.size,
-      avgFillPrice: params.price,
+      avgFillPrice: clampContractPrice(params.price),
       remainingSize: 0,
       isFullyFilled: true,
       lifecycleStatus: 'FILLED',
@@ -168,7 +173,7 @@ export function resolvePaperFill(params: {
 
     return {
       filledSize: params.size,
-      avgFillPrice: params.price + Math.max(0, params.priceImpact ?? 0),
+      avgFillPrice: clampContractPrice(params.price + Math.max(0, params.priceImpact ?? 0)),
       remainingSize: 0,
       isFullyFilled: true,
       lifecycleStatus: 'FILLED',
@@ -198,7 +203,7 @@ export function resolvePaperFill(params: {
 
     const fillCap = fillProb == null ? 1 : Math.max(0.1, Math.min(1, fillProb));
     const filledSize = Math.min(params.size, Math.round(Math.min(availableDepth, params.size * fillCap) * 100) / 100);
-    const avgFillPrice = Math.max(params.price, params.price + Math.max(params.priceImpact ?? 0, (params.spread ?? 0) * 0.15));
+    const avgFillPrice = clampContractPrice(Math.max(params.price, params.price + Math.max(params.priceImpact ?? 0, (params.spread ?? 0) * 0.15)));
     const isFullyFilled = filledSize >= params.size * 0.999;
 
     return {
@@ -229,12 +234,12 @@ export function resolvePaperFill(params: {
     const fillRatio = Math.min(0.25, params.liquidity / Math.max(1, params.size * params.price * 400));
     const filledSize = Math.round(params.size * fillRatio * 100) / 100;
     const slippage = params.price * Math.max(0.015, (1 - fillRatio) * 0.03);
-    const avgFillPrice = filledSize > 0 ? params.price + slippage : 0;
+    const avgFillPrice = filledSize > 0 ? clampContractPrice(params.price + slippage) : 0;
     const isFullyFilled = filledSize >= params.size * 0.999;
 
     return {
       filledSize: Math.max(0, filledSize),
-      avgFillPrice: Math.max(0, avgFillPrice),
+      avgFillPrice,
       remainingSize: Math.max(0, params.size - filledSize),
       isFullyFilled,
       lifecycleStatus: filledSize <= 0 ? 'SUBMITTED' : isFullyFilled ? 'FILLED' : 'PARTIALLY_FILLED',
@@ -260,11 +265,11 @@ export function resolvePaperFill(params: {
     // Fill at fillProb * size, which represents actual fill likelihood.
     const filledSize = Math.round(params.size * fillProb * 100) / 100;
     const impactCost = Math.max(params.priceImpact ?? 0, (params.spread ?? 0) * 0.25);
-    const avgFillPrice = params.price + impactCost;
+    const avgFillPrice = clampContractPrice(params.price + impactCost);
 
     return {
       filledSize: Math.max(0, filledSize),
-      avgFillPrice: Math.max(0, avgFillPrice),
+      avgFillPrice,
       remainingSize: Math.max(0, params.size - filledSize),
       isFullyFilled: false,
       lifecycleStatus: 'PARTIALLY_FILLED',
@@ -275,11 +280,11 @@ export function resolvePaperFill(params: {
     fillModel === 'CONSERVATIVE_PAPER'
       ? Math.max(params.priceImpact ?? 0, (params.spread ?? 0) * 0.5)
       : params.priceImpact ?? 0;
-  const avgFillPrice = params.price + impactCost;
+  const avgFillPrice = clampContractPrice(params.price + impactCost);
 
   return {
     filledSize: params.size,
-    avgFillPrice: Math.max(0, avgFillPrice),
+    avgFillPrice,
     remainingSize: 0,
     isFullyFilled: true,
     lifecycleStatus: 'FILLED',

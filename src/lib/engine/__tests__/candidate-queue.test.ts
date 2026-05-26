@@ -20,12 +20,10 @@ describe('candidate queue planning', () => {
     ]);
   });
 
-  it('creates full pipeline jobs for elite candidates', () => {
+  it('queues only the jobs that can run immediately for elite candidates', () => {
     expect(buildCandidateJobs('FULL_RESEARCH', { marketId: 'm1', candidateId: 'c1' })).toEqual([
       { type: 'TRIAGE_MARKET', priority: 7, payload: { marketId: 'm1', candidateId: 'c1', trigger: 'scanner_score' } },
       { type: 'RESEARCH_MARKET', priority: 8, payload: { marketId: 'm1', candidateId: 'c1', trigger: 'scanner_score' } },
-      { type: 'JUDGE_MARKET', priority: 9, payload: { marketId: 'm1', candidateId: 'c1', trigger: 'scanner_score' } },
-      { type: 'RISK_CHECK', priority: 10, payload: { marketId: 'm1', candidateId: 'c1', trigger: 'scanner_score' } },
     ]);
   });
 });

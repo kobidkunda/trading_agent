@@ -74,6 +74,10 @@ interface BacktestRun {
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
+  profitEvidence?: {
+    canEvaluateProfit: boolean;
+    reason: string;
+  } | null;
 }
 
 interface ParamFormState {
@@ -222,6 +226,10 @@ function formatDrawdown(value: number | null): string {
 function formatBrier(value: number | null): string {
   if (value === null || value === undefined) return '—';
   return value.toFixed(4);
+}
+
+function hasBacktestProfitEvidence(run: BacktestRun): boolean {
+  return run.status === 'COMPLETED' && run.totalBets > 0 && run.profitEvidence?.canEvaluateProfit !== false;
 }
 
 function formatSharpe(value: number | null): string {
@@ -507,9 +515,11 @@ export function StrategyOptimizerDashboard() {
   const liveConfigs = configs.filter((c) => c.status === 'LIVE_APPROVED').length;
   const totalBacktests = backtests.length;
   const completedBacktests = backtests.filter((b) => b.status === 'COMPLETED');
+  const evidenceBacktests = backtests.filter(hasBacktestProfitEvidence);
+  const completedWithoutEvidence = completedBacktests.length - evidenceBacktests.length;
   const avgBacktestRoi =
-    completedBacktests.length > 0
-      ? completedBacktests.reduce((sum, b) => sum + (b.roi ?? 0), 0) / completedBacktests.length
+    evidenceBacktests.length > 0
+      ? evidenceBacktests.reduce((sum, b) => sum + (b.roi ?? 0), 0) / evidenceBacktests.length
       : 0;
 
   return (
@@ -553,8 +563,13 @@ export function StrategyOptimizerDashboard() {
           <CardContent className="p-4">
             <p className="text-xs text-gray-500">Avg Backtest ROI</p>
             <p className={cn('mt-1 text-2xl font-bold tabular-nums', roiColor(avgBacktestRoi))}>
-              {completedBacktests.length > 0 ? formatPct(avgBacktestRoi) : '—'}
+              {evidenceBacktests.length > 0 ? formatPct(avgBacktestRoi) : '—'}
             </p>
+            {completedWithoutEvidence > 0 && (
+              <p className="text-[10px] text-amber-300">
+                {completedWithoutEvidence} completed run{completedWithoutEvidence === 1 ? '' : 's'} lack profit evidence
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -842,7 +857,9 @@ export function StrategyOptimizerDashboard() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {sortedBacktests.map((b) => (
+                  {sortedBacktests.map((b) => {
+                    const hasProfitEvidence = hasBacktestProfitEvidence(b);
+                    return (
                     <TableRow
                       key={b.id}
                       className={cn(
@@ -884,18 +901,19 @@ export function StrategyOptimizerDashboard() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
-                          {(b.roi ?? 0) > 0 ? (
+                          {hasProfitEvidence && (b.roi ?? 0) > 0 ? (
                             <TrendingUp className="h-3 w-3 text-emerald-400" />
-                          ) : (b.roi ?? 0) < 0 ? (
+                          ) : hasProfitEvidence && (b.roi ?? 0) < 0 ? (
                             <TrendingDown className="h-3 w-3 text-red-400" />
                           ) : null}
                           <span
                             className={cn(
                               'text-xs font-medium tabular-nums',
-                              roiColor(b.roi),
+                              hasProfitEvidence ? roiColor(b.roi) : 'text-gray-500',
                             )}
+                            title={!hasProfitEvidence ? b.profitEvidence?.reason ?? 'Profit evidence unavailable' : undefined}
                           >
-                            {formatPct(b.roi)}
+                            {hasProfitEvidence ? formatPct(b.roi) : '—'}
                           </span>
                         </div>
                       </TableCell>
@@ -938,7 +956,8 @@ export function StrategyOptimizerDashboard() {
                       </TableCell>
                       <TableCell>{backtestStatusBadge(b.status)}</TableCell>
                     </TableRow>
-                  ))}
+                  );
+                  })}
                 </TableBody>
               </Table>
             </div>

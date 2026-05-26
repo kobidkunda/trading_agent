@@ -13,9 +13,15 @@ import { synthesizeFindings, formatAgentReachAsSource, formatSearchAsSource, for
 import { writeResearchToQdrant, retrieveSimilarMarkets } from '@/lib/engine/memory/qdrant';
 import { isTestMode, getTradingMode, getModeState } from '@/lib/engine/mode';
 import { getStageRouting, getResearchDepth, getModelForStage } from '@/lib/engine/service-routing';
-import { createPaperBet } from '@/lib/engine/paper-bets';
+import {
+  ACTIVE_OPPOSITE_SIDE_PAPER_BET,
+  ACTIVE_SAME_SIDE_PAPER_BET,
+  ActivePaperBetConflictError,
+  classifyActivePaperBetExposure,
+  createPaperBet,
+} from '@/lib/engine/paper-bets';
 import { buildPaperOrderRecord, resolvePaperExecutionSize } from '@/lib/engine/paper-execution';
-import { createOrderCompat } from '@/lib/engine/prisma-runtime-compat';
+import { createOrderCompat, updateOrderCompat } from '@/lib/engine/prisma-runtime-compat';
 import { canRunStage, isServiceReachable } from '@/lib/engine/health-check';
 import { resolveResearchProvider } from '@/lib/engine/service-routing';
 import { runFirecrawlResearch } from '@/lib/engine/research/firecrawl-research';
@@ -27,7 +33,7 @@ import { buildWatchlistPayload, shouldCreateExecutionJob, shouldCreateWatchlistE
 import { computeNextEligibleAt } from '@/lib/engine/candidate-dedupe';
 import { causalTreeEngine } from '@/lib/engine/causal-tree';
 import { getPolymarketMarkets } from '@/lib/venues/polymarket';
-import { getKalshiMarkets } from '@/lib/venues/kalshi';
+import { getKalshiMarkets, normalizeKalshiMarket } from '@/lib/venues/kalshi';
 import type { LivePipelineStage, ResearchDepth, TransparencySourceRef } from '@/lib/types';
 import { getEffectiveTradingConfig, STRATEGY_SETTINGS_KEY, TRADING_CONFIG_KEY, TRADING_MODE_KEY } from '@/lib/engine/trading-settings';
 import { evaluateAPlusSignalGate } from '@/lib/engine/a-plus/signal-gate';
@@ -157,6 +163,132 @@ function dedupeSourcesByUrl<T extends { url: string }>(sources: T[]): T[] {
   }
 
   return unique;
+}
+
+const SOURCE_RELEVANCE_STOPWORDS = new Set([
+  'will', 'the', 'and', 'for', 'with', 'from', 'that', 'this', 'market', 'markets',
+  'prediction', 'predict', 'advance', 'before', 'after', 'over', 'under', 'yes',
+  'win', 'wins', 'winner', 'score', 'points', 'primary', 'nominee', 'election',
+  'between', 'margin', 'victory', 'target', 'price', 'picked', 'round', 'top',
+  'republican', 'republicans', 'democratic', 'democrat', 'democrats', 'senate',
+  'house', 'runoff', 'governor', 'texas',
+]);
+
+const SOURCE_RELEVANCE_GENERIC_TITLES = new Set([
+  'twitter',
+  'twitter it s what s happening twitter',
+  'x twitter post',
+  'reddit post',
+]);
+
+const WEAK_ENTITY_TOKENS = new Set([
+  'china', 'india', 'russia', 'israel', 'iran', 'japan', 'google', 'spotify',
+  'trump', 'biden', 'democrat', 'republican',
+]);
+
+function normalizeRelevanceText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function stripSourceDiagnostics(value: string): string {
+  return value
+    .replace(/\bMissing:\s*[^"'\n.]+/gi, ' ')
+    .replace(/\bShow results with:\s*[^"'\n.]+/gi, ' ');
+}
+
+function marketRelevanceTokens(marketTitle: string): string[] {
+  return normalizeRelevanceText(marketTitle)
+    .split(' ')
+    .filter((token) => /[a-z]/.test(token) && token.length >= 4 && !SOURCE_RELEVANCE_STOPWORDS.has(token));
+}
+
+function marketNamedTokens(marketTitle: string): string[] {
+  return Array.from(new Set(
+    marketTitle
+      .replace(/['']/g, '')
+      .split(/[^A-Za-z0-9]+/)
+      .filter((token) =>
+        /^[A-Z][A-Za-z0-9]{2,}$/.test(token) &&
+        !SOURCE_RELEVANCE_STOPWORDS.has(token.toLowerCase()) &&
+        !['Will', 'Game'].includes(token)
+      )
+      .map((token) => token.toLowerCase()),
+  ));
+}
+
+function sourceMatchesMarket(marketTitle: string, sourceText: string, options: { strictEntity?: boolean } = {}): boolean {
+  const marketText = normalizeRelevanceText(marketTitle);
+  const haystack = normalizeRelevanceText(stripSourceDiagnostics(sourceText));
+  if (!haystack) return false;
+  if (SOURCE_RELEVANCE_GENERIC_TITLES.has(haystack)) return false;
+
+  const distinctiveTokens = marketRelevanceTokens(marketTitle);
+  const namedTokens = marketNamedTokens(marketTitle);
+  const namedHits = namedTokens.filter((token) => haystack.includes(token)).length;
+  const strongNamedHits = namedTokens.filter((token) => !WEAK_ENTITY_TOKENS.has(token) && haystack.includes(token)).length;
+  const adjacentTokenHit = distinctiveTokens.some((token, index) => {
+    const next = distinctiveTokens[index + 1];
+    return next ? haystack.includes(`${token} ${next}`) : false;
+  });
+
+  const tokenHits = distinctiveTokens.filter((token) => haystack.includes(token)).length;
+  if (options.strictEntity && namedTokens.length > 0) {
+    const requiredStrictHits = distinctiveTokens.length <= 2 ? 1 : Math.min(3, distinctiveTokens.length);
+    const weakEntityFullMatch = tokenHits >= Math.min(4, Math.max(3, distinctiveTokens.length));
+    const hasReliableEntityMatch = strongNamedHits > 0 || namedHits >= 2 || weakEntityFullMatch;
+    return hasReliableEntityMatch && (adjacentTokenHit || tokenHits >= requiredStrictHits);
+  }
+
+  if (adjacentTokenHit && (!options.strictEntity || namedHits > 0)) return true;
+
+  const requiredHits = distinctiveTokens.length <= 2 ? 1 : 2;
+  if (tokenHits >= requiredHits) return true;
+
+  const quotedCore = marketText
+    .replace(/\b(will|before|after|over|under|win|wins|winner|advance)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return quotedCore.length >= 12 && haystack.includes(quotedCore);
+}
+
+function filterSearchResultsForMarket<T extends { title?: string; snippet?: string; content?: string; url?: string }>(
+  marketTitle: string,
+  results: T[],
+): T[] {
+  return results.filter((result) =>
+    sourceMatchesMarket(
+      marketTitle,
+      [result.title, result.snippet, result.content, result.url].filter(Boolean).join(' '),
+    ),
+  );
+}
+
+function filterReportItemsForMarket(
+  marketTitle: string,
+  report: Record<string, unknown> | null,
+  key: 'posts' | 'tweets',
+): Record<string, unknown> | null {
+  if (!report) return null;
+  const items = Array.isArray(report[key]) ? (report[key] as Array<Record<string, unknown>>) : [];
+  const filtered = items.filter((item) =>
+    sourceMatchesMarket(
+      marketTitle,
+      [
+        item.title,
+        item.selftext,
+        item.content,
+        item.snippet,
+        item.url,
+        item.subreddit ? `subreddit ${item.subreddit}` : '',
+      ].map((value) => String(value || '')).join(' '),
+      { strictEntity: true },
+    ),
+  );
+  return {
+    ...report,
+    [key]: filtered,
+    filteredOut: items.length - filtered.length,
+  };
 }
 
 async function createResearchSourceSafe(data: Record<string, unknown>): Promise<void> {
@@ -314,7 +446,8 @@ export async function resolvePipelineContext(marketId: string): Promise<Pipeline
   let impliedProb = snapshot?.impliedProb ?? market.latestPrice ?? 0.5;
   // Guard: ?? only catches null/undefined, not 0. Force sane default.
   if (!impliedProb || impliedProb <= 0 || impliedProb > 1) impliedProb = 0.5;
-  let liquidity = snapshot?.liquidity ?? market.latestLiquidity ?? 0;
+  // Use || not ?? — snapshot.liquidity can be 0 (stored as zero), fall through to latestLiquidity
+  let liquidity = snapshot?.liquidity || market.latestLiquidity || 0;
 
   if (market.venue === 'POLYMARKET') {
     const polymarketResult = await withVenueFetchTimeout('Fresh Polymarket', () => getPolymarketMarkets({ limit: 100 }));
@@ -331,11 +464,27 @@ export async function resolvePipelineContext(marketId: string): Promise<Pipeline
     const freshList = kalshiResult.markets;
     const fresh = freshList.find((m: { ticker: string }) => m.ticker === market.externalId);
     if (fresh) {
-      impliedProb = fresh.last_price / 100;
-      liquidity = fresh.volume;
-      await db.marketSnapshot.create({
-        data: { marketId, impliedProb, liquidity, spread: Math.max(0.01, (fresh.yes_ask - fresh.yes_bid) / 100), volume24h: fresh.volume, bestBid: fresh.yes_bid / 100, bestAsk: fresh.yes_ask / 100 },
-      });
+      const normalized = normalizeKalshiMarket(fresh);
+      if (normalized) {
+        impliedProb = normalized.impliedProb;
+        liquidity = normalized.liquidity || liquidity;
+        // Patch snapshot object in-place so downstream risk checks see fresh values
+        if (snapshot) {
+          (snapshot as Record<string, unknown>).spread = normalized.spread;
+          (snapshot as Record<string, unknown>).bestBid = normalized.bestBid ?? null;
+          (snapshot as Record<string, unknown>).bestAsk = normalized.bestAsk ?? null;
+          (snapshot as Record<string, unknown>).spreadSource = normalized.spreadSource;
+        }
+        await db.marketSnapshot.create({
+          data: {
+            marketId, impliedProb, liquidity,
+            spread: normalized.spread,
+            volume24h: normalized.volume24h,
+            bestBid: normalized.bestBid ?? null,
+            bestAsk: normalized.bestAsk ?? null,
+          },
+        });
+      }
     }
   }
 
@@ -385,7 +534,7 @@ export async function runTriageStage(
   stages.push('TRIAGE');
 
   const ctx = await resolvePipelineContext(marketId);
-  const { market, candidate, impliedProb, liquidity, biasAdjustedProb, routing } = ctx;
+  const { market, candidate, impliedProb, liquidity, biasAdjustedProb, routing, tradingConfig } = ctx;
 
   const triageModel = getModelForStage('triage', routing);
   await emitStage({
@@ -398,24 +547,41 @@ export async function runTriageStage(
   const triageResult = await runTriageAgent(
     marketId, market.title, market.description || '', market.category, impliedProb, liquidity,
   );
+  const candidateThreshold = tradingConfig.candidateThreshold ?? 75;
+  const researchThreshold = Math.max(candidateThreshold, 25);
+  const deterministicResearchBlock =
+    candidate && (
+      (typeof candidate.candidateScore === 'number' && candidate.candidateScore < researchThreshold)
+      || candidate.skipReason?.startsWith('BELOW_CANDIDATE_THRESHOLD')
+      || candidate.rejectedCriteria?.includes('BELOW_CANDIDATE_THRESHOLD')
+    )
+      ? `DETERMINISTIC_RESEARCH_BLOCK: candidate score ${Number(candidate.candidateScore ?? 0).toFixed(2)} below research threshold ${researchThreshold}`
+      : null;
+  const effectiveTriageResult = deterministicResearchBlock
+    ? {
+        ...triageResult,
+        worthResearch: false,
+        reason: `${triageResult.reason || 'No reason provided'}; ${deterministicResearchBlock}`,
+      }
+    : triageResult;
 
   if (candidate) {
     await db.tradeCandidate.update({
       where: { id: candidate.id },
       data: {
         stage: 'TRIAGED',
-        triageStatus: triageResult.status,
-        triageReason: triageResult.reason,
-        researchQueued: triageResult.worthResearch,
+        triageStatus: effectiveTriageResult.status,
+        triageReason: effectiveTriageResult.reason,
+        researchQueued: effectiveTriageResult.worthResearch,
         biasAdjustedProb,
       },
     });
   }
 
   return {
-    triageStatus: triageResult.status,
-    worthResearch: triageResult.worthResearch,
-    triageResult,
+    triageStatus: effectiveTriageResult.status,
+    worthResearch: effectiveTriageResult.worthResearch,
+    triageResult: effectiveTriageResult,
     biasAdjustedProb,
     candidate,
     stages,
@@ -500,10 +666,10 @@ export async function runResearchStage(
       ),
     );
 
-    const webSearchResults = dedupeSourcesByUrl([
+    const webSearchResults = filterSearchResultsForMarket(market.title, dedupeSourcesByUrl([
       ...baseSearchResults,
       ...additionalSearches.flatMap((result) => (result.status === 'fulfilled' ? result.value : [])),
-    ]).slice(0, 300);
+    ])).slice(0, 300);
 
     if (webSearchResults.length > 0) {
       await saveSearchSources(researchRun.id, webSearchResults);
@@ -540,9 +706,22 @@ export async function runResearchStage(
     }
 
     if (fullResearchResult.agentReach) {
-      agentReachSource = formatAgentReachAsSource(fullResearchResult.agentReach);
+      const filteredAgentReachSources = filterSearchResultsForMarket(
+        market.title,
+        fullResearchResult.agentReach.sources,
+      );
+      const filteredAgentReachResult = {
+        ...fullResearchResult.agentReach,
+        sources: dedupeSourcesByUrl(filteredAgentReachSources),
+        summary: `${fullResearchResult.agentReach.summary} Filtered usable sources: ${filteredAgentReachSources.length}/${fullResearchResult.agentReach.sources.length}.`,
+      };
+      const persistedAgentReachResult = {
+        ...filteredAgentReachResult,
+        sources: filteredAgentReachResult.sources,
+      };
+      agentReachSource = formatAgentReachAsSource(filteredAgentReachResult);
       analystSections.push(`[AGENT REACH]\n${agentReachSource.raw}`);
-      const savedCount = await saveAgentReachSources(researchRun.id, fullResearchResult.agentReach);
+      const savedCount = await saveAgentReachSources(researchRun.id, persistedAgentReachResult);
       await db.agentOutput.create({
         data: {
           researchRunId: researchRun.id,
@@ -551,10 +730,13 @@ export async function runResearchStage(
           serviceName: 'agent-reach',
           provider: 'agent_reach',
           modelUsed: routing.agentReachToolName || 'research',
-          output: JSON.stringify(fullResearchResult.agentReach),
+          output: JSON.stringify(filteredAgentReachResult),
           rawOutput: JSON.stringify(fullResearchResult.agentReach),
-          summary: `${fullResearchResult.agentReach.summary.slice(0, 3500)}\n\nPersisted sources: ${savedCount}`,
-          referencesJson: JSON.stringify(fullResearchResult.agentReach.sources.slice(0, 100)),
+          summary: `${filteredAgentReachResult.summary.slice(0, 3500)}\n\nPersisted sources: ${savedCount}`,
+          referencesJson: JSON.stringify(persistedAgentReachResult.sources.slice(0, 100)),
+          failureReason: filteredAgentReachResult.status === 'failed'
+            ? (filteredAgentReachResult.error || filteredAgentReachResult.summary)
+            : null,
         },
       });
     }
@@ -616,11 +798,12 @@ export async function runResearchStage(
       }
 
       if (taResult.redditReport) {
-        redditSource = formatRedditAsSource(taResult.redditReport);
+        const filteredRedditReport = filterReportItemsForMarket(market.title, taResult.redditReport, 'posts');
+        redditSource = formatRedditAsSource(filteredRedditReport);
         if (redditSource) {
           analystSections.push(`[REDDIT]\n${redditSource.raw}`);
         }
-        const savedCount = await saveRedditSources(researchRun.id, taResult.redditReport);
+        const savedCount = filteredRedditReport ? await saveRedditSources(researchRun.id, filteredRedditReport) : 0;
         await db.agentOutput.create({
           data: {
             researchRunId: researchRun.id,
@@ -629,19 +812,20 @@ export async function runResearchStage(
             serviceName: 'tradingagents',
             provider: 'tradingagents',
             modelUsed: 'tradingagents',
-            output: JSON.stringify(taResult.redditReport),
+            output: JSON.stringify(filteredRedditReport ?? { posts: [], filteredOut: 0 }),
             rawOutput: JSON.stringify(taResult.redditReport),
-            summary: `Persisted Reddit posts: ${savedCount}`,
+            summary: `Persisted Reddit posts: ${savedCount}; filtered unrelated posts: ${Number(filteredRedditReport?.filteredOut ?? 0)}`,
           },
         });
       }
 
       if (taResult.xReport) {
-        xSource = formatXAsSource(taResult.xReport);
+        const filteredXReport = filterReportItemsForMarket(market.title, taResult.xReport, 'tweets');
+        xSource = formatXAsSource(filteredXReport);
         if (xSource) {
           analystSections.push(`[X/TWITTER]\n${xSource.raw}`);
         }
-        const savedCount = await saveXSources(researchRun.id, taResult.xReport);
+        const savedCount = filteredXReport ? await saveXSources(researchRun.id, filteredXReport) : 0;
         await db.agentOutput.create({
           data: {
             researchRunId: researchRun.id,
@@ -650,9 +834,9 @@ export async function runResearchStage(
             serviceName: 'tradingagents',
             provider: 'tradingagents',
             modelUsed: 'tradingagents',
-            output: JSON.stringify(taResult.xReport),
+            output: JSON.stringify(filteredXReport ?? { tweets: [], filteredOut: 0 }),
             rawOutput: JSON.stringify(taResult.xReport),
-            summary: `Persisted X/Twitter posts: ${savedCount}`,
+            summary: `Persisted X/Twitter posts: ${savedCount}; filtered unrelated posts: ${Number(filteredXReport?.filteredOut ?? 0)}`,
           },
         });
       }
@@ -778,10 +962,11 @@ export async function runResearchStage(
       });
     }
   } else {
-    const searchResults = await searchSearXNG(market.title, routing.searchMaxResults ?? 50).catch((e) => {
+    const rawSearchResults = await searchSearXNG(market.title, routing.searchMaxResults ?? 50).catch((e) => {
       console.error('[Pipeline] SearXNG failed:', e);
       return [];
     });
+    const searchResults = filterSearchResultsForMarket(market.title, rawSearchResults);
     const maxResults = routing.searchMaxResults ?? 50;
     researchContext = searchResults.map((r: { title: string; snippet: string }) => `${r.title}: ${r.snippet}`).join('\n');
 
@@ -792,7 +977,8 @@ export async function runResearchStage(
     ]);
     for (const sr of extraSearches) {
       if (sr.status === 'fulfilled') {
-        researchContext += '\n' + sr.value.map((r: any) => `${r.title}: ${r.snippet}`).join('\n');
+        const filteredExtra = filterSearchResultsForMarket(market.title, sr.value);
+        researchContext += '\n' + filteredExtra.map((r: any) => `${r.title}: ${r.snippet}`).join('\n');
       }
     }
 
@@ -824,8 +1010,11 @@ export async function runResearchStage(
       const taDate = new Date().toISOString().split('T')[0];
       const taResult = await runTradingAgentsSimple(
         market.title, taDate,
-        routing.analystDeepThinkLlm || 'paper_proglm',
-        routing.analystQuickThinkLlm || 'paper_lite',
+        routing.analystDeepThinkLlm,
+        routing.analystQuickThinkLlm,
+        routing.analystLlmProvider,
+        routing.analystMaxDebateRounds,
+        routing,
       ).catch((e) => {
         console.error('[Pipeline] TradingAgents simple call failed:', e);
         return null;
@@ -886,12 +1075,13 @@ export async function runResearchStage(
           analystSections.push(`[FUNDAMENTALS]\n${JSON.stringify(taResult.fundamentalsReport, null, 2)}`);
         }
         if (taResult.redditReport) {
-          const redditSrc = formatRedditAsSource(taResult.redditReport);
+          const filteredRedditReport = filterReportItemsForMarket(market.title, taResult.redditReport, 'posts');
+          const redditSrc = formatRedditAsSource(filteredRedditReport);
           if (redditSrc) {
             analystSections.push(`[REDDIT]\n${redditSrc.raw}`);
 
             // Save individual Reddit posts as research sources
-            const redditPosts = taResult.redditReport.posts as Array<Record<string, unknown>> | undefined;
+            const redditPosts = filteredRedditReport?.posts as Array<Record<string, unknown>> | undefined;
             if (redditPosts && Array.isArray(redditPosts)) {
               console.log(`[Pipeline] Saving ${redditPosts.length} Reddit posts as research sources (simple mode)`);
               for (const post of redditPosts.slice(0, 100)) {
@@ -917,20 +1107,21 @@ export async function runResearchStage(
                 serviceName: 'tradingagents',
                 provider: 'tradingagents',
                 modelUsed: 'tradingagents',
-                output: JSON.stringify(taResult.redditReport),
+                output: JSON.stringify(filteredRedditReport ?? { posts: [], filteredOut: 0 }),
                 rawOutput: JSON.stringify(taResult.redditReport),
-                summary: null,
+                summary: `Filtered unrelated Reddit posts: ${Number(filteredRedditReport?.filteredOut ?? 0)}`,
               },
             });
           }
         }
         if (taResult.xReport) {
-          const xSrc = formatXAsSource(taResult.xReport);
+          const filteredXReport = filterReportItemsForMarket(market.title, taResult.xReport, 'tweets');
+          const xSrc = formatXAsSource(filteredXReport);
           if (xSrc) {
             analystSections.push(`[X/TWITTER]\n${xSrc.raw}`);
 
             // Save individual X/Twitter tweets as research sources
-            const xTweets = taResult.xReport.tweets as Array<Record<string, unknown>> | undefined;
+            const xTweets = filteredXReport?.tweets as Array<Record<string, unknown>> | undefined;
             if (xTweets && Array.isArray(xTweets)) {
               console.log(`[Pipeline] Saving ${xTweets.length} X/Twitter tweets as research sources (simple mode)`);
               for (const tweet of xTweets.slice(0, 100)) {
@@ -956,22 +1147,26 @@ export async function runResearchStage(
                 serviceName: 'tradingagents',
                 provider: 'tradingagents',
                 modelUsed: 'tradingagents',
-                output: JSON.stringify(taResult.xReport),
+                output: JSON.stringify(filteredXReport ?? { tweets: [], filteredOut: 0 }),
                 rawOutput: JSON.stringify(taResult.xReport),
-                summary: null,
+                summary: `Filtered unrelated X/Twitter posts: ${Number(filteredXReport?.filteredOut ?? 0)}`,
               },
             });
           }
         }
 
         // Native graph analysis for financial markets (QUICK/DEEP path)
-        if (isNativeAnalysisCandidate(market.category) && taResult?.status === 'completed') {
+        const shouldRunNativeGraph = isNativeAnalysisCandidate(market.category)
+          || routing.analystAssetType === 'stock'
+          || routing.analystAssetType === 'crypto';
+        if (shouldRunNativeGraph && taResult?.status === 'completed') {
           try {
             const nativeResult = await runTradingAgentsNative(
               market.title, taDate,
               routing.analystDeepThinkLlm,
               routing.analystQuickThinkLlm,
               routing.analystLlmProvider,
+              routing,
             );
             if (nativeResult && nativeResult.status !== 'failed') {
               console.log('[Pipeline] Storing native graph AgentOutput (QUICK/DEEP path)');
@@ -1506,15 +1701,19 @@ export async function runRiskStage(
     model: null,
   });
 
-  let strategy: Record<string, unknown> = {};
+  let strategySettings: Record<string, unknown> = {};
   if (strategySetting?.value) {
     try {
-      strategy = JSON.parse(strategySetting.value);
+      strategySettings = JSON.parse(strategySetting.value);
     } catch (parseError) {
       console.error('[pipeline] Failed to parse strategy_settings:', parseError);
-      strategy = {};
+      strategySettings = {};
     }
   }
+  const strategy = {
+    ...strategySettings,
+    ...(tradingConfig as unknown as Record<string, unknown>),
+  };
 
   const strategyDailyLimit = typeof strategy.maxDailyExposure === 'number' ? strategy.maxDailyExposure : 50000;
   const strategyCategoryLimit = typeof strategy.maxCategoryExposure === 'number' ? strategy.maxCategoryExposure : 10000;
@@ -1523,6 +1722,7 @@ export async function runRiskStage(
   const strategyMaxSpread = typeof strategy.maxSpread === 'number' ? strategy.maxSpread : 0.05;
   const strategyFees = typeof strategy.fees === 'number' ? strategy.fees : 0.02;
   const strategySlippage = typeof strategy.slippage === 'number' ? strategy.slippage : 0.01;
+  const strategyMaxResolutionDays = typeof strategy.maxResolutionDays === 'number' ? strategy.maxResolutionDays : 30;
 
   const openPositions = await db.position.findMany({
     where: { status: 'OPEN' },
@@ -1558,7 +1758,10 @@ export async function runRiskStage(
   const categoryExposureBlocked = actualCategoryExposure >= strategyCategoryLimit;
 
   const riskInput = {
-    impliedProbability: biasAdjustedProb,
+    // Risk sizing must compare the judge estimate with the executable market price.
+    // biasAdjustedProb is useful as a calibration/reference signal, but orders fill
+    // at the venue quote, so using it here can create false paper edges.
+    impliedProbability: impliedProb,
     judgeProbability,
     confidence: judgeConfidence,
     uncertainty: judgeUncertainty,
@@ -1584,9 +1787,72 @@ export async function runRiskStage(
     remainingDailyCapacity: Math.max(0, strategyDailyLimit - actualDailyExposure),
     remainingCategoryCapacity: Math.max(0, strategyCategoryLimit - actualCategoryExposure),
     marketLiquidity: liquidity,
-    marketSpread: (snapshot as any)?.spread ?? 0.05,
+    marketResolutionTime: market.resolutionTime,
+    maxResolutionDays: strategyMaxResolutionDays,
+    // Use fresh/patched spread from snapshot; if stored spread is degenerate (>=50%),
+    // fall back to estimated spread based on implied probability.
+    marketSpread: (() => {
+      const raw = (snapshot as any)?.spread as number | undefined;
+      if (!raw || raw >= 0.5) {
+        return Math.max(0.005, Math.abs(impliedProb - (1 - impliedProb)) * 0.02);
+      }
+      return raw;
+    })(),
     catalystTiming: undefined,
   };
+
+  // Guard: skip extreme-probability markets where judge calibration is unreliable.
+  // Markets at >92% or <8% implied probability are typically priced by participants with
+  // real data (e.g., streaming counts, current poll numbers). Our judge LLM lacks this
+  // real-time data and routinely disagrees by 50-70%, producing spurious large-edge bets.
+  const extremeProbThreshold = typeof strategy.extremeProbThreshold === 'number' ? strategy.extremeProbThreshold : 0.92;
+  const rawEdge = Math.abs(judgeProbability - impliedProb);
+  if ((impliedProb > extremeProbThreshold || impliedProb < 1 - extremeProbThreshold) && rawEdge > 0.12) {
+    const extremeSkipResult = {
+      action: 'SKIP' as const,
+      side: judgeProbability > impliedProb ? 'YES' as const : 'NO' as const,
+      maxSize: 0,
+      adjustedSize: 0,
+      urgency: 'LOW' as const,
+      reasonCode: 'EXTREME_MARKET_PROBABILITY' as import('@/lib/types').RiskReasonCode,
+      reason: `Market probability ${(impliedProb * 100).toFixed(0)}% is too extreme for reliable LLM judge estimates (edge=${(rawEdge * 100).toFixed(0)}% exceeds 12% cap at extremes)`,
+      edge: rawEdge,
+      fees: strategyFees,
+      slippage: strategySlippage,
+    };
+    await emitStage({
+      stage: 'RISK',
+      type: 'skipped',
+      message: extremeSkipResult.reason,
+      provider: 'system',
+      serviceName: 'risk-engine',
+    });
+
+    const extremeDecision = await db.decision.create({
+      data: {
+        marketId,
+        action: 'SKIP',
+        side: extremeSkipResult.side,
+        edge: rawEdge,
+        maxSize: 0,
+        confidence: judgeConfidence,
+        urgency: 'LOW',
+        mode: getTradingMode(),
+        reason: extremeSkipResult.reason,
+        reasonCode: 'EXTREME_MARKET_PROBABILITY',
+        judgeProbability,
+      },
+    });
+    return {
+      decisionId: extremeDecision.id,
+      riskAction: 'SKIP',
+      gatedRiskResult: extremeSkipResult,
+      aPlusGatePassed: false,
+      decision: extremeDecision,
+      stages,
+      candidate,
+    };
+  }
 
   const riskResult = computeRisk(riskInput, {
     clusterExposures: clusterExposureTotals.clusterExposures,
@@ -1705,7 +1971,9 @@ export async function runRiskStage(
         governance.maxDailyLoss > 0;
 
   const isLiveOrDemo = tradingConfig.mode === 'LIVE' || tradingConfig.mode === 'DEMO';
-  const requiresAPlusForExecution = tradingConfig.mode === 'PAPER' || isLiveOrDemo || governance.liveEnabled;
+  // PAPER mode does not protect real money — skip A+ gate so paper bets can flow and calibrate the model.
+  // Only LIVE mode (and explicit liveEnabled governance) requires the strict A+ gate.
+  const requiresAPlusForExecution = tradingConfig.mode === 'LIVE' || governance.liveEnabled;
 
   const gatedRiskResult =
     oracleRiskLevel === 'BLOCK'
@@ -1717,7 +1985,12 @@ export async function runRiskStage(
         }
     :
     riskResult.action === 'BID'
-        && (disagreementLevel === 'HIGH' || !liveGovernanceReady || (requiresAPlusForExecution && !aPlusGatePassed))
+        && (
+          // In LIVE mode: block on any quality concern
+          (tradingConfig.mode === 'LIVE' && (disagreementLevel === 'HIGH' || !liveGovernanceReady || (requiresAPlusForExecution && !aPlusGatePassed)))
+          // In PAPER mode: only block if governance explicitly requires manual review
+          || (tradingConfig.mode !== 'LIVE' && !liveGovernanceReady)
+        )
       ? {
           ...riskResult,
           action: 'WATCH' as const,
@@ -1869,6 +2142,49 @@ export async function runExecuteStage(
   let venueOrderId: string | null = null;
 
   if (shouldCreateExecutionJob(gatedRiskResult.action as 'BID' | 'WATCH' | 'SKIP')) {
+    const requestedSide = gatedRiskResult.side ?? 'YES';
+    // Guard: keep one active paper exposure per market and make the reason visible.
+    const existingActiveBet = await db.paperBet.findFirst({
+      where: { marketId, executionStatus: { in: ['SUBMITTED', 'FILLED', 'PARTIAL'] }, actualOutcome: null },
+      orderBy: [{ confidence: 'desc' }, { edge: 'desc' }, { createdAt: 'desc' }],
+      select: { id: true, predictedSide: true, edge: true },
+    });
+    if (existingActiveBet) {
+      const exposureCode = classifyActivePaperBetExposure(existingActiveBet.predictedSide, requestedSide);
+      const isOppositeSide = exposureCode === ACTIVE_OPPOSITE_SIDE_PAPER_BET;
+      const reason = isOppositeSide
+        ? `Blocked opposite-side paper exposure: active bet ${existingActiveBet.id} is ${existingActiveBet.predictedSide}, requested ${requestedSide}`
+        : `Reused same-side paper exposure: active bet ${existingActiveBet.id} is already ${requestedSide}`;
+
+      await db.decision.update({
+        where: { id: decisionId },
+        data: {
+          reasonCode: isOppositeSide ? ACTIVE_OPPOSITE_SIDE_PAPER_BET : ACTIVE_SAME_SIDE_PAPER_BET,
+          reason,
+        },
+      }).catch((error) => console.error('[Pipeline] Failed to annotate duplicate paper exposure:', error));
+
+      if (candidate) {
+        await db.tradeCandidate.update({
+          where: { id: candidate.id },
+          data: {
+            stage: isOppositeSide ? 'WATCHING' : 'DECIDED',
+            skipReason: reason,
+            nextEligibleAt: computeNextEligibleAt(new Date(), isOppositeSide ? 3 : 12),
+          },
+        }).catch((error) => console.error('[Pipeline] Failed to annotate candidate duplicate paper exposure:', error));
+      }
+
+      await emitStage({
+        stage: 'DECISION',
+        type: 'skipped' as const,
+        message: reason,
+        provider: 'system',
+        serviceName: 'paper-execution',
+        failureReason: isOppositeSide ? ACTIVE_OPPOSITE_SIDE_PAPER_BET : ACTIVE_SAME_SIDE_PAPER_BET,
+      });
+      return { orderId: null, venueOrderId: null, stages, candidate };
+    }
     stages.push('EXECUTE');
     const orderSize = resolvePaperExecutionSize({
       adjustedSize: gatedRiskResult.adjustedSize,
@@ -1909,7 +2225,7 @@ export async function runExecuteStage(
         buildPaperOrderRecord({
           marketId,
           venueOrderId,
-          side: gatedRiskResult.side ?? 'YES',
+          side: requestedSide,
           price: orderPrice,
           size: orderSize,
           now,
@@ -1927,7 +2243,8 @@ export async function runExecuteStage(
       // Position is created by order-tracker when order is filled
       // No instant position creation
 
-      await createPaperBet({
+      try {
+        await createPaperBet({
         marketId,
         decisionId,
         orderId: order.id,
@@ -1936,13 +2253,37 @@ export async function runExecuteStage(
         aPlusStatus: aPlusGatePassed ? 'PASSED' : 'FAILED',
         executionStatus: 'SUBMITTED',
         predictedProb: judgeProbability,
-        predictedSide: gatedRiskResult.side ?? 'YES',
+        predictedSide: requestedSide,
         impliedProb,
         edge: gatedRiskResult.edge,
         confidence: judgeConfidence,
         stake: orderSize,
         entryPrice: orderPrice,
       });
+      } catch (error) {
+        if (!(error instanceof ActivePaperBetConflictError)) throw error;
+
+        const reason = `Blocked opposite-side paper exposure: active bet ${error.existingBetId} is ${error.existingSide}, requested ${error.requestedSide}`;
+        await updateOrderCompat(order.id, {
+          lifecycleStatus: 'CANCELLED',
+          status: 'CANCELLED',
+          failureReason: reason,
+          cancelledAt: new Date(),
+        }).catch((updateError) => console.error('[Pipeline] Failed to cancel conflicted paper order:', updateError));
+        await db.decision.update({
+          where: { id: decisionId },
+          data: { reasonCode: ACTIVE_OPPOSITE_SIDE_PAPER_BET, reason },
+        }).catch((updateError) => console.error('[Pipeline] Failed to annotate conflicted decision:', updateError));
+        await emitStage({
+          stage: 'DECISION',
+          type: 'skipped' as const,
+          message: reason,
+          provider: 'system',
+          serviceName: 'paper-execution',
+          failureReason: ACTIVE_OPPOSITE_SIDE_PAPER_BET,
+        });
+        return { orderId: null, venueOrderId: null, stages, candidate };
+      }
 
       orderId = order.id;
 
@@ -1951,7 +2292,7 @@ export async function runExecuteStage(
         data: {
           type: 'ORDER_TRACK',
           status: 'PENDING',
-          priority: 4,
+          priority: 10,
           payload: JSON.stringify({ marketId }),
         },
       }).catch((e) => { console.error('[Pipeline] Failed to create ORDER_TRACK job:', e); });
@@ -1961,6 +2302,7 @@ export async function runExecuteStage(
           where: { id: candidate.id },
           data: {
             stage: 'EXECUTION_PENDING',
+            skipReason: null,
             cooldownUntil: computeNextEligibleAt(new Date(), 24),
             lastExecutionAt: new Date(), // NOTE: EXECUTION_PENDING — not terminal. Will become EXECUTED after fill via order-tracker.
           },
@@ -2135,6 +2477,19 @@ export async function runPipelineForMarket(
         take: 1,
       });
       if (researchRuns.length > 0) {
+        await db.agentOutput.create({
+          data: {
+            researchRunId: researchRuns[0].id,
+            role: 'PIPELINE_FAILED',
+            stage: 'SYNTHESIS',
+            serviceName: 'pipeline',
+            provider: 'system',
+            output: JSON.stringify({ error: result.error, marketId }),
+            rawOutput: result.error,
+            summary: `Pipeline failed before research could produce usable sources: ${result.error}`,
+            failureReason: result.error,
+          },
+        }).catch((e) => console.error('[Pipeline] Failed to write failure AgentOutput:', e));
         await db.researchRun.update({
           where: { id: researchRuns[0].id },
           data: { status: 'FAILED', completedAt: new Date() },

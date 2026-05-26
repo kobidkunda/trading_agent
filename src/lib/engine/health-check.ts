@@ -24,7 +24,7 @@ function normalizeServiceName(name: string): string {
 }
 
 const SERVICE_ENDPOINTS: Record<string, string> = {
-  // deerflow removed — service disabled
+  deerflow: '/health',
   qdrant: '/healthz',
   searxng: '/search?q=test&format=json',
   tradingagents: '/health',
@@ -38,7 +38,7 @@ const SERVICE_ENDPOINTS: Record<string, string> = {
 };
 
 const SERVICE_DISPLAY_NAMES: Record<string, string> = {
-  // deerflow removed — service disabled
+  deerflow: 'DeerFlow',
   qdrant: 'Qdrant',
   searxng: 'SearXNG',
   tradingagents: 'TradingAgents',
@@ -51,6 +51,24 @@ const SERVICE_DISPLAY_NAMES: Record<string, string> = {
   mirofish: 'MiroFish',
   firecrawl: 'Firecrawl',
 };
+
+async function getConfiguredAgentReachUrl(): Promise<string | undefined> {
+  try {
+    const setting = await db.settings.findUnique({ where: { key: 'strategy_settings' } });
+    if (!setting) return undefined;
+
+    const parsed = JSON.parse(setting.value) as {
+      stageRouting?: {
+        agentReachServiceUrl?: string;
+      };
+    };
+    const url = parsed.stageRouting?.agentReachServiceUrl?.trim();
+    return url || undefined;
+  } catch (error) {
+    console.error('[HealthCheck] Failed to load Agent-Reach routing URL:', error);
+    return undefined;
+  }
+}
 
 /**
  * Check health of a single service
@@ -73,15 +91,27 @@ export async function checkServiceHealth(serviceName: string): Promise<ServiceHe
       },
     });
 
-    // Determine the service URL: prefer credential, then env var fallback
+    if (cred?.testResult && cred.testResult !== 'SUCCESS') {
+      return {
+        name: displayName,
+        status: 'DOWN',
+        error: `Credential test failed: ${cred.testResult}`,
+        lastChecked: new Date().toISOString(),
+      };
+    }
+
+    // Determine the service URL: prefer credential, then persisted routing, then env fallback.
     let serviceUrl = cred?.serviceUrl;
+    if (!serviceUrl && (normalizedName === 'agent_reach' || normalizedName === 'agentreach')) {
+      serviceUrl = await getConfiguredAgentReachUrl();
+    }
     if (!serviceUrl) {
       const envUrlMap: Record<string, string> = {
-        searxng: process.env.SEARXNG_URL || 'http://192.168.88.97:7777',
+        searxng: process.env.SEARXNG_URL || process.env.TA_SEARXNG_URL || process.env.SEARXNG_BASE_URL || 'http://localhost:8888',
         qdrant: process.env.QDRANT_URL || 'http://localhost:6333',
-      // deerflow entry removed — service disabled
-        tradingagents: process.env.TRADINGAGENTS_URL || 'http://localhost:8100',
-        agent_reach: process.env.AGENT_REACH_URL || '',
+        deerflow: process.env.DEERFLOW_URL || '',
+        tradingagents: process.env.TRADINGAGENTS_URL || 'http://localhost:6503',
+        agent_reach: process.env.AGENT_REACH_URL || 'http://localhost:6504',
         openai: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
         ollama: process.env.OLLAMA_URL || 'http://localhost:11434',
         mirofis: process.env.MIROFISH_URL || '',
@@ -99,16 +129,6 @@ export async function checkServiceHealth(serviceName: string): Promise<ServiceHe
       };
     }
 
-    const endpoint = SERVICE_ENDPOINTS[normalizedName] || SERVICE_ENDPOINTS[serviceName.toLowerCase()];
-    if (!endpoint) {
-      return {
-        name: displayName,
-        status: 'UNKNOWN',
-        error: 'No health endpoint defined',
-        lastChecked: new Date().toISOString(),
-      };
-    }
-
     // Parse encrypted data for API key
     let apiKey: string | undefined;
     if (cred?.encryptedData) {
@@ -119,15 +139,27 @@ export async function checkServiceHealth(serviceName: string): Promise<ServiceHe
       } catch {}
     }
 
-    // Firecrawl: check API key presence instead of endpoint
+    // Firecrawl has hosted API-key mode and local/proxy deployments that may not expose /health.
+    // Treat an explicitly successful configured URL as healthy; otherwise require an API key.
     if (normalizedName === 'firecrawl') {
       const latency = Date.now() - startTime;
-      const status = apiKey ? 'UP' : 'DOWN';
+      const hasVerifiedUrl = Boolean(cred?.serviceUrl && cred.testResult === 'SUCCESS');
+      const status = apiKey || hasVerifiedUrl ? 'UP' : 'DOWN';
       return {
         name: displayName,
         status,
         latency,
-        error: apiKey ? undefined : 'No API key configured',
+        error: status === 'UP' ? undefined : 'No API key or verified Firecrawl URL configured',
+        lastChecked: new Date().toISOString(),
+      };
+    }
+
+    const endpoint = SERVICE_ENDPOINTS[normalizedName] || SERVICE_ENDPOINTS[serviceName.toLowerCase()];
+    if (!endpoint) {
+      return {
+        name: displayName,
+        status: 'UNKNOWN',
+        error: 'No health endpoint defined',
         lastChecked: new Date().toISOString(),
       };
     }
@@ -189,7 +221,6 @@ export async function checkServicesHealth(services: string[]): Promise<HealthChe
  */
 export async function getResearchServicesHealth(): Promise<HealthCheckResult> {
   return checkServicesHealth([
-    // deerflow removed — service disabled
     'tradingagents',
     'qdrant',
     'searxng',

@@ -3,6 +3,7 @@
 import { db } from '@/lib/db';
 import { orderbookEngine, type OrderbookPriceLevel } from '@/lib/engine/orderbook-microstructure';
 import { getCredentialForService } from '@/lib/engine/research/search';
+import { fetchVenueWithRelayFallback } from '@/lib/engine/relay-pool';
 import { getActiveVenueProxyUrl } from '@/lib/engine/venue-proxy-settings';
 
 const POLYMARKET_DIRECT_URL = 'https://clob.polymarket.com';
@@ -20,6 +21,14 @@ async function getPolymarketBaseUrl(): Promise<string> {
   } catch {
     return POLYMARKET_DEFAULT_URL;
   }
+}
+
+async function fetchPolymarket(pathWithQuery: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
+  const { timeoutMs, ...fetchInit } = init;
+  return fetchVenueWithRelayFallback('polymarket', POLYMARKET_DIRECT_URL, pathWithQuery, {
+    ...fetchInit,
+    timeoutMs,
+  });
 }
 const DEFAULT_PAGE_LIMIT = 100;
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -165,11 +174,10 @@ export async function getPolymarketOrderbook(
   }
 
   try {
-    const baseUrl = await getPolymarketBaseUrl();
-    const response = await fetch(`${baseUrl}/book?token_id=${encodeURIComponent(tokenId)}`, {
+    const response = await fetchPolymarket(`/book?token_id=${encodeURIComponent(tokenId)}`, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(timeoutMs),
+      timeoutMs,
     });
 
     if (!response.ok) {
@@ -246,11 +254,10 @@ export async function getPolymarketMarkets(options: VenueScanOptions = {}): Prom
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   try {
     const cursorParam = cursor ? `&cursor=${encodeURIComponent(cursor)}` : '';
-    const baseUrl = await getPolymarketBaseUrl();
-    const response = await fetch(`${baseUrl}/markets?limit=${limit}&active=true${cursorParam}`, {
+    const response = await fetchPolymarket(`/markets?limit=${limit}&active=true${cursorParam}`, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(timeoutMs),
+      timeoutMs,
     });
 
     if (!response.ok) {

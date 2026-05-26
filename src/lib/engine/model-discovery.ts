@@ -41,50 +41,92 @@ const DEFAULT_MODEL_TIERS: Record<string, ModelTier> = {
 
 // Tier priority for fallback chains (highest quality first)
 const TIER_PRIORITY = ['premium', 'standard', 'fast', 'lite'];
+const MODEL_DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
+
+let modelDiscoveryCache: { models: string[]; expiresAt: number } | null = null;
+let modelDiscoveryInFlight: Promise<string[]> | null = null;
+
+function defaultModels(): string[] {
+  return Object.keys(DEFAULT_MODEL_TIERS);
+}
+
+async function fetchAvailableModelsUncached(): Promise<string[]> {
+  const cred = await getCredentialForService('llm');
+  const baseUrl = cred?.baseUrl || process.env.OPENAI_BASE_URL || '';
+  const apiKey = cred?.apiKey || process.env.OPENAI_API_KEY || '';
+
+  console.log('[ModelDiscovery] Fetching available models from LiteLLM...');
+
+  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/models`, {
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+    },
+  });
+
+  if (!response.ok) {
+    console.warn(`[ModelDiscovery] Failed to fetch models: HTTP ${response.status}`);
+    return defaultModels();
+  }
+
+  const data = await response.json();
+  const models = data.data?.map((m: { id: string }) => m.id) || [];
+
+  console.log(`[ModelDiscovery] Found ${models.length} models from LiteLLM`);
+
+  // Filter to known good models and dynamic discovery
+  const preferredModels = models.filter((id: string) => {
+    // Prioritize dynamic naming conventions for the current endpoint
+    if (id.includes('pro') || id.includes('flash') || id.includes('lite') || id.includes('free') || id.includes('paid')) return true;
+    // Include other known good models
+    if (['gpt-5', 'claude-opus-4-6-thinking', 'gemini-2-5-pro', 'kimi-k2-5', 'kimi-k2p5-turbo'].includes(id)) return true;
+    return false;
+  });
+
+  console.log(`[ModelDiscovery] ${preferredModels.length} preferred models identified`);
+
+  return preferredModels.length > 0 ? preferredModels : models;
+}
 
 /**
  * Fetch available models from LiteLLM API
  */
 export async function fetchAvailableModels(): Promise<string[]> {
-  try {
-    const cred = await getCredentialForService('llm');
-    const baseUrl = cred?.baseUrl || process.env.OPENAI_BASE_URL || '';
-    const apiKey = cred?.apiKey || process.env.OPENAI_API_KEY || '';
-    
-    console.log('[ModelDiscovery] Fetching available models from LiteLLM...');
-    
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/models`, {
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-      },
-    });
-    
-    if (!response.ok) {
-      console.warn(`[ModelDiscovery] Failed to fetch models: HTTP ${response.status}`);
-      return Object.keys(DEFAULT_MODEL_TIERS);
-    }
-    
-    const data = await response.json();
-    const models = data.data?.map((m: { id: string }) => m.id) || [];
-    
-    console.log(`[ModelDiscovery] Found ${models.length} models from LiteLLM`);
-    
-    // Filter to known good models and dynamic discovery
-    const preferredModels = models.filter((id: string) => {
-      // Prioritize dynamic naming conventions for the current endpoint
-      if (id.includes('pro') || id.includes('flash') || id.includes('lite') || id.includes('free') || id.includes('paid')) return true;
-      // Include other known good models
-      if (['gpt-5', 'claude-opus-4-6-thinking', 'gemini-2-5-pro', 'kimi-k2-5', 'kimi-k2p5-turbo'].includes(id)) return true;
-      return false;
-    });
-    
-    console.log(`[ModelDiscovery] ${preferredModels.length} preferred models identified`);
-    
-    return preferredModels.length > 0 ? preferredModels : models;
-  } catch (error) {
-    console.error('[ModelDiscovery] Error fetching models:', error);
-    return Object.keys(DEFAULT_MODEL_TIERS);
+  const now = Date.now();
+  if (modelDiscoveryCache && modelDiscoveryCache.expiresAt > now) {
+    return modelDiscoveryCache.models;
   }
+
+  if (modelDiscoveryInFlight) {
+    return modelDiscoveryInFlight;
+  }
+
+  modelDiscoveryInFlight = (async () => {
+    try {
+      const models = await fetchAvailableModelsUncached();
+      modelDiscoveryCache = {
+        models,
+        expiresAt: Date.now() + MODEL_DISCOVERY_CACHE_TTL_MS,
+      };
+      return models;
+    } catch (error) {
+      console.error('[ModelDiscovery] Error fetching models:', error);
+      const models = defaultModels();
+      modelDiscoveryCache = {
+        models,
+        expiresAt: Date.now() + MODEL_DISCOVERY_CACHE_TTL_MS,
+      };
+      return models;
+    } finally {
+      modelDiscoveryInFlight = null;
+    }
+  })();
+
+  return modelDiscoveryInFlight;
+}
+
+export function clearModelDiscoveryCache(): void {
+  modelDiscoveryCache = null;
+  modelDiscoveryInFlight = null;
 }
 
 /**

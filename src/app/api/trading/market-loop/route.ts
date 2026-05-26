@@ -5,7 +5,7 @@ import { enforceRoutePermission } from '@/lib/engine/auth';
 
 export async function GET() {
   try {
-    const { getWorkerState } = await import('@/lib/engine/worker');
+    const { getWorkerStatusSnapshot } = await import('@/lib/engine/worker');
     const [strategySetting, tradingConfigSetting, tradingModeSetting, lastScanSetting] = await Promise.all([
       db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
       db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
@@ -20,7 +20,7 @@ export async function GET() {
     });
 
     return NextResponse.json({
-      worker: getWorkerState(),
+      worker: await getWorkerStatusSnapshot(),
       mode: config.mode,
       dataSource: config.dataSource,
       executionMode: config.executionMode,
@@ -37,18 +37,46 @@ export async function POST(request: NextRequest) {
   const denied = enforceRoutePermission(request, '/api/trading/market-loop', 'POST');
   if (denied) return denied;
   try {
-    const body = await request.json();
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== 'object') {
+      return NextResponse.json({ error: 'JSON body required. Use action start or stop.' }, { status: 400 });
+    }
     const action = body.action as string;
 
     if (action === 'start') {
-      const { startWorker, runWorkerFlowUntilIdle } = await import('@/lib/engine/worker');
+      const { startWorker, runWorkerFlowUntilIdle, getWorkerState } = await import('@/lib/engine/worker');
       const intervalMs = Math.max(1, Number(body.intervalMinutes ?? 5)) * 60 * 1000;
       if (body.waitUntilComplete === true) {
-        const result = await runWorkerFlowUntilIdle({
+        const maxWaitMs = Math.max(1, Math.min(240_000, Number(body.maxWaitMs ?? 90_000)));
+        const flowPromise = runWorkerFlowUntilIdle({
           maxJobs: Number(body.maxJobs ?? 50),
+          runMarketLoop: body.runMarketLoop !== false,
           failOnNoWork: body.failOnNoWork !== false,
+          failOnJobError: body.failOnJobError === true,
+        }).then(
+          (result) => ({ status: 'completed' as const, result }),
+          (error) => ({ status: 'failed' as const, error }),
+        );
+        const timeoutPromise = new Promise<{ status: 'timeout' }>((resolve) => {
+          setTimeout(() => resolve({ status: 'timeout' }), maxWaitMs);
         });
-        return NextResponse.json({ action: 'completed', ...result });
+        const settled = await Promise.race([flowPromise, timeoutPromise]);
+        if (settled.status === 'timeout') {
+          return NextResponse.json(
+            {
+              action: 'processing',
+              timedOut: true,
+              maxWaitMs,
+              worker: getWorkerState(),
+              message: 'Worker flow is still running. Poll /api/jobs or call again with a smaller maxJobs/maxWaitMs.',
+            },
+            { status: 202 },
+          );
+        }
+        if (settled.status === 'failed') {
+          throw settled.error;
+        }
+        return NextResponse.json({ action: 'completed', ...settled.result });
       }
       return NextResponse.json(await startWorker(intervalMs));
     }
@@ -60,6 +88,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ error: 'Unknown action. Use start or stop.' }, { status: 400 });
   } catch (error) {
+    console.error('[Market Loop API] POST error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : String(error) },
       { status: 500 },

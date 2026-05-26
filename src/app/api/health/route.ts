@@ -17,19 +17,99 @@ export async function GET() {
 
     // Get job queue metrics
     const now = new Date();
-    const [queueDepth, failingJobs, stuckJobsCount, lockedJobsCount, retryingJobsCount, recentErrors] = await Promise.all([
-      db.job.count({ where: { status: { in: ['PENDING', 'RUNNING', 'RETRYING'] } } }),
-      db.job.count({ where: { status: 'FAILED' } }),
-      db.job.count({ where: { status: 'RUNNING', heartbeatAt: { not: null, lt: now } } }),
+    const nowMs = Date.now();
+    const maintenanceFailureFilter = {
+      OR: [
+        { error: { contains: 'Stale lock released' } },
+        { error: { equals: 'Stuck' } },
+        { error: { contains: 'reset by maintenance' } },
+      ],
+    };
+    const actionableFailureWhere = {
+      status: 'FAILED',
+      NOT: maintenanceFailureFilter,
+    } as const;
+
+    const [
+      runnableQueueDepth,
+      scheduledQueueDepth,
+      scheduledResolutionChecks,
+      nextScheduledJob,
+      nextResolutionCheck,
+      failingJobs,
+      maintenanceFailedJobs,
+      stuckJobRows,
+      lockedJobsCount,
+      retryingJobsCount,
+      recentErrors,
+      recentMaintenanceErrors,
+    ] = await Promise.all([
+      db.job.count({
+        where: {
+          status: { in: ['PENDING', 'RUNNING', 'RETRYING'] },
+          OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+        },
+      }),
+      db.job.count({
+        where: {
+          status: { in: ['PENDING', 'RETRYING'] },
+          nextRetryAt: { gt: now },
+        },
+      }),
+      db.job.count({
+        where: {
+          type: 'RESOLUTION_CHECK',
+          status: { in: ['PENDING', 'RETRYING'] },
+          nextRetryAt: { gt: now },
+        },
+      }),
+      db.job.findFirst({
+        where: {
+          status: { in: ['PENDING', 'RETRYING'] },
+          nextRetryAt: { gt: now },
+        },
+        orderBy: { nextRetryAt: 'asc' },
+        select: { nextRetryAt: true },
+      }),
+      db.job.findFirst({
+        where: {
+          type: 'RESOLUTION_CHECK',
+          status: { in: ['PENDING', 'RETRYING'] },
+          nextRetryAt: { gt: now },
+        },
+        orderBy: { nextRetryAt: 'asc' },
+        select: { nextRetryAt: true },
+      }),
+      db.job.count({ where: actionableFailureWhere }),
+      db.job.count({ where: { status: 'FAILED', ...maintenanceFailureFilter } }),
+      db.$queryRaw<Array<{ count: bigint | number }>>`
+        select count(*) as count
+        from Job
+        where status = 'RUNNING'
+          and heartbeatAt is not null
+          and (heartbeatAt + (coalesce(maxRuntimeSec, 300) * 1000)) < ${nowMs}
+      `,
       db.job.count({ where: { status: 'RUNNING', lockExpiresAt: { not: null, lt: now } } }),
       db.job.count({ where: { status: 'RETRYING' } }),
       db.job.findMany({
-        where: { error: { not: null } },
+        where: {
+          OR: [
+            actionableFailureWhere,
+            { status: 'RETRYING', error: { not: null } },
+          ],
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 5,
+        select: { id: true, type: true, status: true, error: true, updatedAt: true },
+      }),
+      db.job.findMany({
+        where: { status: 'FAILED', ...maintenanceFailureFilter },
         orderBy: { updatedAt: 'desc' },
         take: 5,
         select: { id: true, type: true, status: true, error: true, updatedAt: true },
       }),
     ]);
+    const stuckJobsCount = Number(stuckJobRows[0]?.count ?? 0);
 
     // Get job counts by type and status
     const jobsByType = await db.job.groupBy({
@@ -174,10 +254,18 @@ export async function GET() {
       jobsByType: Record<string, number>;
       jobsByStatus: Record<string, number>;
       recentErrors: typeof recentErrors;
+      recentMaintenanceErrors: typeof recentMaintenanceErrors;
       recentCompleted: typeof recentCompleted;
+      maintenanceFailedJobs: number;
     } = {
-      queueDepth,
+      queueDepth: runnableQueueDepth,
+      dueQueueDepth: runnableQueueDepth,
+      scheduledQueueDepth,
+      scheduledResolutionChecks,
+      nextScheduledJobAt: nextScheduledJob?.nextRetryAt?.toISOString() ?? null,
+      nextResolutionCheckAt: nextResolutionCheck?.nextRetryAt?.toISOString() ?? null,
       failingJobs,
+      maintenanceFailedJobs,
       stuckJobsCount,
       lockedJobsCount,
       retryingJobsCount,
@@ -191,6 +279,7 @@ export async function GET() {
       jobsByType: Object.fromEntries(jobsByType.map((j) => [j.type, j._count.id])),
       jobsByStatus: Object.fromEntries(jobsByStatus.map((j) => [j.status, j._count.id])),
       recentErrors,
+      recentMaintenanceErrors,
       recentCompleted,
       researchProvider,
       checkedAt,

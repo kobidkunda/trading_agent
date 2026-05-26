@@ -127,4 +127,21 @@ describe('paper execution helpers', () => {
     expect(fill.remainingSize).toBeLessThanOrEqual(10);
     expect(['SUBMITTED', 'PARTIALLY_FILLED', 'FILLED']).toContain(fill.lifecycleStatus);
   });
+
+  it('never returns an impossible contract fill price above 1', () => {
+    const fill = resolvePaperFill({
+      size: 10,
+      price: 0.99,
+      fillModel: 'CONSERVATIVE_PAPER',
+      liquidity: 1000,
+      fillProbability: 0.5,
+      priceImpact: 0.05,
+      spread: 0.04,
+      bidDepth: 100,
+      askDepth: 100,
+    });
+
+    expect(fill.avgFillPrice).toBeLessThanOrEqual(1);
+    expect(fill.avgFillPrice).toBeGreaterThanOrEqual(0);
+  });
 });

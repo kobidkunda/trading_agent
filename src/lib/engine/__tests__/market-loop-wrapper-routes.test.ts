@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 const getWorkerStateMock = mock(() => ({
   status: 'RUNNING',
@@ -42,11 +42,19 @@ mock.module('@/lib/engine/worker', () => ({
 }));
 
 describe('market loop wrapper routes', () => {
+  const env = process.env as Record<string, string | undefined>;
+  const originalBypass = process.env.LOCAL_DEV_AUTH_BYPASS;
+
   beforeEach(() => {
+    env.LOCAL_DEV_AUTH_BYPASS = 'true';
     getWorkerStateMock.mockClear();
     startWorkerMock.mockClear();
     stopWorkerMock.mockClear();
     findUniqueMock.mockClear();
+  });
+
+  afterEach(() => {
+    env.LOCAL_DEV_AUTH_BYPASS = originalBypass;
   });
 
   it('returns status via dedicated status route', async () => {

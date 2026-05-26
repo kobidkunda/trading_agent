@@ -82,7 +82,7 @@ async function runTradingAgentsWithTimeout(
   timeoutMs: number
 ): Promise<TradingAgentsSimpleResult | null> {
   const cred = await getCredentialForService('tradingagents');
-  const baseUrl = cred?.baseUrl || process.env.TRADINGAGENTS_URL || 'http://localhost:8100';
+  const baseUrl = cred?.baseUrl || process.env.TRADINGAGENTS_URL || 'http://localhost:6503';
   
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);

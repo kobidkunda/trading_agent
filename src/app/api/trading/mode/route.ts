@@ -34,7 +34,8 @@ export async function GET(request: NextRequest) {
       scanIntervalMinutes: config.scanIntervalMinutes,
       candidateThreshold: config.candidateThreshold,
     });
-  } catch {
+  } catch (error) {
+    console.error('Failed to load trading mode', error);
     return NextResponse.json({ error: 'Failed to load trading mode' }, { status: 500 });
   }
 }
@@ -44,7 +45,18 @@ export async function POST(request: NextRequest) {
   if (denied) return denied;
   try {
     const body = await request.json();
-    const update = buildTradingConfigUpdate(body);
+    const [currentTradingConfigSetting, currentTradingModeSetting] = await Promise.all([
+      db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
+      db.settings.findUnique({ where: { key: TRADING_MODE_KEY } }),
+    ]);
+    const currentTradingConfig = currentTradingConfigSetting
+      ? JSON.parse(currentTradingConfigSetting.value)
+      : null;
+    const currentMode = currentTradingModeSetting?.value ?? currentTradingConfig?.mode ?? null;
+    const update = buildTradingConfigUpdate(body, {
+      ...(currentTradingConfig ?? {}),
+      ...(currentMode ? { mode: currentMode } : {}),
+    });
 
     await Promise.all([
       db.settings.upsert({
@@ -64,17 +76,7 @@ export async function POST(request: NextRequest) {
       }),
     ]);
 
-    const [strategySetting, tradingConfigSetting, tradingModeSetting] = await Promise.all([
-      db.settings.findUnique({ where: { key: STRATEGY_SETTINGS_KEY } }),
-      db.settings.findUnique({ where: { key: TRADING_CONFIG_KEY } }),
-      db.settings.findUnique({ where: { key: TRADING_MODE_KEY } }),
-    ]);
-
-    const config = getEffectiveTradingConfig({
-      strategySettings: strategySetting ? JSON.parse(strategySetting.value) : null,
-      tradingConfig: tradingConfigSetting ? JSON.parse(tradingConfigSetting.value) : null,
-      tradingMode: tradingModeSetting?.value ?? null,
-    });
+    const config = update.tradingConfig;
 
     return NextResponse.json({
       mode: config.mode,
@@ -85,7 +87,8 @@ export async function POST(request: NextRequest) {
       scanIntervalMinutes: config.scanIntervalMinutes,
       candidateThreshold: config.candidateThreshold,
     });
-  } catch {
+  } catch (error) {
+    console.error('Failed to update trading mode', error);
     return NextResponse.json({ error: 'Failed to update trading mode' }, { status: 500 });
   }
 }

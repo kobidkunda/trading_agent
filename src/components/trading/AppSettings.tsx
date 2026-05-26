@@ -36,6 +36,7 @@ interface GlobalSettings {
   minAdjustedEdge: number;
   minLiquidity: number;
   maxSpread: number;
+  maxResolutionDays: number;
   confidenceThreshold: number;
   cooldownLengthMinutes: number;
   // Research budgets
@@ -52,6 +53,7 @@ const DEFAULT_SETTINGS: GlobalSettings = {
   minAdjustedEdge: 0.05,
   minLiquidity: 1000,
   maxSpread: 0.05,
+  maxResolutionDays: 30,
   confidenceThreshold: 0.4,
   cooldownLengthMinutes: 30,
   maxDeepPerHour: 5,
@@ -89,6 +91,7 @@ export function AppSettings() {
             // From strategy
             minLiquidity: strategyData.minLiquidity ?? prev.minLiquidity,
             maxSpread: strategyData.maxSpread ?? prev.maxSpread,
+            maxResolutionDays: strategyData.maxResolutionDays ?? prev.maxResolutionDays,
             minAdjustedEdge: strategyData.targetEdge ?? prev.minAdjustedEdge,
             maxDailyExposure: strategyData.maxDailyExposure ?? prev.maxDailyExposure,
             maxCategoryExposure: strategyData.maxCategoryExposure ?? prev.maxCategoryExposure,
@@ -143,17 +146,22 @@ export function AppSettings() {
       }
 
       // Also update strategy settings for liquidity/spread/exposure
-      await fetch('/api/strategy', {
-        method: 'PUT',
+      const strategyRes = await fetch('/api/strategy', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           minLiquidity: settings.minLiquidity,
           maxSpread: settings.maxSpread,
+          maxResolutionDays: settings.maxResolutionDays,
           targetEdge: settings.minAdjustedEdge,
           maxDailyExposure: settings.maxDailyExposure,
           maxCategoryExposure: settings.maxCategoryExposure,
         }),
       });
+      if (!strategyRes.ok) {
+        const data = await strategyRes.json().catch(() => ({}));
+        throw new Error(data.error ?? `Strategy save failed with HTTP ${strategyRes.status}`);
+      }
 
       setDirty(false);
       toast.success('Settings saved successfully');
@@ -306,6 +314,19 @@ export function AppSettings() {
                 className="border-gray-800 bg-gray-950 text-sm text-white"
               />
               <p className="text-[11px] text-gray-600">Minimum judge confidence required to execute a trade (0.00-1.00).</p>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs text-gray-400">Max Days Until Resolution</Label>
+              <Input
+                type="number"
+                min={1}
+                max={365}
+                step={1}
+                value={settings.maxResolutionDays}
+                onChange={(e) => updateField('maxResolutionDays', Number(e.target.value))}
+                className="border-gray-800 bg-gray-950 text-sm text-white"
+              />
+              <p className="text-[11px] text-gray-600">Only place new bets on markets that resolve within this many days.</p>
             </div>
             <div className="space-y-2">
               <Label className="text-xs text-gray-400">Cooldown Length (minutes)</Label>
