@@ -9,12 +9,40 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKUP_DIR="$ROOT_DIR/db/backups"
 
-if [ -f "$ROOT_DIR/.env" ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . "$ROOT_DIR/.env"
-  set +a
-fi
+read_env_value() {
+  local key="$1"
+  local file value
+
+  if [[ ${!key+x} ]]; then
+    printf '%s\n' "${!key}"
+    return 0
+  fi
+
+  for file in "$ROOT_DIR/.env.production" "$ROOT_DIR/.env"; do
+    if [[ -f "$file" ]]; then
+      value="$(
+        awk -F= -v key="$key" '
+          $0 !~ /^[[:space:]]*#/ && $1 == key {
+            sub(/^[^=]*=/, "")
+            print
+            exit
+          }
+        ' "$file"
+      )"
+      if [[ -n "$value" ]]; then
+        value="${value%$'\r'}"
+        value="${value#\"}"
+        value="${value%\"}"
+        value="${value#\'}"
+        value="${value%\'}"
+        printf '%s\n' "$value"
+        return 0
+      fi
+    fi
+  done
+}
+
+DATABASE_URL="$(read_env_value DATABASE_URL || true)"
 
 if [ -z "${DATABASE_URL:-}" ]; then
   echo "ERROR: DATABASE_URL is not set"
@@ -31,6 +59,10 @@ case "$DATABASE_URL" in
     ;;
 esac
 
+if [[ "$DB_FILE" != /* ]]; then
+  DB_FILE="$ROOT_DIR/${DB_FILE#./}"
+fi
+
 if [ ! -f "$DB_FILE" ]; then
   echo "ERROR: Database file not found at $DB_FILE"
   exit 1
@@ -43,7 +75,12 @@ DB_BACKUP="$BACKUP_DIR/custom-${TIMESTAMP}.db"
 SQL_BACKUP="$BACKUP_DIR/dump-${TIMESTAMP}.sql"
 
 echo "Backing up SQLite database..."
-cp "$DB_FILE" "$DB_BACKUP"
+if command -v sqlite3 &> /dev/null; then
+  sqlite3 "$DB_FILE" ".backup '$DB_BACKUP'"
+else
+  echo "WARNING: sqlite3 CLI not found, falling back to file copy"
+  cp "$DB_FILE" "$DB_BACKUP"
+fi
 ls -lh "$DB_BACKUP"
 
 if command -v sqlite3 &> /dev/null; then

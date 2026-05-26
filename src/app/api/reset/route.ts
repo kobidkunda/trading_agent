@@ -1,7 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { enforceRoutePermission } from '@/lib/engine/auth';
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
+  const denied = enforceRoutePermission(request, '/api/reset', 'POST');
+  if (denied) return denied;
+
+  if (process.env.ENABLE_RESET_API !== 'true') {
+    return NextResponse.json(
+      { error: 'Reset API is disabled. Set ENABLE_RESET_API=true to enable it for a controlled maintenance window.' },
+      { status: 403 }
+    );
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
     const { confirm } = body as { confirm?: boolean };
@@ -71,7 +82,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 }
 
-export async function GET(): Promise<NextResponse> {
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  const denied = enforceRoutePermission(request, '/api/reset', 'GET');
+  if (denied) return denied;
+
   const preserved = ['Credential', 'PromptTemplate', 'Settings'];
 
   const countResults: Record<string, number> = {};

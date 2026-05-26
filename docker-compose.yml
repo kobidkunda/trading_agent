@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ── Core Database ──────────────────────────────────────────────────────────
   # Not needed here since we use SQLite for the Next.js app
@@ -8,17 +6,23 @@ services:
 
   # SearXNG - Privacy-focused metasearch engine
   searxng:
-    image: searxng/searxng:latest
+    image: searxng/searxng@sha256:e37c25170d9f5947b16713af33e0ab41f0e6e6e73685e19c30fc6bb63562f801
     container_name: tcc-searxng
     restart: unless-stopped
     ports:
-      - "8888:8080"
+      - "127.0.0.1:${SEARXNG_HOST_PORT:-8888}:8080"
     environment:
       - SEARXNG_BASE_URL=http://localhost:8888/
-      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:-change-it-to-a-random-string}
+      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:?Set SEARXNG_SECRET_KEY before starting SearXNG}
       - SEARXNG_BIND_ADDRESS=0.0.0.0
     volumes:
       - searxng_data:/etc/searxng:rw
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     cap_drop:
       - ALL
     cap_add:
@@ -26,8 +30,6 @@ services:
       - SETGID
       - SETUID
       - DAC_OVERRIDE
-    profiles:
-      - services
 
   # TradingAgents - Multi-source analyst team (News, Sentiment, Technical, Fundamentals)
   # Uses the same OpenAI-compatible LLM Provider that serves all models (GPT, Claude, Gemini, etc.)
@@ -36,25 +38,58 @@ services:
     build:
       context: ./ta-service
       dockerfile: Dockerfile
+      args:
+        PYTHON_IMAGE: python:3.13-slim@sha256:b04b5d7233d2ad9c379e22ea8927cd1378cd15c60d4ef876c065b25ea8fb3bf3
     container_name: tcc-tradingagents
     restart: unless-stopped
     depends_on:
-      - searxng
+      searxng:
+        condition: service_healthy
+      agent-reach:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "9router.tail1ac290.ts.net:103.84.155.153"
     ports:
-      - "6503:8100"
+      - "127.0.0.1:${TRADINGAGENTS_HOST_PORT:-6503}:8100"
     environment:
       # ── Single LLM Provider (OpenAI-compatible, serves all models) ──────────
       # Keep provider + model selection app-driven where possible.
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://192.168.88.97:4444/v1}
+      - TRADINGAGENTS_LLM_API_KEY=${TRADINGAGENTS_LLM_API_KEY:-${OPENAI_API_KEY:-}}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:4444/v1}
+      - LLM_BASE_URL=${LLM_BASE_URL:-${OPENAI_BASE_URL:-http://host.docker.internal:4444/v1}}
+      - LITELLM_BASE_URL=${LITELLM_BASE_URL:-${OPENAI_BASE_URL:-http://host.docker.internal:4444/v1}}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
       # ── TradingAgents runtime defaults ─────────────────────────────────────
       # The app can override provider and models per request.
       - TA_LLM_PROVIDER=${TA_LLM_PROVIDER:-openai}
-      - TA_DEEP_THINK_LLM=${TA_DEEP_THINK_LLM:-paper_proglm}
-      - TA_QUICK_THINK_LLM=${TA_QUICK_THINK_LLM:-paper_lite}
+      - TA_DEEP_THINK_LLM=${TA_DEEP_THINK_LLM:-frontier_flash}
+      - TA_QUICK_THINK_LLM=${TA_QUICK_THINK_LLM:-frontier_lite}
+      # Upstream TradingAgents v0.2.5 also reads TRADINGAGENTS_* overlays.
+      - TRADINGAGENTS_LLM_PROVIDER=${TA_LLM_PROVIDER:-openai}
+      - TRADINGAGENTS_DEEP_THINK_LLM=${TA_DEEP_THINK_LLM:-frontier_flash}
+      - TRADINGAGENTS_QUICK_THINK_LLM=${TA_QUICK_THINK_LLM:-frontier_lite}
+      - TRADINGAGENTS_LLM_BACKEND_URL=${OPENAI_BASE_URL:-http://host.docker.internal:4444/v1}
+      # Provider API keys used when llm_provider is changed from OpenAI.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
+      - DASHSCOPE_CN_API_KEY=${DASHSCOPE_CN_API_KEY:-}
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY:-}
+      - ZHIPU_CN_API_KEY=${ZHIPU_CN_API_KEY:-}
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+      - MINIMAX_CN_API_KEY=${MINIMAX_CN_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       # ── Search / social discovery ──────────────────────────────────────────
       - TA_SEARXNG_URL=http://searxng:8080
-      - AGENT_REACH_URL=${AGENT_REACH_URL:-}
+      # Container-to-container URL. Do not read host .env AGENT_REACH_URL here:
+      # the Next.js app uses localhost:6504 from the host, but inside this
+      # container localhost would point back to TradingAgents itself.
+      - AGENT_REACH_URL=http://agent-reach:6656
       - AGENT_REACH_API_KEY=${AGENT_REACH_API_KEY:-}
       # ── Optional finance data vendors ───────────────────────────────────────
       - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}
@@ -63,8 +98,36 @@ services:
       - TA_MAX_DEBATE_ROUNDS=${TA_MAX_DEBATE_ROUNDS:-2}
     volumes:
       - ta_data:/app/data
-    profiles:
-      - services
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8100/health', timeout=5).read()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Agent-Reach-compatible local research service
+  # Exposes /health and MCP /mcp tools/call for the app + TradingAgents.
+  agent-reach:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent-reach
+      args:
+        PYTHON_IMAGE: python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
+    container_name: tcc-agent-reach
+    restart: unless-stopped
+    depends_on:
+      - searxng
+    ports:
+      - "127.0.0.1:${AGENT_REACH_HOST_PORT:-6504}:6656"
+    environment:
+      - AGENT_REACH_PORT=6656
+      - SEARXNG_URL=http://searxng:8080
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:6656/health', timeout=5).read()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
 volumes:
   qdrant_data:

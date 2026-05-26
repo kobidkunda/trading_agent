@@ -82,3 +82,7 @@ ta-service/__pycache__/
 
 # Local Netlify folder
 .netlify
+db/custom.db
+db/*.db-journal
+db/*.db-shm
+db/*.db-wal

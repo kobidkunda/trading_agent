@@ -1,0 +1,6 @@
+*
+!Dockerfile.agent-reach
+!mcp_http_server.py
+!mock_agent_reach_server.py
+!ta-service/**
+!docker-compose.yml

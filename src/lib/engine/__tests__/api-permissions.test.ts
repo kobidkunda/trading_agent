@@ -29,6 +29,15 @@ describe('api permission matrix', () => {
     expect(canAccessRoute('ResearchOperator', '/api/trading/mode', 'POST')).toBe(false);
   });
 
+  it('keeps diagnostic and reset endpoints admin-only', () => {
+    expect(canAccessRoute('Admin', '/api/dbtest', 'GET')).toBe(true);
+    expect(canAccessRoute('ReadOnlyViewer', '/api/dbtest', 'GET')).toBe(false);
+    expect(canAccessRoute('Admin', '/api/test/sources', 'GET')).toBe(true);
+    expect(canAccessRoute('ResearchOperator', '/api/test/sources', 'GET')).toBe(false);
+    expect(canAccessRoute('Admin', '/api/reset', 'POST')).toBe(true);
+    expect(canAccessRoute('ResearchOperator', '/api/reset', 'POST')).toBe(false);
+  });
+
   it('requires authentication for non-public api routes', async () => {
     env.NODE_ENV = 'production';
     env.LOCAL_DEV_AUTH_BYPASS = 'false';
