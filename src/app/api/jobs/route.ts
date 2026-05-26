@@ -10,23 +10,29 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const type = searchParams.get('type');
     const status = searchParams.get('status');
+    const due = searchParams.get('due');
     const limit = parseInt(searchParams.get('limit') || '50');
     const offset = parseInt(searchParams.get('offset') || '0');
 
     const where: Prisma.JobWhereInput = {};
     if (type) where.type = type;
     if (status) where.status = status;
+    if (due === 'true') {
+      where.OR = [{ nextRetryAt: null }, { nextRetryAt: { lte: new Date() } }];
+    } else if (due === 'false') {
+      where.nextRetryAt = { gt: new Date() };
+    }
 
     const jobs = await db.job.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: due === 'false' ? { nextRetryAt: 'asc' } : { createdAt: 'desc' },
       take: limit,
       skip: offset,
     });
 
     const total = await db.job.count({ where });
 
-    return NextResponse.json({ jobs, total, limit, offset });
+    return NextResponse.json({ jobs, data: jobs, total, limit, offset });
   } catch (error) {
     return NextResponse.json({ error: 'Failed to fetch jobs' }, { status: 500 });
   }
@@ -70,6 +76,12 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
+    if (body.type === 'LIVE_EXECUTE') {
+      return NextResponse.json(
+        { error: 'LIVE_EXECUTE jobs are disabled until live execution governance is explicitly approved.' },
+        { status: 403 },
+      );
+    }
 
     const job = await db.job.create({
       data: {
@@ -92,6 +104,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(job, { status: 201 });
   } catch (error) {
+    console.error('Failed to create job', error);
     return NextResponse.json({ error: 'Failed to create job' }, { status: 500 });
   }
 }

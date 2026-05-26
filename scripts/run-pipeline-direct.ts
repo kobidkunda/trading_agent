@@ -19,14 +19,17 @@ if (tsconfig.compilerOptions && tsconfig.compilerOptions.paths) {
 if (!process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL must be set in .env');
 }
-process.env.SEARXNG_URL = 'http://localhost:8888';
-process.env.DEERFLOW_URL = 'http://192.168.88.97:2026';
-process.env.TRADINGAGENTS_URL = 'http://localhost:6503';
-process.env.AGENT_REACH_URL = 'http://192.168.88.96:7234';
-process.env.OPENAI_API_KEY = 'sk-g1LsAQ4P26pVIfdFEOs4EnPh5-vfuar2NVTwqQUzGBc';
-process.env.OPENAI_BASE_URL = 'http://192.168.88.97:4444/v1';
-process.env.NEXT_PUBLIC_API_URL = 'http://localhost:5555';
-process.env.DEFAULT_MODEL = 'paper_lite';
+process.env.SEARXNG_URL ||= 'http://localhost:8888';
+process.env.DEERFLOW_URL ||= 'http://localhost:2026';
+process.env.TRADINGAGENTS_URL ||= 'http://localhost:6503';
+process.env.AGENT_REACH_URL ||= 'http://localhost:6504';
+process.env.OPENAI_BASE_URL ||= 'http://localhost:4444/v1';
+process.env.NEXT_PUBLIC_API_URL ||= 'http://localhost:5555';
+process.env.DEFAULT_MODEL ||= 'paper_lite';
+
+if (!process.env.OPENAI_API_KEY) {
+  throw new Error('OPENAI_API_KEY must be set in the environment before running the direct pipeline script');
+}
 
 // Transpile TypeScript on the fly
 require('ts-node').register({

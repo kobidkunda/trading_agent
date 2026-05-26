@@ -175,7 +175,7 @@
       },
       "name": "Selfhost OpenAI",
       "options": {
-        "apiKey": "sk-e65d303895326b9f-70f4ke-8a64bc5f",
+        "apiKey": "",
         "baseURL": "http://192.168.88.97:6943/v1"
       }
     }
