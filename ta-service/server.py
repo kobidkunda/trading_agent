@@ -16,6 +16,9 @@ import httpx
 
 from agent_reach import fetch_agent_reach_research
 from finance_enrichment import fetch_finance_context
+from tradingagents_runtime_patch import apply_tradingagents_runtime_patches, _normalize_ohlcv_columns
+
+apply_tradingagents_runtime_patches()
 
 app = FastAPI(title="TradingAgents API", version="2.0.0")
 app.add_middleware(
@@ -227,6 +230,28 @@ def _llm_proxy_enabled(req: AnalyzeRequest | None = None) -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 def _extract_first_json_value(text: str) -> Any:
     decoder = json.JSONDecoder()
     stripped = text.strip()
@@ -367,6 +392,58 @@ def _response_json(payload: Any, status_code: int = 200) -> Response:
     )
 
 
+def _sanitize_upstream_error(text: str, limit: int = 1000) -> str:
+    sanitized = re.sub(r"Bearer\s+[A-Za-z0-9._~+\-/=]+", "Bearer [redacted]", text or "")
+    sanitized = re.sub(r"sk-[A-Za-z0-9._~+\-/=]+", "sk-[redacted]", sanitized)
+    return sanitized[:limit]
+
+
+def _retryable_upstream_status(status_code: int) -> bool:
+    return status_code in {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+async def _post_upstream_llm_json(
+    path: str,
+    headers: dict[str, str],
+    payload: Any,
+    *,
+    timeout_seconds: float | None = None,
+    max_attempts: int | None = None,
+) -> httpx.Response:
+    last_response: httpx.Response | None = None
+    last_error: Exception | None = None
+    url = f"{_upstream_llm_base_url()}{path}"
+    timeout = timeout_seconds or _env_float("TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS", 45.0)
+    attempts = max_attempts or _env_int("TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS", 2)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for attempt in range(1, attempts + 1):
+            try:
+                response = await client.post(url, headers=headers, json=payload)
+                if response.status_code == 200 or not _retryable_upstream_status(response.status_code) or attempt == attempts:
+                    return response
+                last_response = response
+                print(
+                    "[LLMProxy] retrying upstream HTTP "
+                    f"{response.status_code} for {path} attempt={attempt}/{attempts} timeout={timeout}s",
+                    flush=True,
+                )
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_error = exc
+                if attempt == attempts:
+                    break
+                print(
+                    "[LLMProxy] retrying upstream transport error "
+                    f"for {path} attempt={attempt}/{attempts} timeout={timeout}s: {_sanitize_upstream_error(str(exc), 300)}",
+                    flush=True,
+                )
+            await asyncio.sleep(min(0.5 * attempt, 2.0))
+
+    if last_response is not None:
+        return last_response
+    raise RuntimeError(_sanitize_upstream_error(str(last_error or "upstream LLM request failed")))
+
+
 def _responses_content_to_text(content: Any) -> str:
     if content is None:
         return ""
@@ -390,8 +467,8 @@ def _responses_content_to_text(content: Any) -> str:
     return str(content)
 
 
-def _responses_input_to_chat_messages(input_value: Any, instructions: Any = None) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = []
+def _responses_input_to_chat_messages(input_value: Any, instructions: Any = None) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
     if instructions:
         messages.append({"role": "system", "content": str(instructions)})
 
@@ -402,14 +479,86 @@ def _responses_input_to_chat_messages(input_value: Any, instructions: Any = None
             continue
         item_type = item.get("type")
         if item_type == "function_call_output":
-            messages.append({"role": "tool", "content": _responses_content_to_text(item.get("output"))})
+            tool_message: dict[str, Any] = {
+                "role": "tool",
+                "content": _responses_content_to_text(item.get("output")),
+            }
+            call_id = item.get("call_id")
+            if call_id:
+                tool_message["tool_call_id"] = str(call_id)
+            messages.append(tool_message)
+            continue
+        if item_type == "function_call":
+            call_id = item.get("call_id") or item.get("id") or item.get("name") or "call_normalized"
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": str(call_id),
+                            "type": "function",
+                            "function": {
+                                "name": str(item.get("name") or "tool"),
+                                "arguments": item.get("arguments") or "{}",
+                            },
+                        }
+                    ],
+                }
+            )
             continue
         role = item.get("role") or ("assistant" if item_type == "message" else "user")
         if role not in {"system", "user", "assistant", "tool"}:
             role = "user"
-        messages.append({"role": role, "content": _responses_content_to_text(item.get("content"))})
+        message: dict[str, Any] = {"role": role, "content": _responses_content_to_text(item.get("content"))}
+        if role == "tool" and item.get("tool_call_id"):
+            message["tool_call_id"] = str(item.get("tool_call_id"))
+        messages.append(message)
 
-    return [message for message in messages if message["content"]]
+    return [message for message in messages if message.get("content") or message.get("tool_calls")]
+
+
+def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
+    if not isinstance(tools, list):
+        return []
+
+    chat_tools: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") != "function":
+            continue
+        if isinstance(tool.get("function"), dict):
+            chat_tools.append(tool)
+            continue
+        name = tool.get("name")
+        if not name:
+            continue
+        chat_tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": str(name),
+                    "description": str(tool.get("description") or ""),
+                    "parameters": tool.get("parameters") or {},
+                },
+            }
+        )
+    return chat_tools
+
+
+def _responses_tool_choice_to_chat_tool_choice(tool_choice: Any) -> Any:
+    if isinstance(tool_choice, str):
+        return tool_choice
+    if not isinstance(tool_choice, dict):
+        return None
+    if tool_choice.get("type") == "function":
+        name = tool_choice.get("name")
+        if not name and isinstance(tool_choice.get("function"), dict):
+            name = tool_choice["function"].get("name")
+        if name:
+            return {"type": "function", "function": {"name": str(name)}}
+    return tool_choice
 
 
 def _responses_payload_to_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -423,6 +572,13 @@ def _responses_payload_to_chat_payload(payload: dict[str, Any]) -> dict[str, Any
     max_tokens = payload.get("max_output_tokens") or payload.get("max_tokens")
     if max_tokens is not None:
         chat_payload["max_tokens"] = max_tokens
+
+    tools = _responses_tools_to_chat_tools(payload.get("tools"))
+    if tools:
+        chat_payload["tools"] = tools
+        tool_choice = _responses_tool_choice_to_chat_tool_choice(payload.get("tool_choice"))
+        if tool_choice is not None:
+            chat_payload["tool_choice"] = tool_choice
 
     text_config = payload.get("text")
     if isinstance(text_config, dict):
@@ -536,15 +692,70 @@ def _structured_response_parsed_value(content: str, request_payload: dict[str, A
         return None
 
 
+def _is_structured_json_schema_request(request_payload: dict[str, Any]) -> bool:
+    text_config = request_payload.get("text")
+    text_format = text_config.get("format") if isinstance(text_config, dict) else None
+    return isinstance(text_format, dict) and text_format.get("type") == "json_schema"
+
+
+def _tool_calls_to_structured_seed(tool_calls: Any) -> str:
+    if not isinstance(tool_calls, list):
+        return ""
+    parts: list[str] = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+        name = function.get("name") or tool_call.get("name")
+        arguments = function.get("arguments") or tool_call.get("arguments")
+        if name or arguments:
+            parts.append(f"{name or 'tool'}: {arguments or ''}")
+    return "\n".join(parts)
+
+
+def _chat_tool_calls_to_responses_output(tool_calls: Any, response_id: str) -> list[dict[str, Any]]:
+    if not isinstance(tool_calls, list):
+        return []
+
+    output: list[dict[str, Any]] = []
+    for index, tool_call in enumerate(tool_calls):
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+        name = function.get("name") or tool_call.get("name")
+        if not name:
+            continue
+        call_id = tool_call.get("id") or tool_call.get("call_id") or f"call_{response_id}_{index}"
+        arguments = function.get("arguments")
+        if arguments is None:
+            arguments = tool_call.get("arguments") or "{}"
+        output.append(
+            {
+                "id": str(call_id),
+                "type": "function_call",
+                "status": "completed",
+                "call_id": str(call_id),
+                "name": str(name),
+                "arguments": str(arguments),
+            }
+        )
+    return output
+
+
 def _chat_completion_to_responses_payload(chat_payload: dict[str, Any], request_payload: dict[str, Any]) -> dict[str, Any]:
     choice = {}
     choices = chat_payload.get("choices")
     if isinstance(choices, list) and choices:
         choice = choices[0] if isinstance(choices[0], dict) else {}
     message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    response_id = chat_payload.get("id") or "resp_normalized"
+    is_structured_request = _is_structured_json_schema_request(request_payload)
+    tool_call_output = [] if is_structured_request else _chat_tool_calls_to_responses_output(message.get("tool_calls"), str(response_id))
     content = message.get("content")
     if content is None:
         content = message.get("reasoning_content") or ""
+    if is_structured_request and not str(content or "").strip():
+        content = _tool_calls_to_structured_seed(message.get("tool_calls"))
     content = _ensure_structured_response_text(str(content or ""), request_payload)
     parsed = _structured_response_parsed_value(content, request_payload)
 
@@ -553,7 +764,6 @@ def _chat_completion_to_responses_payload(chat_payload: dict[str, Any], request_
     output_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
     total_tokens = usage.get("total_tokens") or input_tokens + output_tokens
 
-    response_id = chat_payload.get("id") or "resp_normalized"
     created = chat_payload.get("created") or int(time.time())
     model = chat_payload.get("model") or request_payload.get("model")
     content_block: dict[str, Any] = {
@@ -563,6 +773,18 @@ def _chat_completion_to_responses_payload(chat_payload: dict[str, Any], request_
     }
     if parsed is not None:
         content_block["parsed"] = parsed
+
+    output = tool_call_output
+    if not output:
+        output = [
+            {
+                "id": f"msg_{response_id}",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [content_block],
+            }
+        ]
 
     return {
         "id": str(response_id).replace("chatcmpl", "resp", 1),
@@ -574,15 +796,7 @@ def _chat_completion_to_responses_payload(chat_payload: dict[str, Any], request_
         "instructions": request_payload.get("instructions"),
         "metadata": request_payload.get("metadata") or {},
         "model": model,
-        "output": [
-            {
-                "id": f"msg_{response_id}",
-                "type": "message",
-                "status": "completed",
-                "role": "assistant",
-                "content": [content_block],
-            }
-        ],
+        "output": output,
         "output_text": str(content or ""),
         "parallel_tool_calls": True,
         "temperature": request_payload.get("temperature"),
@@ -1422,25 +1636,27 @@ async def proxy_openai_chat_completions(request: Request):
         payload["stream"] = False
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            upstream = await client.post(
-                f"{_upstream_llm_base_url()}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
+        upstream = await _post_upstream_llm_json("/chat/completions", headers, payload)
         response_text = upstream.text
         if upstream.status_code != 200:
             try:
                 error_payload = _parse_llm_response_payload(response_text)
             except Exception:
-                error_payload = {"error": response_text[:1000] or f"HTTP {upstream.status_code}"}
+                error_payload = {"error": _sanitize_upstream_error(response_text) or f"HTTP {upstream.status_code}"}
+            print(
+                "[LLMProxy] upstream chat failed "
+                f"status={upstream.status_code} body={_sanitize_upstream_error(response_text, 300)}",
+                flush=True,
+            )
             return _response_json(error_payload, status_code=upstream.status_code)
 
         parsed = _parse_llm_response_payload(response_text)
         normalized = _normalize_chat_completion_payload(parsed)
         return _response_json(normalized)
     except Exception as e:
-        return _response_json({"error": str(e)}, status_code=502)
+        error = _sanitize_upstream_error(str(e))
+        print(f"[LLMProxy] upstream chat exception: {error}", flush=True)
+        return _response_json({"error": error}, status_code=502)
 
 
 @app.post("/v1/responses")
@@ -1463,25 +1679,27 @@ async def proxy_openai_responses(request: Request):
         return _response_json({"error": "Responses request did not contain usable input messages"}, status_code=400)
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            upstream = await client.post(
-                f"{_upstream_llm_base_url()}/chat/completions",
-                headers=headers,
-                json=chat_payload,
-            )
+        upstream = await _post_upstream_llm_json("/chat/completions", headers, chat_payload)
         response_text = upstream.text
         if upstream.status_code != 200:
             try:
                 error_payload = _parse_llm_response_payload(response_text)
             except Exception:
-                error_payload = {"error": response_text[:1000] or f"HTTP {upstream.status_code}"}
+                error_payload = {"error": _sanitize_upstream_error(response_text) or f"HTTP {upstream.status_code}"}
+            print(
+                "[LLMProxy] upstream responses failed "
+                f"status={upstream.status_code} body={_sanitize_upstream_error(response_text, 300)}",
+                flush=True,
+            )
             return _response_json(error_payload, status_code=upstream.status_code)
 
         parsed = _parse_llm_response_payload(response_text)
         normalized = _normalize_chat_completion_payload(parsed)
         return _response_json(_chat_completion_to_responses_payload(normalized, payload))
     except Exception as e:
-        return _response_json({"error": str(e)}, status_code=502)
+        error = _sanitize_upstream_error(str(e))
+        print(f"[LLMProxy] upstream responses exception: {error}", flush=True)
+        return _response_json({"error": error}, status_code=502)
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)

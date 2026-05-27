@@ -16,6 +16,8 @@ TRADINGAGENTS_LLM_BACKEND_URL=http://host.docker.internal:4444/v1
 TRADINGAGENTS_UPSTREAM_LLM_BACKEND_URL=http://host.docker.internal:4444/v1
 TRADINGAGENTS_NORMALIZE_LLM_RESPONSES=true
 TRADINGAGENTS_NATIVE_TIMEOUT_SECONDS=360
+TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS=45
+TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS=2
 TRADINGAGENTS_LLM_API_KEY=
 ```
 
@@ -40,6 +42,8 @@ TRADINGAGENTS_LLM_API_KEY=your-litellm-key
 `TRADINGAGENTS_NORMALIZE_LLM_RESPONSES=true` routes native upstream TradingAgents calls through the bridge's local OpenAI-compatible `/v1/chat/completions` proxy. The proxy forwards to `TRADINGAGENTS_UPSTREAM_LLM_BACKEND_URL` and normalizes common router quirks such as SSE-style bodies, trailing `data: [DONE]`, and `reasoning_content` without `content`.
 
 `TRADINGAGENTS_NATIVE_TIMEOUT_SECONDS` bounds `/analyze/native` graph execution. Strategy Hub can override this per routing profile with the Native Timeout control.
+
+`TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS` and `TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS` bound each proxied upstream LLM call. Keep these below the native graph timeout so one slow router request cannot consume the entire graph run.
 
 ## Ollama
 

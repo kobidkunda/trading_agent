@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -144,6 +145,32 @@ def main() -> None:
     server = load_server_module()
     client = TestClient(server.app)
     os.environ["TRADINGAGENTS_DATA_DIR"] = tempfile.mkdtemp(prefix="ta-contract-")
+
+    normalized_frame = server._normalize_ohlcv_columns(
+        pd.DataFrame(
+            {
+                "index": ["2026-05-26"],
+                "Close": [195.0],
+                "High": [196.0],
+                "Low": [194.0],
+                "Open": [194.5],
+                "Volume": [1000],
+            }
+        )
+    )
+    assert "Date" in normalized_frame.columns, normalized_frame
+    assert "index" not in normalized_frame.columns, normalized_frame
+    assert "sk-[redacted]" in server._sanitize_upstream_error("failed key sk-testSECRET123"), "secret not redacted"
+    assert "Bearer [redacted]" in server._sanitize_upstream_error("Bearer abc.def_123"), "bearer not redacted"
+
+    with temporary_env(
+        {
+            "TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS": "12.5",
+            "TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS": "4",
+        }
+    ):
+        assert server._env_float("TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS", 45.0) == 12.5
+        assert server._env_int("TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS", 2) == 4
 
     assert server.extract_ticker("Will AAPL beat earnings?") == "AAPL"
     assert server.extract_ticker("Analyze 7203.T against the Nikkei") == "7203.T"
@@ -304,6 +331,66 @@ def main() -> None:
     assert chat_payload["max_tokens"] == 12, chat_payload
     assert chat_payload["response_format"] == {"type": "json_object"}, chat_payload
 
+    tool_chat_payload = server._responses_payload_to_chat_payload(
+        {
+            "model": "free_pro",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Fetch AAPL"}]},
+                {
+                    "type": "function_call",
+                    "call_id": "call_get_stock_data",
+                    "name": "get_stock_data",
+                    "arguments": '{"ticker":"AAPL"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_get_stock_data",
+                    "output": "AAPL close 195.00",
+                },
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "get_stock_data",
+                    "description": "Fetch stock prices",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"ticker": {"type": "string"}},
+                        "required": ["ticker"],
+                    },
+                }
+            ],
+            "tool_choice": {"type": "function", "name": "get_stock_data"},
+        }
+    )
+    assert tool_chat_payload["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_stock_data",
+                "description": "Fetch stock prices",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"ticker": {"type": "string"}},
+                    "required": ["ticker"],
+                },
+            },
+        }
+    ], tool_chat_payload
+    assert tool_chat_payload["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "get_stock_data"},
+    }, tool_chat_payload
+    assert tool_chat_payload["messages"][1]["tool_calls"][0]["function"] == {
+        "name": "get_stock_data",
+        "arguments": '{"ticker":"AAPL"}',
+    }, tool_chat_payload
+    assert tool_chat_payload["messages"][2] == {
+        "role": "tool",
+        "content": "AAPL close 195.00",
+        "tool_call_id": "call_get_stock_data",
+    }, tool_chat_payload
+
     response_payload = server._chat_completion_to_responses_payload(
         {
             "id": "chatcmpl-z",
@@ -319,6 +406,44 @@ def main() -> None:
     assert response_payload["object"] == "response", response_payload
     assert response_payload["output"][0]["content"][0]["text"] == "OK", response_payload
     assert response_payload["usage"]["input_tokens"] == 3, response_payload
+
+    tool_response_payload = server._chat_completion_to_responses_payload(
+        {
+            "id": "chatcmpl-tool",
+            "created": 1779800002,
+            "model": "free_pro",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_get_stock_data",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_stock_data",
+                                    "arguments": '{"ticker":"AAPL"}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
+        },
+        {"model": "free_pro"},
+    )
+    assert tool_response_payload["output"][0] == {
+        "id": "call_get_stock_data",
+        "type": "function_call",
+        "status": "completed",
+        "call_id": "call_get_stock_data",
+        "name": "get_stock_data",
+        "arguments": '{"ticker":"AAPL"}',
+    }, tool_response_payload
+    assert tool_response_payload["output_text"] == "", tool_response_payload
 
     structured_response_payload = server._chat_completion_to_responses_payload(
         {
@@ -360,6 +485,53 @@ def main() -> None:
     assert structured_json["recommendation"] == "Buy", structured_response_payload
     assert structured_parsed["recommendation"] == "Buy", structured_response_payload
     assert "Strong market case" in structured_json["rationale"], structured_response_payload
+
+    structured_tool_response_payload = server._chat_completion_to_responses_payload(
+        {
+            "id": "chatcmpl-structured-tool",
+            "created": 1779800003,
+            "model": "free_pro",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_structured",
+                                "type": "function",
+                                "function": {
+                                    "name": "ResearchPlan",
+                                    "arguments": '{"recommendation":"Buy","rationale":"Tool shaped rationale","strategic_actions":"Scale in gradually"}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        },
+        {
+            "model": "free_pro",
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "ResearchPlan",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "recommendation": {"type": "string", "enum": ["Buy", "Overweight", "Hold", "Underweight", "Sell"]},
+                            "rationale": {"type": "string"},
+                            "strategic_actions": {"type": "string"},
+                        },
+                        "required": ["recommendation", "rationale", "strategic_actions"],
+                    },
+                }
+            },
+        },
+    )
+    assert structured_tool_response_payload["output"][0]["type"] == "message", structured_tool_response_payload
+    assert structured_tool_response_payload["output"][0]["content"][0]["parsed"]["recommendation"] == "Buy", structured_tool_response_payload
 
     os.environ["TRADINGAGENTS_LLM_API_KEY"] = "generic-env-secret"
     response = client.post(
