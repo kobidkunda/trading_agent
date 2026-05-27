@@ -1550,6 +1550,17 @@ export function StrategyHub() {
                         />
                       </div>
                       <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">Native Timeout</Label>
+                        <Input
+                          type="number"
+                          min={30}
+                          max={900}
+                          value={settings.stageRouting?.analystNativeTimeoutSeconds ?? 360}
+                          onChange={(e) => updateStageRouting('analystNativeTimeoutSeconds', Number(e.target.value))}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
                         <Label className="text-[11px] text-gray-400">Concurrency</Label>
                         <Input
                           type="number"

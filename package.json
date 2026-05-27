@@ -28,6 +28,7 @@
     "test:engine": "bun test src/lib/engine/",
     "test:routes": "bun test src/app/api/",
     "test:tradingagents": "bash scripts/smoke-tradingagents.sh && python3 scripts/test-tradingagents-native-contract.py && python3 scripts/smoke-tradingagents-native-fake-llm.py && python3 scripts/test-tradingagents-memory-log.py && python3 scripts/test-tradingagents-upstream-config-coverage.py",
+    "test:tradingagents:live": "python3 scripts/probe-tradingagents-native-live.py",
     "smoke:standalone": "bash scripts/smoke-standalone.sh",
     "smoke:tradingagents-image": "bash scripts/smoke-tradingagents-image.sh",
     "typecheck": "tsc --noEmit"

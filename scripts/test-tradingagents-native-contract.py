@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import types
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -18,6 +19,24 @@ sys.path.insert(0, str(TA_SERVICE))
 
 captured: dict[str, object] = {}
 graph_inits: list[dict[str, object]] = []
+
+
+@contextmanager
+def temporary_env(overrides: dict[str, str | None]):
+    previous = {key: os.environ.get(key) for key in overrides}
+    try:
+        for key, value in overrides.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 class FakeTradingAgentsGraph:
@@ -166,6 +185,7 @@ def main() -> None:
             "get_stock_data": "alpha_vantage",
         },
         "clear_checkpoints": True,
+        "native_timeout_seconds": 90,
     }
 
     response = client.post("/analyze/native", json=payload)
@@ -223,6 +243,123 @@ def main() -> None:
         "asset_type": "crypto",
     }, captured
     assert os.environ.get("OPENAI_API_KEY") != "contract-secret"
+
+    with temporary_env(
+        {
+            "TRADINGAGENTS_NORMALIZE_LLM_RESPONSES": "true",
+            "TRADINGAGENTS_LLM_BACKEND_URL": "http://upstream-router.invalid/v1",
+            "TRADINGAGENTS_UPSTREAM_LLM_BACKEND_URL": "http://upstream-router.invalid/v1",
+        }
+    ):
+        response = client.post(
+            "/analyze/native",
+            json={
+                "query": "Will AAPL beat earnings?",
+                "date": "2026-05-26",
+                "asset_type": "stock",
+                "llm_provider": "openai",
+                "deep_think_llm": "proxy-deep",
+                "quick_think_llm": "proxy-quick",
+                "native_timeout_seconds": 90,
+            },
+        )
+        body = response.json()
+        assert response.status_code == 200, body
+        assert graph_inits[-1]["config"]["backend_url"] == server.LOCAL_LLM_PROXY_BASE_URL, graph_inits[-1]
+
+    parsed = server._parse_llm_response_payload(
+        '{"id":"chatcmpl-x","object":"chat.completion","choices":[{"index":0,'
+        '"finish_reason":"stop","message":{"role":"assistant","content":null,'
+        '"reasoning_content":"fallback text"}}]}data: [DONE]\n\n'
+    )
+    normalized = server._normalize_chat_completion_payload(parsed)
+    assert normalized["choices"][0]["message"]["content"] == "fallback text", normalized
+
+    parsed_sse = server._parse_llm_response_payload(
+        'data: {"id":"chatcmpl-y","object":"chat.completion.chunk","model":"m",'
+        '"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'
+        'data: {"id":"chatcmpl-y","object":"chat.completion.chunk","model":"m",'
+        '"choices":[{"index":0,"delta":{"reasoning_content":"reasoned answer"},'
+        '"finish_reason":"stop"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    assert parsed_sse["object"] == "chat.completion", parsed_sse
+    assert parsed_sse["choices"][0]["message"]["content"] == "reasoned answer", parsed_sse
+
+    chat_payload = server._responses_payload_to_chat_payload(
+        {
+            "model": "free_pro",
+            "input": [
+                {"role": "system", "content": "Be brief."},
+                {"role": "user", "content": [{"type": "input_text", "text": "Say OK"}]},
+            ],
+            "max_output_tokens": 12,
+            "text": {"format": {"type": "json_object"}},
+        }
+    )
+    assert chat_payload["messages"] == [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "Say OK"},
+    ], chat_payload
+    assert chat_payload["max_tokens"] == 12, chat_payload
+    assert chat_payload["response_format"] == {"type": "json_object"}, chat_payload
+
+    response_payload = server._chat_completion_to_responses_payload(
+        {
+            "id": "chatcmpl-z",
+            "created": 1779800000,
+            "model": "free_pro",
+            "choices": [
+                {"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        },
+        {"model": "free_pro"},
+    )
+    assert response_payload["object"] == "response", response_payload
+    assert response_payload["output"][0]["content"][0]["text"] == "OK", response_payload
+    assert response_payload["usage"]["input_tokens"] == 3, response_payload
+
+    structured_response_payload = server._chat_completion_to_responses_payload(
+        {
+            "id": "chatcmpl-structured",
+            "created": 1779800001,
+            "model": "free_pro",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "**Recommendation**: Buy\n\nStrong market case.",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        },
+        {
+            "model": "free_pro",
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "ResearchPlan",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "recommendation": {"type": "string", "enum": ["Buy", "Overweight", "Hold", "Underweight", "Sell"]},
+                            "rationale": {"type": "string"},
+                            "strategic_actions": {"type": "string"},
+                        },
+                        "required": ["recommendation", "rationale", "strategic_actions"],
+                    },
+                }
+            },
+        },
+    )
+    structured_text = structured_response_payload["output"][0]["content"][0]["text"]
+    structured_parsed = structured_response_payload["output"][0]["content"][0]["parsed"]
+    structured_json = __import__("json").loads(structured_text)
+    assert structured_json["recommendation"] == "Buy", structured_response_payload
+    assert structured_parsed["recommendation"] == "Buy", structured_response_payload
+    assert "Strong market case" in structured_json["rationale"], structured_response_payload
 
     os.environ["TRADINGAGENTS_LLM_API_KEY"] = "generic-env-secret"
     response = client.post(

@@ -205,6 +205,7 @@ export interface StageServiceMapping {
   analystBenchmarkMap?: Record<string, string>;
   analystAssetType?: 'stock' | 'crypto';
   analystMaxRecurLimit?: number;
+  analystNativeTimeoutSeconds?: number;
   analystMemoryLogMaxEntries?: number;
   analystConcurrencyLimit?: number;
   analystNewsArticleLimit?: number;

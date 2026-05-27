@@ -2,6 +2,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  allowedDevOrigins: [
+    "192.168.88.81",
+    "192.168.88.93",
+  ],
   async headers() {
     return [
       {

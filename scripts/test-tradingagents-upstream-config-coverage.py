@@ -55,6 +55,7 @@ STAGE_ROUTING_FIELDS = {
     "max_debate_rounds": "analystMaxDebateRounds",
     "max_risk_discuss_rounds": "analystMaxRiskRounds",
     "max_recur_limit": "analystMaxRecurLimit",
+    "native_timeout_seconds": "analystNativeTimeoutSeconds",
     "analyst_concurrency_limit": "analystConcurrencyLimit",
     "news_article_limit": "analystNewsArticleLimit",
     "global_news_article_limit": "analystGlobalNewsArticleLimit",

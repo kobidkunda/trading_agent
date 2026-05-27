@@ -13,6 +13,9 @@ TA_QUICK_THINK_LLM=frontier_lite
 
 OPENAI_BASE_URL=http://localhost:4444/v1
 TRADINGAGENTS_LLM_BACKEND_URL=http://host.docker.internal:4444/v1
+TRADINGAGENTS_UPSTREAM_LLM_BACKEND_URL=http://host.docker.internal:4444/v1
+TRADINGAGENTS_NORMALIZE_LLM_RESPONSES=true
+TRADINGAGENTS_NATIVE_TIMEOUT_SECONDS=360
 TRADINGAGENTS_LLM_API_KEY=
 ```
 
@@ -33,6 +36,10 @@ OPENAI_BASE_URL=http://localhost:4444/v1
 TRADINGAGENTS_LLM_BACKEND_URL=http://host.docker.internal:4444/v1
 TRADINGAGENTS_LLM_API_KEY=your-litellm-key
 ```
+
+`TRADINGAGENTS_NORMALIZE_LLM_RESPONSES=true` routes native upstream TradingAgents calls through the bridge's local OpenAI-compatible `/v1/chat/completions` proxy. The proxy forwards to `TRADINGAGENTS_UPSTREAM_LLM_BACKEND_URL` and normalizes common router quirks such as SSE-style bodies, trailing `data: [DONE]`, and `reasoning_content` without `content`.
+
+`TRADINGAGENTS_NATIVE_TIMEOUT_SECONDS` bounds `/analyze/native` graph execution. Strategy Hub can override this per routing profile with the Native Timeout control.
 
 ## Ollama
 
@@ -75,4 +82,21 @@ MINIMAX_CN_API_KEY=
 ```bash
 curl http://localhost:6503/health
 npm run test:tradingagents
+```
+
+## Live Native Probe
+
+The live native probe calls the configured LLM router and may run for several minutes:
+
+```bash
+npm run test:tradingagents:live
+```
+
+Useful overrides:
+
+```bash
+TA_LIVE_QUERY="Analyze AAPL for a short live TradingAgents probe."
+TA_LIVE_SELECTED_ANALYSTS=market
+TA_LIVE_NATIVE_TIMEOUT_SECONDS=420
+TA_LIVE_MAX_RECUR_LIMIT=35
 ```

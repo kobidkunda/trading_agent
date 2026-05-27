@@ -4,10 +4,11 @@ import re
 import asyncio
 import traceback
 import inspect
+import time
 from pathlib import Path
 from contextlib import contextmanager
 from datetime import date as date_cls
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Any
@@ -70,6 +71,8 @@ LEGACY_MODEL_ALIASES = {
     "paper_lite": "frontier_lite",
 }
 
+LOCAL_LLM_PROXY_BASE_URL = "http://localhost:8100/v1"
+
 
 class AnalyzeRequest(BaseModel):
     query: str
@@ -101,6 +104,7 @@ class AnalyzeRequest(BaseModel):
     clear_checkpoints: Optional[bool] = None
     llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
+    native_timeout_seconds: Optional[int] = None
 
 
 class AnalyzeResponse(BaseModel):
@@ -203,8 +207,409 @@ def get_llm_config(req: AnalyzeRequest) -> dict:
     }
 
 
+def _upstream_llm_base_url(req: AnalyzeRequest | None = None) -> str:
+    requested = req.llm_base_url if req is not None else None
+    return (
+        requested
+        or os.getenv("TRADINGAGENTS_UPSTREAM_LLM_BACKEND_URL")
+        or os.getenv("TRADINGAGENTS_LLM_BACKEND_URL")
+        or os.getenv("OPENAI_BASE_URL")
+        or os.getenv("LLM_BASE_URL")
+        or os.getenv("LITELLM_BASE_URL")
+        or "http://host.docker.internal:4444/v1"
+    ).rstrip("/")
+
+
+def _llm_proxy_enabled(req: AnalyzeRequest | None = None) -> bool:
+    if req is not None and req.llm_base_url:
+        return False
+    value = os.getenv("TRADINGAGENTS_NORMALIZE_LLM_RESPONSES", "true").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _extract_first_json_value(text: str) -> Any:
+    decoder = json.JSONDecoder()
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("empty response body")
+
+    for candidate in (stripped,):
+        try:
+            value, _ = decoder.raw_decode(candidate)
+            return value
+        except Exception:
+            pass
+
+    for match in re.finditer(r"[\{\[]", stripped):
+        try:
+            value, _ = decoder.raw_decode(stripped[match.start():])
+            return value
+        except Exception:
+            continue
+    raise ValueError("no JSON object found in response body")
+
+
+def _parse_llm_response_payload(text: str) -> Any:
+    stripped = text.strip()
+    if not stripped:
+        return {}
+
+    if "data:" in stripped:
+        events: list[Any] = []
+        for line in stripped.splitlines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                events.append(_extract_first_json_value(data))
+            except Exception:
+                continue
+        if events:
+            if all(isinstance(item, dict) and item.get("object") == "chat.completion.chunk" for item in events):
+                return _merge_chat_completion_chunks(events)
+            return events[-1]
+
+    return _extract_first_json_value(stripped)
+
+
+def _merge_chat_completion_chunks(events: list[dict[str, Any]]) -> dict[str, Any]:
+    first = events[0] if events else {}
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    finish_reason = None
+    role = "assistant"
+
+    for event in events:
+        choices = event.get("choices") if isinstance(event, dict) else None
+        if not isinstance(choices, list) or not choices:
+            continue
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        finish_reason = choice.get("finish_reason") or finish_reason
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        role = delta.get("role") or message.get("role") or role
+        for source in (delta, message):
+            content = source.get("content")
+            if isinstance(content, str):
+                content_parts.append(content)
+            reasoning = source.get("reasoning_content")
+            if isinstance(reasoning, str):
+                reasoning_parts.append(reasoning)
+
+    content = "".join(content_parts).strip() or "".join(reasoning_parts).strip()
+    return {
+        "id": first.get("id", "chatcmpl-normalized"),
+        "object": "chat.completion",
+        "created": first.get("created"),
+        "model": first.get("model"),
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": finish_reason or "stop",
+                "message": {
+                    "role": role,
+                    "content": content,
+                },
+            }
+        ],
+        "usage": first.get("usage") or {},
+    }
+
+
+def _normalize_chat_completion_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {
+            "id": "chatcmpl-normalized",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": str(payload)},
+                }
+            ],
+        }
+
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        return payload
+
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                message = {
+                    "role": delta.get("role", "assistant"),
+                    "content": delta.get("content"),
+                    "reasoning_content": delta.get("reasoning_content"),
+                }
+                choice["message"] = message
+            else:
+                continue
+        content = message.get("content")
+        reasoning = message.get("reasoning_content")
+        if (content is None or content == "") and isinstance(reasoning, str) and reasoning.strip():
+            message["content"] = reasoning
+    return payload
+
+
+def _response_json(payload: Any, status_code: int = 200) -> Response:
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False),
+        status_code=status_code,
+        media_type="application/json",
+    )
+
+
+def _responses_content_to_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = (
+                    block.get("text")
+                    or block.get("input_text")
+                    or block.get("output_text")
+                    or block.get("refusal")
+                )
+                if text is not None:
+                    parts.append(str(text))
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
+def _responses_input_to_chat_messages(input_value: Any, instructions: Any = None) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    if instructions:
+        messages.append({"role": "system", "content": str(instructions)})
+
+    items = input_value if isinstance(input_value, list) else [{"role": "user", "content": input_value}]
+    for item in items:
+        if not isinstance(item, dict):
+            messages.append({"role": "user", "content": str(item)})
+            continue
+        item_type = item.get("type")
+        if item_type == "function_call_output":
+            messages.append({"role": "tool", "content": _responses_content_to_text(item.get("output"))})
+            continue
+        role = item.get("role") or ("assistant" if item_type == "message" else "user")
+        if role not in {"system", "user", "assistant", "tool"}:
+            role = "user"
+        messages.append({"role": role, "content": _responses_content_to_text(item.get("content"))})
+
+    return [message for message in messages if message["content"]]
+
+
+def _responses_payload_to_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    chat_payload: dict[str, Any] = {
+        "model": payload.get("model"),
+        "messages": _responses_input_to_chat_messages(payload.get("input"), payload.get("instructions")),
+        "stream": False,
+    }
+    if payload.get("temperature") is not None:
+        chat_payload["temperature"] = payload.get("temperature")
+    max_tokens = payload.get("max_output_tokens") or payload.get("max_tokens")
+    if max_tokens is not None:
+        chat_payload["max_tokens"] = max_tokens
+
+    text_config = payload.get("text")
+    if isinstance(text_config, dict):
+        text_format = text_config.get("format")
+        if isinstance(text_format, dict):
+            if text_format.get("type") == "json_object":
+                chat_payload["response_format"] = {"type": "json_object"}
+            elif text_format.get("type") == "json_schema":
+                chat_payload["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": text_format.get("name", "structured_response"),
+                        "schema": text_format.get("schema", {}),
+                        "strict": text_format.get("strict", False),
+                    },
+                }
+    return chat_payload
+
+
+def _extract_rating_like_value(text: str, allowed: list[str], default: str) -> str:
+    if not text:
+        return default
+    allowed_by_lower = {item.lower(): item for item in allowed}
+    label_match = re.search(
+        r"(?:recommendation|rating|action)\s*[:\-]\s*\**\s*([A-Za-z]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if label_match:
+        candidate = label_match.group(1).lower()
+        if candidate in allowed_by_lower:
+            return allowed_by_lower[candidate]
+    for candidate_lower, candidate in allowed_by_lower.items():
+        if re.search(rf"\b{re.escape(candidate_lower)}\b", text, flags=re.IGNORECASE):
+            return candidate
+    return default
+
+
+def _schema_default_value(field_name: str, schema: dict[str, Any], content: str) -> Any:
+    description = str(schema.get("description") or "")
+    enum_values = schema.get("enum")
+    if not isinstance(enum_values, list) and isinstance(schema.get("anyOf"), list):
+        for option in schema["anyOf"]:
+            if isinstance(option, dict) and isinstance(option.get("enum"), list):
+                enum_values = option["enum"]
+                break
+    allowed = [str(item) for item in enum_values] if isinstance(enum_values, list) else []
+
+    if field_name in {"recommendation", "rating"}:
+        return _extract_rating_like_value(content, allowed or ["Buy", "Overweight", "Hold", "Underweight", "Sell"], "Hold")
+    if field_name == "action":
+        return _extract_rating_like_value(content, allowed or ["Buy", "Hold", "Sell"], "Hold")
+    if schema.get("type") in {"number", "integer"} or any(
+        isinstance(option, dict) and option.get("type") in {"number", "integer"}
+        for option in schema.get("anyOf", [])
+        if isinstance(option, dict)
+    ):
+        return None
+    if field_name in {"rationale", "reasoning", "executive_summary", "investment_thesis", "strategic_actions"}:
+        return content.strip() or description or "No additional rationale supplied."
+    if field_name in {"position_sizing", "time_horizon"}:
+        return None
+    return content.strip() or description or ""
+
+
+def _ensure_structured_response_text(content: str, request_payload: dict[str, Any]) -> str:
+    text_config = request_payload.get("text")
+    text_format = text_config.get("format") if isinstance(text_config, dict) else None
+    if not isinstance(text_format, dict) or text_format.get("type") != "json_schema":
+        return content
+
+    schema = text_format.get("schema")
+    if not isinstance(schema, dict):
+        return content
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return content
+
+    required = schema.get("required")
+    required_fields = [field for field in required if isinstance(field, str)] if isinstance(required, list) else list(properties.keys())
+
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, dict) and all(field in parsed and parsed[field] is not None for field in required_fields):
+            return content
+    except Exception:
+        pass
+
+    coerced: dict[str, Any] = {}
+    for field_name, field_schema in properties.items():
+        if not isinstance(field_schema, dict):
+            field_schema = {}
+        coerced[field_name] = _schema_default_value(field_name, field_schema, content)
+
+    for field_name in required_fields:
+        if field_name not in coerced or coerced[field_name] is None:
+            coerced[field_name] = _schema_default_value(field_name, {}, content)
+
+    return json.dumps(coerced, ensure_ascii=False)
+
+
+def _structured_response_parsed_value(content: str, request_payload: dict[str, Any]) -> Any:
+    text_config = request_payload.get("text")
+    text_format = text_config.get("format") if isinstance(text_config, dict) else None
+    if not isinstance(text_format, dict) or text_format.get("type") != "json_schema":
+        return None
+    try:
+        parsed = json.loads(content)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _chat_completion_to_responses_payload(chat_payload: dict[str, Any], request_payload: dict[str, Any]) -> dict[str, Any]:
+    choice = {}
+    choices = chat_payload.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    content = message.get("content")
+    if content is None:
+        content = message.get("reasoning_content") or ""
+    content = _ensure_structured_response_text(str(content or ""), request_payload)
+    parsed = _structured_response_parsed_value(content, request_payload)
+
+    usage = chat_payload.get("usage") if isinstance(chat_payload.get("usage"), dict) else {}
+    input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+    output_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+    total_tokens = usage.get("total_tokens") or input_tokens + output_tokens
+
+    response_id = chat_payload.get("id") or "resp_normalized"
+    created = chat_payload.get("created") or int(time.time())
+    model = chat_payload.get("model") or request_payload.get("model")
+    content_block: dict[str, Any] = {
+        "type": "output_text",
+        "text": str(content or ""),
+        "annotations": [],
+    }
+    if parsed is not None:
+        content_block["parsed"] = parsed
+
+    return {
+        "id": str(response_id).replace("chatcmpl", "resp", 1),
+        "object": "response",
+        "created_at": created,
+        "status": "completed",
+        "error": None,
+        "incomplete_details": None,
+        "instructions": request_payload.get("instructions"),
+        "metadata": request_payload.get("metadata") or {},
+        "model": model,
+        "output": [
+            {
+                "id": f"msg_{response_id}",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [content_block],
+            }
+        ],
+        "output_text": str(content or ""),
+        "parallel_tool_calls": True,
+        "temperature": request_payload.get("temperature"),
+        "tool_choice": request_payload.get("tool_choice", "auto"),
+        "tools": request_payload.get("tools") or [],
+        "top_p": request_payload.get("top_p"),
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+        },
+        "text": request_payload.get("text"),
+    }
+
+
 def _today_iso() -> str:
     return date_cls.today().isoformat()
+
+
+def _log_phase(label: str, **fields: Any) -> None:
+    safe_fields = {
+        key: value
+        for key, value in fields.items()
+        if key not in {"api_key", "llm_api_key"} and value is not None
+    }
+    suffix = f" {json.dumps(safe_fields, default=str, ensure_ascii=False)}" if safe_fields else ""
+    print(f"[NativeGraph] {label}{suffix}", flush=True)
 
 
 def _build_tradingagents_config(req: AnalyzeRequest, default_config: dict[str, Any]) -> dict[str, Any]:
@@ -223,12 +628,9 @@ def _build_tradingagents_config(req: AnalyzeRequest, default_config: dict[str, A
         or "openai"
     )
 
-    base_url = (
-        req.llm_base_url
-        or os.getenv("TRADINGAGENTS_LLM_BACKEND_URL")
-        or os.getenv("OPENAI_BASE_URL")
-        or config.get("backend_url")
-    )
+    base_url = LOCAL_LLM_PROXY_BASE_URL if _llm_proxy_enabled(req) else _upstream_llm_base_url(req)
+    if not base_url:
+        base_url = config.get("backend_url")
     if base_url:
         config["backend_url"] = str(base_url).rstrip("/")
 
@@ -451,7 +853,7 @@ def _parse_model_records(payload: Any) -> list[dict[str, str]]:
 async def _fetch_backend_models(cfg: dict) -> tuple[list[dict[str, str]], str | None]:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{cfg['base_url']}/models", headers=cfg["headers"])
+            resp = await client.get(f"{_upstream_llm_base_url()}/models", headers=cfg["headers"])
             if resp.status_code != 200:
                 return [], f"HTTP {resp.status_code}"
             models = _parse_model_records(resp.json())
@@ -983,6 +1385,105 @@ async def list_models():
     return response
 
 
+@app.get("/v1/models")
+async def proxy_openai_models(request: Request):
+    cfg = get_llm_config(AnalyzeRequest(query="models"))
+    headers = dict(cfg["headers"])
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            upstream = await client.get(f"{_upstream_llm_base_url()}/models", headers=headers)
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type", "application/json").split(";")[0],
+        )
+    except Exception as e:
+        return _response_json({"error": str(e)}, status_code=502)
+
+
+@app.post("/v1/chat/completions")
+async def proxy_openai_chat_completions(request: Request):
+    cfg = get_llm_config(AnalyzeRequest(query="chat"))
+    headers = dict(cfg["headers"])
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return _response_json({"error": f"Invalid JSON request: {e}"}, status_code=400)
+
+    if isinstance(payload, dict):
+        payload = payload.copy()
+        payload["stream"] = False
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            upstream = await client.post(
+                f"{_upstream_llm_base_url()}/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+        response_text = upstream.text
+        if upstream.status_code != 200:
+            try:
+                error_payload = _parse_llm_response_payload(response_text)
+            except Exception:
+                error_payload = {"error": response_text[:1000] or f"HTTP {upstream.status_code}"}
+            return _response_json(error_payload, status_code=upstream.status_code)
+
+        parsed = _parse_llm_response_payload(response_text)
+        normalized = _normalize_chat_completion_payload(parsed)
+        return _response_json(normalized)
+    except Exception as e:
+        return _response_json({"error": str(e)}, status_code=502)
+
+
+@app.post("/v1/responses")
+async def proxy_openai_responses(request: Request):
+    cfg = get_llm_config(AnalyzeRequest(query="responses"))
+    headers = dict(cfg["headers"])
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        headers["Authorization"] = auth_header
+
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return _response_json({"error": f"Invalid JSON request: {e}"}, status_code=400)
+    if not isinstance(payload, dict):
+        return _response_json({"error": "Responses request must be a JSON object"}, status_code=400)
+
+    chat_payload = _responses_payload_to_chat_payload(payload)
+    if not chat_payload.get("messages"):
+        return _response_json({"error": "Responses request did not contain usable input messages"}, status_code=400)
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            upstream = await client.post(
+                f"{_upstream_llm_base_url()}/chat/completions",
+                headers=headers,
+                json=chat_payload,
+            )
+        response_text = upstream.text
+        if upstream.status_code != 200:
+            try:
+                error_payload = _parse_llm_response_payload(response_text)
+            except Exception:
+                error_payload = {"error": response_text[:1000] or f"HTTP {upstream.status_code}"}
+            return _response_json(error_payload, status_code=upstream.status_code)
+
+        parsed = _parse_llm_response_payload(response_text)
+        normalized = _normalize_chat_completion_payload(parsed)
+        return _response_json(_chat_completion_to_responses_payload(normalized, payload))
+    except Exception as e:
+        return _response_json({"error": str(e)}, status_code=502)
+
+
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(req: AnalyzeRequest):
     try:
@@ -1097,16 +1598,32 @@ async def analyze_native(req: AnalyzeRequest):
         return {"status": "failed", "query": req.query, "error": traceback.format_exc()}
 
     try:
+        started_at = time.time()
+        _log_phase("request-start", query=req.query[:80], date=req.date, asset_type=req.asset_type)
         config = _build_tradingagents_config(req, DEFAULT_CONFIG)
         ticker = extract_ticker(req.query)
         trade_date = req.date or _today_iso()
         asset_type = _infer_asset_type(req.query, ticker, req.asset_type)
+        native_timeout = req.native_timeout_seconds or int(os.getenv("TRADINGAGENTS_NATIVE_TIMEOUT_SECONDS", "360"))
+        _log_phase(
+            "config-ready",
+            ticker=ticker,
+            trade_date=trade_date,
+            asset_type=asset_type,
+            provider=config.get("llm_provider"),
+            backend_url=config.get("backend_url"),
+            deep_model=config.get("deep_think_llm"),
+            quick_model=config.get("quick_think_llm"),
+            max_recur_limit=config.get("max_recur_limit"),
+            timeout_seconds=native_timeout,
+        )
 
         if req.clear_checkpoints:
             try:
                 from tradingagents.graph.checkpointer import clear_all_checkpoints
 
                 clear_all_checkpoints(config["data_cache_dir"])
+                _log_phase("checkpoints-cleared", data_cache_dir=config["data_cache_dir"])
             except Exception as e:
                 print(f"[NativeGraph] clear checkpoints failed: {e}")
 
@@ -1118,9 +1635,16 @@ async def analyze_native(req: AnalyzeRequest):
             or os.getenv("LITELLM_API_KEY")
         )
         with _forwarded_provider_api_key(config.get("llm_provider"), forwarded_api_key):
+            _log_phase("graph-init-start", selected_analysts=selected_analysts)
             graph = TradingAgentsGraph(debug=False, config=config, selected_analysts=selected_analysts)
+            _log_phase("graph-init-complete")
 
-        final_state, decision = await asyncio.to_thread(_propagate_graph, graph, ticker, trade_date, asset_type)
+        _log_phase("propagate-start")
+        final_state, decision = await asyncio.wait_for(
+            asyncio.to_thread(_propagate_graph, graph, ticker, trade_date, asset_type),
+            timeout=native_timeout,
+        )
+        _log_phase("propagate-complete", elapsed_seconds=round(time.time() - started_at, 2), decision=str(decision))
         final_state = _json_safe(final_state if isinstance(final_state, dict) else {})
         investment_debate = final_state.get("investment_debate_state", {}) if isinstance(final_state, dict) else {}
         risk_debate = final_state.get("risk_debate_state", {}) if isinstance(final_state, dict) else {}
@@ -1182,9 +1706,18 @@ async def analyze_native(req: AnalyzeRequest):
             "probability": probability,
             "error": None,
         }
+    except asyncio.TimeoutError:
+        timeout_seconds = req.native_timeout_seconds or int(os.getenv("TRADINGAGENTS_NATIVE_TIMEOUT_SECONDS", "360"))
+        _log_phase("propagate-timeout", timeout_seconds=timeout_seconds)
+        return {
+            "status": "failed",
+            "query": req.query,
+            "error": f"TradingAgents native graph exceeded {timeout_seconds}s timeout",
+        }
     except Exception:
         tb = traceback.format_exc()
         traceback.print_exc()
+        _log_phase("request-failed", error=tb[-1000:])
         return {"status": "failed", "query": req.query, "error": tb}
 
 
