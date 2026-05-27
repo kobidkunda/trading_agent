@@ -18,6 +18,9 @@ TRADINGAGENTS_NORMALIZE_LLM_RESPONSES=true
 TRADINGAGENTS_NATIVE_TIMEOUT_SECONDS=360
 TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS=45
 TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS=2
+TA_LIVE_NATIVE_TIMEOUT_SECONDS=900
+TA_LIVE_LLM_REQUEST_TIMEOUT_SECONDS=90
+TA_LIVE_LLM_REQUEST_MAX_ATTEMPTS=1
 TRADINGAGENTS_LLM_API_KEY=
 ```
 
@@ -43,7 +46,7 @@ TRADINGAGENTS_LLM_API_KEY=your-litellm-key
 
 `TRADINGAGENTS_NATIVE_TIMEOUT_SECONDS` bounds `/analyze/native` graph execution. Strategy Hub can override this per routing profile with the Native Timeout control.
 
-`TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS` and `TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS` bound each proxied upstream LLM call. Keep these below the native graph timeout so one slow router request cannot consume the entire graph run.
+`TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS` and `TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS` bound each proxied upstream LLM call. The native request also accepts `llm_request_timeout_seconds` and `llm_request_max_attempts`, which Strategy Hub and the live probe can use per run without rebuilding the container. Keep these below the native graph timeout so one slow router request cannot consume the entire graph run.
 
 ## Ollama
 
@@ -100,7 +103,10 @@ Useful overrides:
 
 ```bash
 TA_LIVE_QUERY="Analyze AAPL for a short live TradingAgents probe."
+TA_LIVE_DATE=2025-05-28
 TA_LIVE_SELECTED_ANALYSTS=market
-TA_LIVE_NATIVE_TIMEOUT_SECONDS=420
+TA_LIVE_NATIVE_TIMEOUT_SECONDS=900
 TA_LIVE_MAX_RECUR_LIMIT=35
+TA_LIVE_LLM_REQUEST_TIMEOUT_SECONDS=90
+TA_LIVE_LLM_REQUEST_MAX_ATTEMPTS=1
 ```

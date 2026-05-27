@@ -1561,6 +1561,28 @@ export function StrategyHub() {
                         />
                       </div>
                       <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">LLM Timeout</Label>
+                        <Input
+                          type="number"
+                          min={5}
+                          max={180}
+                          value={settings.stageRouting?.analystLlmRequestTimeoutSeconds ?? 45}
+                          onChange={(e) => updateStageRouting('analystLlmRequestTimeoutSeconds', Number(e.target.value))}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-gray-400">LLM Attempts</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={5}
+                          value={settings.stageRouting?.analystLlmRequestMaxAttempts ?? 2}
+                          onChange={(e) => updateStageRouting('analystLlmRequestMaxAttempts', Number(e.target.value))}
+                          className="h-8 border-gray-700 bg-gray-800 text-xs text-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
                         <Label className="text-[11px] text-gray-400">Concurrency</Label>
                         <Input
                           type="number"

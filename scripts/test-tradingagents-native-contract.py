@@ -78,6 +78,10 @@ class FakeTradingAgentsGraph:
             "trade_date": trade_date,
             "asset_type": asset_type,
         }
+        captured["propagate_env"] = {
+            "TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS": os.environ.get("TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS"),
+            "TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS": os.environ.get("TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS"),
+        }
         return (
             {
                 "fundamentals_report": "fundamentals ok",
@@ -212,6 +216,8 @@ def main() -> None:
             "get_stock_data": "alpha_vantage",
         },
         "clear_checkpoints": True,
+        "llm_request_timeout_seconds": 88.5,
+        "llm_request_max_attempts": 1,
         "native_timeout_seconds": 90,
     }
 
@@ -269,7 +275,13 @@ def main() -> None:
         "trade_date": "2026-05-26",
         "asset_type": "crypto",
     }, captured
+    assert captured["propagate_env"] == {
+        "TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS": "88.5",
+        "TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS": "1",
+    }, captured
     assert os.environ.get("OPENAI_API_KEY") != "contract-secret"
+    assert os.environ.get("TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS") != "88.5"
+    assert os.environ.get("TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS") != "1"
 
     with temporary_env(
         {

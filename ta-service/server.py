@@ -107,6 +107,8 @@ class AnalyzeRequest(BaseModel):
     clear_checkpoints: Optional[bool] = None
     llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
+    llm_request_timeout_seconds: Optional[float] = None
+    llm_request_max_attempts: Optional[int] = None
     native_timeout_seconds: Optional[int] = None
 
 
@@ -945,6 +947,30 @@ def _forwarded_provider_api_key(provider: str | None, api_key: str | None):
             os.environ.pop(env_name, None)
         else:
             os.environ[env_name] = previous
+
+
+@contextmanager
+def _temporary_llm_request_env(req: AnalyzeRequest):
+    overrides: dict[str, str] = {}
+    if req.llm_request_timeout_seconds is not None and req.llm_request_timeout_seconds > 0:
+        overrides["TRADINGAGENTS_LLM_REQUEST_TIMEOUT_SECONDS"] = str(req.llm_request_timeout_seconds)
+    if req.llm_request_max_attempts is not None and req.llm_request_max_attempts > 0:
+        overrides["TRADINGAGENTS_LLM_REQUEST_MAX_ATTEMPTS"] = str(req.llm_request_max_attempts)
+
+    if not overrides:
+        yield
+        return
+
+    previous = {key: os.environ.get(key) for key in overrides}
+    try:
+        os.environ.update(overrides)
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _infer_asset_type(query: str, ticker: str, requested: str | None = None) -> str:
@@ -1858,10 +1884,11 @@ async def analyze_native(req: AnalyzeRequest):
             _log_phase("graph-init-complete")
 
         _log_phase("propagate-start")
-        final_state, decision = await asyncio.wait_for(
-            asyncio.to_thread(_propagate_graph, graph, ticker, trade_date, asset_type),
-            timeout=native_timeout,
-        )
+        with _temporary_llm_request_env(req):
+            final_state, decision = await asyncio.wait_for(
+                asyncio.to_thread(_propagate_graph, graph, ticker, trade_date, asset_type),
+                timeout=native_timeout,
+            )
         _log_phase("propagate-complete", elapsed_seconds=round(time.time() - started_at, 2), decision=str(decision))
         final_state = _json_safe(final_state if isinstance(final_state, dict) else {})
         investment_debate = final_state.get("investment_debate_state", {}) if isinstance(final_state, dict) else {}

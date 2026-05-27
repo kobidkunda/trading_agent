@@ -71,6 +71,8 @@ STAGE_ROUTING_FIELDS = {
     "benchmark_ticker": "analystBenchmarkTicker",
     "benchmark_map": "analystBenchmarkMap",
     "memory_log_max_entries": "analystMemoryLogMaxEntries",
+    "llm_request_timeout_seconds": "analystLlmRequestTimeoutSeconds",
+    "llm_request_max_attempts": "analystLlmRequestMaxAttempts",
 }
 
 NON_CONFIG_REQUEST_FEATURES = {

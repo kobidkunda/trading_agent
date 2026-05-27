@@ -1,6 +1,6 @@
 # TradingAgents Implementation Audit
 
-Updated: 2026-05-26
+Updated: 2026-05-28
 
 Upstream reference: `TauricResearch/TradingAgents` main at `61522e103e61601c553b4544abcd53fa7ebf9f1d` (`v0.2.5`).
 
@@ -13,7 +13,7 @@ Upstream reference: `TauricResearch/TradingAgents` main at `61522e103e61601c553b
 | Grounded sentiment analyst | The app consumes upstream native `sentiment_report`; simple analysis also merges Reddit/X/Agent-Reach social evidence instead of fabricating social context. |
 | Provider catalog and model coverage | `/models` loads the installed upstream model catalog and exposes OpenAI, Google, Anthropic, xAI, DeepSeek, Qwen, Qwen China, GLM, GLM China, MiniMax, MiniMax China, OpenRouter, Ollama, and Azure. |
 | Dual-region provider API keys | Native contract covers provider-family key forwarding for every upstream provider key family and restores sensitive env vars after graph construction. |
-| Remote/proxied LLM endpoint support | Next forwards configured LLM base URL/API key per request; bridge sets upstream `backend_url` and provider-specific env keys. Ollama can use `backend_url` or upstream `OLLAMA_BASE_URL`. |
+| Remote/proxied LLM endpoint support | Next forwards configured LLM base URL/API key per request; bridge sets upstream `backend_url` and provider-specific env keys. Ollama can use `backend_url` or upstream `OLLAMA_BASE_URL`. Live proof completed through `https://9router.tail1ac290.ts.net/v1` with `free_pro`. |
 | Debate/risk rounds, recursion, concurrency | Strategy Hub persists the controls; Next forwards them; bridge injects them into upstream config; contract and fake-LLM tests assert config passthrough. |
 | Analyst selection | Strategy Hub persists selected market/sentiment/news/fundamentals analysts; Next forwards `selected_analysts`; bridge constructs `TradingAgentsGraph(selected_analysts=...)`; contract and fake-LLM tests assert passthrough. |
 | Multi-language output | Strategy Hub persists output language; Next forwards it; fake-LLM smoke proves Spanish and Japanese prompts reach the upstream graph. |
@@ -25,6 +25,7 @@ Upstream reference: `TauricResearch/TradingAgents` main at `61522e103e61601c553b
 | Provider-specific thinking controls | Strategy Hub persists OpenAI reasoning effort, Google thinking level, and Anthropic effort; Next/bridge forward them into upstream config; contract test asserts passthrough. |
 | Data vendor/tool vendor config | Strategy Hub persists category data vendors and tool-level overrides; Next/bridge forward `data_vendors` and `tool_vendors`; contract test asserts passthrough. |
 | Exchange-qualified ticker/path hardening | Native contract proves extraction preserves `AAPL`, `$TSLA`, and `7203.T`; upstream package handles path-safe cache/log components. |
+| Host-date/future-window hardening | Runtime patch clamps upstream OHLCV downloads to the requested trade date and keeps future return resolution pending instead of querying unavailable future Yahoo windows. |
 | Future upstream config drift | `scripts/test-tradingagents-upstream-config-coverage.py` introspects installed upstream `DEFAULT_CONFIG`, local `AnalyzeRequest`, and `StageServiceMapping` to fail if a new upstream user-facing config key lacks bridge/UI coverage classification. |
 
 ## Covered In This App
@@ -37,9 +38,11 @@ Upstream reference: `TauricResearch/TradingAgents` main at `61522e103e61601c553b
 - v0.2.5 config passthrough: app-stage routing can forward risk rounds, output language, checkpoint flag, benchmark ticker, recursion limit, analyst concurrency, news limits, macro lookback, and macro query list.
 - v0.2.5 config UI: Strategy Hub exposes risk rounds, output language, asset type, benchmark ticker, recursion limit, analyst concurrency, ticker/macro news limits, macro lookback, checkpoint resume, and macro query list.
 - Per-request LLM credentials: the Next app forwards the configured LLM base URL and API key to the TradingAgents bridge, and the bridge maps provider keys to the env vars expected by upstream clients.
+- Per-request LLM request tuning: `/analyze/native` accepts `llm_request_timeout_seconds` and `llm_request_max_attempts`; Strategy Hub and the live probe can tune slow routers without rebuilding the container.
 - Model metadata: the bridge reads the upstream model catalog when installed and merges it with a live `/models` probe.
 - Runtime smoke: `npm run test:tradingagents` verifies `/health`, `/models`, `/analyze/all`, and `/analyze/native` against the running bridge container, then runs the real upstream native graph against a deterministic OpenAI-compatible fake LLM.
 - Native contract proof: `scripts/test-tradingagents-native-contract.py` fakes the upstream `TradingAgentsGraph` and proves `/analyze/native` passes provider/model/config controls, forwards the provider API key only for graph construction, sends `asset_type` into `propagate`, maps a BUY signal to confidence/probability, and extracts `AAPL`, `$TSLA`, and `7203.T` correctly.
+- Runtime patch proof: `scripts/test-tradingagents-runtime-patch.py` proves local compatibility patches clamp OHLCV downloads to requested trade dates and keep future return resolution pending.
 - Provider-family matrix proof: the native contract covers OpenAI-compatible, Anthropic, Google, Azure, Ollama, OpenRouter, xAI, DeepSeek, Qwen, Qwen China, GLM, GLM China, MiniMax, and MiniMax China provider ids; each mapped provider gets its per-request key in the upstream env var expected by TradingAgents, and Ollama correctly receives no API-key env injection.
 - Native graph proof: `scripts/smoke-tradingagents-native-fake-llm.py` proves the installed upstream `TradingAgentsGraph` can complete through `/analyze/native`; latest run returned completed crypto and non-US stock analyses with `crypto_signal=Buy`, `non_us_signal=Buy`, and 45 fake LLM requests.
 - Checkpoint/output-language/benchmark proof: the fake-LLM smoke performs two checkpoint-enabled BTC native graph runs plus a `7203.T` stock run with `benchmark_ticker=^N225`, `output_language=Japanese`, and custom macro queries; returned `full_report.config` values match the requests, and the fake LLM receives both Spanish and Japanese prompts.
@@ -49,9 +52,9 @@ Upstream reference: `TauricResearch/TradingAgents` main at `61522e103e61601c553b
 - FULL research path: `runFullResearch` runs simple TradingAgents evidence plus native graph for financial/crypto markets and returns `tradingagentsNative`.
 - QUICK/DEEP path: pipeline TradingAgents calls now pass the same routing config and persist native graph output as `AgentOutput`.
 
-## Still Needs Runtime Proof Before Calling The Goal Complete
+## Runtime Proof Status
 
-- End-to-end native graph execution with a production-grade reachable LLM backend. The bridge and real upstream graph are proven with a deterministic OpenAI-compatible fake LLM, but the configured local LiteLLM `fast` model failed with `401 invalid_api_key` from its Groq upstream and its `local` fallback could not connect to Ollama at `host.docker.internal:11434`.
+- End-to-end native graph execution with a production-grade reachable LLM backend is now proven. `npm run test:tradingagents:live` completed against the configured `9router` OpenAI-compatible endpoint with `free_pro`, returning `status=completed`, `ticker=AAPL`, `asset_type=stock`, `signal=Sell`, `confidence=0.6`, `probability=0.35`, and full report/technical/trader/portfolio-manager sections.
 
 ## Latest Verification Evidence
 
@@ -61,7 +64,9 @@ Upstream reference: `TauricResearch/TradingAgents` main at `61522e103e61601c553b
 - `docker compose build tradingagents && docker compose up -d tradingagents` rebuilt and recreated the bridge after ticker extraction changes.
 - `docker compose build tradingagents && docker compose up -d tradingagents` rebuilt and recreated the bridge after provider-thinking and vendor-config passthrough changes.
 - `docker compose build tradingagents && docker compose up -d tradingagents` rebuilt and recreated the bridge after selected-analyst, benchmark-map, memory-cap, and coverage-audit changes.
+- `docker compose build tradingagents && docker compose up -d --force-recreate tradingagents` rebuilt and recreated the bridge after per-request LLM timeout controls and runtime future-window patches.
 - `npm run test:tradingagents` passed, including route smoke, provider-family native contract test, real upstream native graph execution against a fake OpenAI-compatible LLM for BTC and `7203.T`, upstream memory-log pending/resolved/context proof, and upstream config coverage audit.
+- `npm run test:tradingagents:live` passed against the configured `9router`/`free_pro` endpoint in 480.33s: HTTP 200, `status=completed`, `ticker=AAPL`, `asset_type=stock`, `signal=Sell`, `confidence=0.6`, `probability=0.35`, and required full-report sections present.
 - `python3 -m py_compile ta-service/server.py scripts/test-tradingagents-native-contract.py scripts/smoke-tradingagents-native-fake-llm.py scripts/test-tradingagents-memory-log.py scripts/test-tradingagents-upstream-config-coverage.py` passed.
 - `bun test src/lib/engine/__tests__/full-research.test.ts` passed.
 - `npm run typecheck` passed.

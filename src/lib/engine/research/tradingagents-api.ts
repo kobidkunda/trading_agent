@@ -74,6 +74,8 @@ function buildTradingAgentsConfigPayload(routing?: StageServiceMapping): Record<
     ...(routing.analystAssetType ? { asset_type: routing.analystAssetType } : {}),
     ...(routing.analystMaxRecurLimit ? { max_recur_limit: routing.analystMaxRecurLimit } : {}),
     ...(routing.analystNativeTimeoutSeconds ? { native_timeout_seconds: routing.analystNativeTimeoutSeconds } : {}),
+    ...(routing.analystLlmRequestTimeoutSeconds ? { llm_request_timeout_seconds: routing.analystLlmRequestTimeoutSeconds } : {}),
+    ...(routing.analystLlmRequestMaxAttempts ? { llm_request_max_attempts: routing.analystLlmRequestMaxAttempts } : {}),
     ...(routing.analystMemoryLogMaxEntries ? { memory_log_max_entries: routing.analystMemoryLogMaxEntries } : {}),
     ...(routing.analystConcurrencyLimit ? { analyst_concurrency_limit: routing.analystConcurrencyLimit } : {}),
     ...(routing.analystNewsArticleLimit ? { news_article_limit: routing.analystNewsArticleLimit } : {}),

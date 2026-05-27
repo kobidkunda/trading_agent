@@ -56,14 +56,14 @@ def call_json(url: str, payload: dict, timeout: int) -> tuple[int, dict]:
 
 def main() -> int:
     base_url = os.getenv("TRADINGAGENTS_URL", "http://localhost:6503").rstrip("/")
-    native_timeout = env_int("TA_LIVE_NATIVE_TIMEOUT_SECONDS", 420)
+    native_timeout = env_int("TA_LIVE_NATIVE_TIMEOUT_SECONDS", 900)
     client_timeout = env_int("TA_LIVE_CLIENT_TIMEOUT_SECONDS", native_timeout + 45)
     query = os.getenv("TA_LIVE_QUERY", "Analyze AAPL for a short live TradingAgents probe.")
     asset_type = os.getenv("TA_LIVE_ASSET_TYPE", "stock")
 
     payload = {
         "query": query,
-        "date": os.getenv("TA_LIVE_DATE", time.strftime("%Y-%m-%d")),
+        "date": os.getenv("TA_LIVE_DATE", "2025-05-28"),
         "asset_type": asset_type,
         "llm_provider": os.getenv("TA_LLM_PROVIDER", "openai"),
         "deep_think_llm": os.getenv("TA_DEEP_THINK_LLM", "free_pro"),
@@ -76,6 +76,8 @@ def main() -> int:
         "news_article_limit": env_int("TA_LIVE_NEWS_LIMIT", 1),
         "global_news_article_limit": env_int("TA_LIVE_GLOBAL_NEWS_LIMIT", 1),
         "global_news_lookback_days": env_int("TA_LIVE_GLOBAL_NEWS_LOOKBACK_DAYS", 1),
+        "llm_request_timeout_seconds": env_int("TA_LIVE_LLM_REQUEST_TIMEOUT_SECONDS", 90),
+        "llm_request_max_attempts": env_int("TA_LIVE_LLM_REQUEST_MAX_ATTEMPTS", 1),
         "native_timeout_seconds": native_timeout,
         "clear_checkpoints": os.getenv("TA_LIVE_CLEAR_CHECKPOINTS", "true").lower()
         not in {"0", "false", "no", "off"},
