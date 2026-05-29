@@ -21,6 +21,7 @@ import {
   loadDeepResearchProgress,
   logStageTransition,
 } from '@/lib/engine/worker-checkpoint';
+import { appendEvent as appendLedgerEvent } from '@/lib/engine/event-ledger';
 
 type WorkerStatus = 'STOPPED' | 'RUNNING';
 
@@ -181,6 +182,21 @@ function shouldQuarantineExecution(params: {
   if ((params.rollingBrier ?? 0) > 0.3) return true;
 
   return false;
+}
+
+async function appendWorkerLedgerEvent(params: {
+  correlationId: string;
+  eventType: string;
+  stage?: string;
+  payload: Record<string, unknown>;
+}) {
+  await appendLedgerEvent({
+    correlationId: params.correlationId,
+    eventType: params.eventType,
+    stage: params.stage,
+    actor: 'worker',
+    payload: params.payload,
+  }).catch(() => {});
 }
 
 function extractMarketId(payload: string | null): string | null {
@@ -400,6 +416,13 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
   if (!job) return null;
 
   const marketId = extractMarketId(job.payload);
+  const correlationId = `${job.id}:${marketId ?? 'none'}`;
+  await appendWorkerLedgerEvent({
+    correlationId,
+    eventType: 'JOB_STARTED',
+    stage: job.type,
+    payload: { jobId: job.id, jobType: job.type, marketId },
+  });
   state.currentJobType = job.type;
   state.currentJobId = job.id;
   state.currentMarketId = marketId;
@@ -445,6 +468,13 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
       },
     });
 
+    await appendWorkerLedgerEvent({
+      correlationId,
+      eventType: 'JOB_COMPLETED',
+      stage: job.type,
+      payload: { jobId: job.id, jobType: job.type, marketId, status: 'COMPLETED' },
+    });
+
     await deleteCheckpoint(job.id).catch(() => {});
 
     return {
@@ -473,12 +503,26 @@ export async function processNextQueuedJobOnce(): Promise<ProcessedJobResult | n
       },
     });
 
-    // Save failure checkpoint for post-mortem / retry analysis
-    const marketId = extractMarketId(job.payload);
+    const failedMarketId = marketId;
+    await appendWorkerLedgerEvent({
+      correlationId,
+      eventType: isRetryable ? 'JOB_RETRYING' : 'JOB_FAILED',
+      stage: job.type,
+      payload: {
+        jobId: job.id,
+        jobType: job.type,
+        marketId: failedMarketId,
+        error: errorMessage,
+        retryCount: currentRetryCount + 1,
+      },
+    });
 
-    if (['RESEARCH_MARKET', 'QUICK_RESEARCH', 'STANDARD_RESEARCH', 'DEEP_RESEARCH'].includes(job.type) && marketId) {
+    // Save failure checkpoint for post-mortem / retry analysis
+    const failureMarketId = extractMarketId(job.payload);
+
+    if (['RESEARCH_MARKET', 'QUICK_RESEARCH', 'STANDARD_RESEARCH', 'DEEP_RESEARCH'].includes(job.type) && failureMarketId) {
       const runningResearchRuns = await db.researchRun.findMany({
-        where: { marketId, status: 'RUNNING' },
+        where: { marketId: failureMarketId, status: 'RUNNING' },
         orderBy: { createdAt: 'desc' },
         take: 3,
       }).catch(() => []);

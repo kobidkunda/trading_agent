@@ -41,6 +41,7 @@ import { getWalletSignalTrustContext } from '@/lib/engine/wallet-signal';
 import { getLiveGovernanceSettings } from '@/lib/engine/live-governance';
 import { saveDeepResearchProgress, type DeepResearchProgress } from '@/lib/engine/worker-checkpoint';
 import { tailRiskAnalyzer } from '@/lib/engine/correlation-risk';
+import { resolvePolicyActionV2 } from '@/lib/engine/policy-engine-v2';
 
 // ── Event & Options types ──────────────────────────────────────────
 
@@ -1975,34 +1976,59 @@ export async function runRiskStage(
   // Only LIVE mode (and explicit liveEnabled governance) requires the strict A+ gate.
   const requiresAPlusForExecution = tradingConfig.mode === 'LIVE' || governance.liveEnabled;
 
+  const policy = resolvePolicyActionV2({
+    marketMonitor: 'OK',
+    pipelineMonitor: 'OK',
+    riskMonitor: 'OK',
+    executionMonitor: 'OK',
+    governanceMonitor: liveGovernanceReady ? 'OK' : 'WARN',
+    modelDisagreement,
+    contextCompletenessScore: 1,
+    liveEnabled: tradingConfig.mode === 'LIVE',
+    killSwitchEnabled: governance.killSwitchEnabled,
+    proposedAction: riskResult.action,
+  });
+
   const gatedRiskResult =
-    oracleRiskLevel === 'BLOCK'
+    policy.action === 'HALT'
       ? {
           ...riskResult,
           action: 'SKIP' as const,
           reasonCode: 'MANUAL_REVIEW_REQUIRED',
-          reason: `Oracle risk level BLOCK forces skip. ${aPlusGateReasons.join('; ')}`,
+          reason: `Policy HALT: ${policy.reasonCodes.join('; ')}`,
         }
-    :
-    riskResult.action === 'BID'
-        && (
-          // In LIVE mode: block on any quality concern
-          (tradingConfig.mode === 'LIVE' && (disagreementLevel === 'HIGH' || !liveGovernanceReady || (requiresAPlusForExecution && !aPlusGatePassed)))
-          // In PAPER mode: only block if governance explicitly requires manual review
-          || (tradingConfig.mode !== 'LIVE' && !liveGovernanceReady)
-        )
-      ? {
-          ...riskResult,
-          action: 'WATCH' as const,
-          reasonCode: 'MANUAL_REVIEW_REQUIRED',
-          reason:
-            disagreementLevel === 'HIGH'
-              ? `Forced WATCH due to high ensemble disagreement. ${aPlusGateReasons.join('; ')}`
-              : !liveGovernanceReady
-                ? `Forced WATCH because live governance settings are not fully configured. ${aPlusGateReasons.join('; ')}`
-                : `A+ signal gate failed: ${aPlusGateReasons.join('; ')}`,
-        }
-      : riskResult;
+      : policy.action === 'WATCH' && riskResult.action === 'BID'
+        ? {
+            ...riskResult,
+            action: 'WATCH' as const,
+            reasonCode: 'MANUAL_REVIEW_REQUIRED',
+            reason: `Policy WATCH demotion: ${policy.reasonCodes.join('; ')}`,
+          }
+        : (oracleRiskLevel === 'BLOCK'
+            ? {
+                ...riskResult,
+                action: 'SKIP' as const,
+                reasonCode: 'MANUAL_REVIEW_REQUIRED',
+                reason: `Oracle risk level BLOCK forces skip. ${aPlusGateReasons.join('; ')}`,
+              }
+            :
+            riskResult.action === 'BID'
+                && (
+                  (tradingConfig.mode === 'LIVE' && (disagreementLevel === 'HIGH' || !liveGovernanceReady || (requiresAPlusForExecution && !aPlusGatePassed)))
+                  || (tradingConfig.mode !== 'LIVE' && !liveGovernanceReady)
+                )
+              ? {
+                  ...riskResult,
+                  action: 'WATCH' as const,
+                  reasonCode: 'MANUAL_REVIEW_REQUIRED',
+                  reason:
+                    disagreementLevel === 'HIGH'
+                      ? `Forced WATCH due to high ensemble disagreement. ${aPlusGateReasons.join('; ')}`
+                      : !liveGovernanceReady
+                        ? `Forced WATCH because live governance settings are not fully configured. ${aPlusGateReasons.join('; ')}`
+                        : `A+ signal gate failed: ${aPlusGateReasons.join('; ')}`,
+                }
+              : riskResult);
 
   const decision = await db.decision.create({
     data: {

@@ -914,6 +914,21 @@ model AuditLog {
   createdAt     DateTime @default(now())
 }
 
+model DecisionEventLedger {
+  id            String   @id @default(cuid())
+  correlationId String
+  eventType     String
+  stage         String?
+  actor         String?
+  payload       String
+  prevHash      String?
+  hash          String
+  createdAt     DateTime @default(now())
+
+  @@index([correlationId, createdAt])
+  @@index([eventType, createdAt])
+}
+
 // ============ JOBS ============
 
 model Job {

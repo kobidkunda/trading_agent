@@ -1,4 +1,5 @@
 import { db } from '@/lib/db';
+import { resolveEnsembleWeights } from '@/lib/engine/ensemble-probability';
 import { resolveAllPaperBetsForMarket } from '@/lib/engine/paper-bets';
 import { BrierCalibrationEngine } from '@/lib/engine/brier-calibration';
 import { fetchVenueWithRelayFallback } from '@/lib/engine/relay-pool';
@@ -34,6 +35,11 @@ export async function reconcileMarketResolution(params: {
   candidatesSettled: number;
   outcomeRecord: { id: string; marketId: string; result: string; resolvedProb: number | null };
 }> {
+  const marketMeta = await db.market.findUnique({
+    where: { id: params.marketId },
+    select: { category: true },
+  });
+
   const existingOutcomes = await db.outcome.findMany({ where: { marketId: params.marketId }, orderBy: { resolvedAt: 'desc' }, take: 2 });
   if (existingOutcomes.length > 1) {
     throw new Error(`Duplicate outcomes detected for market ${params.marketId}`);
@@ -98,6 +104,54 @@ export async function reconcileMarketResolution(params: {
       where: { marketId: params.marketId, stage: { not: 'SETTLED' } },
       data: { stage: 'SETTLED' },
     });
+  }
+
+  const settledNumeric =
+    settledOutcome === 'YES' ? 1 : settledOutcome === 'NO' ? 0 : null;
+
+  if (settledNumeric != null) {
+    await resolveEnsembleWeights(params.marketId, settledNumeric).catch((error) => {
+      console.error('[Resolution] resolveEnsembleWeights failed:', error);
+    });
+  }
+
+  if (marketMeta?.category) {
+    const resolvedBrierRows = await db.decision.findMany({
+      where: {
+        marketId: params.marketId,
+        brierScore: { not: null },
+      },
+      select: { brierScore: true },
+    });
+
+    if (resolvedBrierRows.length > 0) {
+      const avgBrier =
+        resolvedBrierRows.reduce((sum, row) => sum + (row.brierScore ?? 0), 0) /
+        resolvedBrierRows.length;
+
+      const key = `calibration_metrics_${marketMeta.category}`;
+      await db.settings.upsert({
+        where: { key },
+        create: {
+          key,
+          value: JSON.stringify({
+            updatedAt: new Date().toISOString(),
+            sampleSize: resolvedBrierRows.length,
+            rollingBrier: avgBrier,
+          }),
+          description: 'Auto-updated rolling calibration metrics by category',
+        },
+        update: {
+          value: JSON.stringify({
+            updatedAt: new Date().toISOString(),
+            sampleSize: resolvedBrierRows.length,
+            rollingBrier: avgBrier,
+          }),
+        },
+      }).catch((error) => {
+        console.error('[Resolution] calibration metrics upsert failed:', error);
+      });
+    }
   }
 
   return {

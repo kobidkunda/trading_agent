@@ -51,7 +51,7 @@ import { VENUE_OPTIONS, CATEGORY_OPTIONS } from '@/lib/constants';
 import { DEFAULT_STRATEGY, DEFAULT_STAGE_ROUTING } from '@/lib/engine/risk';
 import { syncTradingModeFromBackend, updateTradingModeOnBackend } from '@/lib/engine/trading-mode-client';
 import { getModeDisplayCopy } from '@/lib/engine/trading-view-model';
-import type { StrategySettings, Venue, StageServiceMapping, ResearchDepth, MetadataOption, TradingAgentsMetadataResponse } from '@/lib/types';
+import type { StrategySettings, Venue, StageServiceMapping, ResearchDepth, MetadataOption, TradingAgentsMetadataResponse, EmbeddingModelsResponse } from '@/lib/types';
 import { withStaleOption } from '@/lib/engine/research/transparency';
 import { RESEARCH_PROVIDER_REGISTRY } from '@/lib/engine/research-provider-registry';
 
@@ -253,6 +253,11 @@ export function StrategyHub() {
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const [embeddingModels, setEmbeddingModels] = useState<string[]>([]);
+  const [embeddingModelsLoading, setEmbeddingModelsLoading] = useState(false);
+  const [embeddingModelsError, setEmbeddingModelsError] = useState<string | null>(null);
+  const [embeddingTestLoading, setEmbeddingTestLoading] = useState(false);
+  const [embeddingTestResult, setEmbeddingTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [deerflowApiModels, setDeerflowApiModels] = useState<string[]>([]);
   const [deerflowError, setDeerflowError] = useState<string | null>(null);
   const [deerflowLoading, setDeerflowLoading] = useState(false);
@@ -272,6 +277,53 @@ export function StrategyHub() {
   // Service health state
   const [serviceHealth, setServiceHealth] = useState<Record<string, { status: string; error?: string | null }>>({});
   const [scanRuns, setScanRuns] = useState<Array<{ venue: string; status: string; marketsFetched: number; marketsCreated: number; marketsUpdated: number; marketsSkipped: number; errorMessage: string | null }>>([]);
+
+  const fetchEmbeddingModels = useCallback(async (provider: string) => {
+    setEmbeddingModelsLoading(true);
+    setEmbeddingModelsError(null);
+    try {
+      const res = await fetch(`/api/embeddings/models?provider=${encodeURIComponent(provider || 'openai')}`);
+      if (!res.ok) {
+        setEmbeddingModels([]);
+        setEmbeddingModelsError(`Failed to fetch embedding models: HTTP ${res.status}`);
+        return;
+      }
+      const data: EmbeddingModelsResponse = await res.json();
+      setEmbeddingModels(Array.isArray(data.models) ? data.models : []);
+      if (data.error) setEmbeddingModelsError(data.error);
+    } catch (error) {
+      setEmbeddingModels([]);
+      setEmbeddingModelsError(error instanceof Error ? error.message : 'Network error');
+    } finally {
+      setEmbeddingModelsLoading(false);
+    }
+  }, []);
+
+  const testEmbeddingModel = useCallback(async () => {
+    setEmbeddingTestLoading(true);
+    setEmbeddingTestResult(null);
+    try {
+      const res = await fetch('/api/embeddings/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'embedding test probe' }),
+      });
+      const data = await res.json();
+      if (data?.ok) {
+        setEmbeddingTestResult({ ok: true, message: `Connected: ${data.model} (${data.dims} dims)` });
+        toast.success('Embedding model test passed');
+      } else {
+        setEmbeddingTestResult({ ok: false, message: data?.error || 'Embedding test failed' });
+        toast.error(data?.error || 'Embedding model test failed');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Network error';
+      setEmbeddingTestResult({ ok: false, message });
+      toast.error(`Embedding model test failed: ${message}`);
+    } finally {
+      setEmbeddingTestLoading(false);
+    }
+  }, []);
 
   const fetchModels = useCallback(async () => {
     setModelsLoading(true);
@@ -295,6 +347,10 @@ export function StrategyHub() {
   useEffect(() => {
     fetchModels();
   }, [fetchModels]);
+
+  useEffect(() => {
+    fetchEmbeddingModels('llm');
+  }, [fetchEmbeddingModels]);
 
   // Fetch MiroFish models
   useEffect(() => {
@@ -1114,6 +1170,92 @@ export function StrategyHub() {
                  </div>
                </div>
              </div>
+             {/* Embedding Provider (credentials-bound) */}
+             <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-800/40 px-4 py-2.5">
+               <div className="flex items-center gap-3 min-w-0">
+                 <Brain className="h-4 w-4 shrink-0 text-gray-500" />
+                 <div className="min-w-0">
+                   <p className="text-sm text-gray-300">Embedding Provider</p>
+                   <p className="text-[10px] text-gray-600">Bound to active LLM Provider credential from Credentials page</p>
+                 </div>
+               </div>
+               <Input
+                 value={embeddingModels.length > 0 ? 'LLM Provider (dynamic)' : 'LLM Provider (unavailable)'}
+                 readOnly
+                 className="h-8 w-56 border-gray-700 bg-gray-800 text-xs text-gray-300"
+               />
+             </div>
+
+             {/* Embedding Model */}
+             <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-800/40 px-4 py-2.5">
+               <div className="flex items-center gap-3 min-w-0">
+                 <Cpu className="h-4 w-4 shrink-0 text-gray-500" />
+                 <div className="min-w-0">
+                   <p className="text-sm text-gray-300">Embedding Model</p>
+                   <p className="text-[10px] text-gray-600">Select model from credentials-backed provider list</p>
+                 </div>
+               </div>
+               <div className="flex items-start gap-2">
+                 <div className="flex w-56 flex-col gap-2">
+                   <Select
+                     value={settings.stageRouting?.embeddingModel || ''}
+                     onValueChange={(value) => updateStageRouting('embeddingModel', value)}
+                   >
+                     <SelectTrigger className="h-8 w-56 border-gray-700 bg-gray-800 text-xs text-white">
+                       <SelectValue placeholder="Select embedding model" />
+                     </SelectTrigger>
+                     <SelectContent className="border-gray-700 bg-gray-900 max-h-64">
+                       {embeddingModels.map((model) => (
+                         <SelectItem key={model} value={model} className="text-xs text-white font-mono">
+                           {model}
+                         </SelectItem>
+                       ))}
+                     </SelectContent>
+                   </Select>
+                   <Input
+                     value={settings.stageRouting?.embeddingModel || ''}
+                     onChange={(e) => updateStageRouting('embeddingModel', e.target.value)}
+                     placeholder="Or type custom model id (e.g. ola107/embeddinggemma)"
+                     className="h-8 w-56 border-gray-700 bg-gray-800 text-xs text-white"
+                   />
+                 </div>
+                 <div className="flex items-center gap-2">
+                   <Button
+                     type="button"
+                     variant="outline"
+                     size="sm"
+                     className="h-8 px-2 text-[11px] border-gray-700 text-cyan-300 hover:bg-cyan-900/20"
+                     onClick={testEmbeddingModel}
+                     disabled={embeddingTestLoading}
+                   >
+                     {embeddingTestLoading ? 'Testing...' : 'Test'}
+                   </Button>
+                 {settings.stageRouting?.embeddingModel && (
+                   <Button
+                     type="button"
+                     variant="ghost"
+                     size="sm"
+                     className="h-8 px-2 text-[11px] text-gray-400 hover:text-gray-200"
+                     onClick={() => updateStageRouting('embeddingModel', '')}
+                   >
+                     Clear
+                   </Button>
+                 )}
+                 </div>
+               </div>
+             </div>
+             {embeddingModelsLoading && (
+               <p className="text-[10px] text-gray-500">Loading embedding models…</p>
+             )}
+             {embeddingModelsError && (
+               <p className="text-[10px] text-red-400">{embeddingModelsError}</p>
+             )}
+             {embeddingTestResult && (
+               <p className={cn('text-[10px]', embeddingTestResult.ok ? 'text-emerald-400' : 'text-red-400')}>
+                 {embeddingTestResult.message}
+               </p>
+             )}
+
              {/* Vector DB Collection Override */}
              <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-800/40 px-4 py-2.5">
                <div className="flex items-center gap-3 min-w-0">

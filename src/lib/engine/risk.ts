@@ -263,6 +263,7 @@ export const DEFAULT_STAGE_ROUTING: StageServiceMapping = {
   searchMaxResults: 100,
   vectorDbCollection: undefined,
   embeddingProvider: undefined,
+  embeddingModel: undefined,
   researchDepth: 'FULL',
   agentReachEnabled: true,
   agentReachServiceUrl: process.env.AGENT_REACH_URL || 'http://localhost:6504',

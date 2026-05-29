@@ -229,6 +229,7 @@ export interface StageServiceMapping {
   agentReachToolName?: string;
   vectorDbCollection?: string;
   embeddingProvider?: string;
+  embeddingModel?: string;
   // deerflowSearchIterations / deerflowQuestionsPerIteration / deerflowMaxDepth removed — DeerFlow disabled
   researchDepth?: ResearchDepth;
   mirofishPredictionModel?: string;
@@ -362,6 +363,14 @@ export interface QdrantCollectionInfo {
     size: number;
     distance: QdrantDistanceMetric;
   };
+}
+
+export interface EmbeddingModelsResponse {
+  provider: string;
+  models: string[];
+  source: 'credential-api' | 'ollama' | 'default-fallback';
+  error?: string;
+  detail?: string;
 }
 
 export interface QdrantDiscoverResult {

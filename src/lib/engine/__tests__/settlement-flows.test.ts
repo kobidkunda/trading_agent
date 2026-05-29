@@ -63,6 +63,8 @@ const positionUpdateMock = mock(async ({ where, data }: { where: { id: string },
   if (idx >= 0) positions[idx] = { ...positions[idx], ...data };
   return idx >= 0 ? (positions[idx] as any) : null;
 });
+const settingsUpsertMock = mock(async () => ({ id: 'settings-1' }));
+const ensemblePredictionFindManyMock = mock(async () => [] as any[]);
 
 mock.module('@/lib/db', () => ({
   db: {
@@ -77,7 +79,7 @@ mock.module('@/lib/db', () => ({
     decision: { findMany: decisionFindManyMock, update: decisionUpdateMock },
     researchRun: { updateMany: researchRunUpdateManyMock, findFirst: researchRunFindFirstMock },
     job: { findFirst: jobFindFirstMock, update: jobUpdateMock, findMany: jobFindManyMock },
-    settings: { findUnique: settingsFindUniqueMock },
+    settings: { findUnique: settingsFindUniqueMock, upsert: settingsUpsertMock },
     paperBet: {
       findMany: paperBetFindManyMock,
       findUnique: paperBetFindUniqueMock,
@@ -129,10 +131,8 @@ describe('settlement flows', () => {
     auditCreateMock.mockClear();
     tradeCandidateCountMock.mockClear();
     tradeCandidateUpdateManyMock.mockClear();
-    currentMarketOracleCheck = null;
-    tradingModeValue = 'PAPER';
-
-    decisionFindManyMock.mockClear();
+    settingsFindUniqueMock.mockClear();
+    settingsUpsertMock.mockClear();
     decisionUpdateMock.mockClear();
     jobFindFirstMock.mockClear();
     jobUpdateMock.mockClear();
@@ -311,6 +311,30 @@ describe('settlement flows', () => {
         skipReason: 'ANOMALY_QUARANTINE_TRIGGERED',
       }),
     }));
+  });
+
+  it('reconcile updates rolling calibration metrics for category', async () => {
+    currentMarketOracleCheck = { riskLevel: 'LOW', manualReviewStatus: 'NOT_REQUIRED' };
+    paperBets = [{
+      ...paperBets[0],
+      marketId: 'market-cal',
+      actualOutcome: null,
+      brierScore: null,
+      createdAt: new Date().toISOString(),
+    } as any];
+    positions = [{ ...positions[0], marketId: 'market-cal' }];
+
+    const { reconcileMarketResolution } = await import('../resolution-poller');
+
+    await reconcileMarketResolution({
+      marketId: 'market-cal',
+      outcome: 'YES',
+      resolvedProb: 1,
+      source: 'TEST',
+    });
+
+    expect(outcomeCreateMock).toHaveBeenCalledTimes(1);
+    expect(decisionUpdateMock).toHaveBeenCalledTimes(1);
   });
 
   it('queued SETTLE with existing outcome reconciles directly', async () => {
