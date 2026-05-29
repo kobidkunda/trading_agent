@@ -61,6 +61,7 @@ import { MarketTriage } from '@/components/trading/MarketTriage';
 import { ResearchLedger } from '@/components/trading/ResearchLedger';
 import { PromptStudio } from '@/components/trading/PromptStudio';
 import { SystemHealth } from '@/components/trading/SystemHealth';
+import LiveActionsDashboard from '@/components/trading/LiveActionsDashboard';
 import { LiveStatus } from '@/components/trading/LiveStatus';
 import { SimulationLab } from '@/components/trading/SimulationLab';
 import { PipelineSettings } from '@/components/trading/PipelineSettings';
@@ -112,6 +113,7 @@ const NAV_ICONS: Record<PageView, React.ElementType> = {
   backtests: History,
   optimizer: Cpu,
   live: Radio,
+  liveActions: Activity,
   health: Activity,
   settings: SlidersHorizontal,
   vectorDb: Database,
@@ -411,6 +413,8 @@ function PageContent({ activePage }: { activePage: PageView }) {
       return <StrategyOptimizerDashboard />;
     case 'live':
       return <LiveStatus />;
+    case 'liveActions':
+      return <LiveActionsDashboard />;
     case 'health':
       return <SystemHealth />;
     case 'settings':

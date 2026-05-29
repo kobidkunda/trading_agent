@@ -7,6 +7,7 @@ export async function GET(request: NextRequest) {
     const typeFilter = searchParams.get('type') || 'All';
     const statusFilter = searchParams.get('status') || 'All';
     const search = searchParams.get('search') || '';
+    const view = searchParams.get('view') || '';
     const sort = searchParams.get('sort') || 'desc';
     const page = Math.max(parseInt(searchParams.get('page') || '1'), 1);
     const limit = Math.min(parseInt(searchParams.get('limit') || '25'), 100);
@@ -127,13 +128,36 @@ export async function GET(request: NextRequest) {
       })),
     ];
 
+    const liveActionJobTypes = new Set([
+      'SCAN',
+      'SCAN_VENUE',
+      'TRIAGE_MARKET',
+      'STANDARD_RESEARCH',
+      'DEEP_RESEARCH',
+      'JUDGE_MARKET',
+      'RISK_CHECK',
+      'PAPER_EXECUTE',
+      'ORDER_TRACK',
+      'SETTLE',
+      'RESOLUTION_CHECK',
+    ]);
+
+    const filteredEntries = view === 'live-actions'
+      ? entries.filter((entry) => {
+        if (entry.type === 'Job') return liveActionJobTypes.has(entry.action);
+        if (entry.type === 'AgentOutput') return entry.status !== 'FAILED';
+        if (entry.type === 'Audit') return entry.entityType === 'Job';
+        return true;
+      })
+      : entries;
+
     // Sort by timestamp
-    entries.sort((a, b) => {
+    filteredEntries.sort((a, b) => {
       const cmp = new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
       return sort === 'asc' ? cmp : -cmp;
     });
 
-    const paginated = entries.slice(skip, skip + limit);
+    const paginated = filteredEntries.slice(skip, skip + limit);
 
     // Stats
     const jobCount = includeJobs ? await db.job.count() : 0;

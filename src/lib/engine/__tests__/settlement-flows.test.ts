@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
 let currentOutcome: { id: string; marketId: string; result: 'YES' | 'NO' | 'CANCELLED'; resolvedProb: number | null } | null = null;
+let currentMarketOracleCheck: { riskLevel: string; manualReviewStatus: string | null } | null = null;
+let tradingModeValue: string | null = null;
 let queuedJob: Record<string, unknown> | null = null;
 let activeMarkets: Array<Record<string, unknown>> = [];
 let paperBets: Array<Record<string, unknown>> = [];
@@ -26,6 +28,14 @@ const outcomeCreateMock = mock(async ({ data }: { data: Record<string, unknown> 
 const marketUpdateMock = mock(async () => ({ id: 'market-1' }));
 const marketFindManyMock = mock(async () => activeMarkets as any[]);
 const marketCountMock = mock(async () => activeMarkets.length);
+const marketFindUniqueMock = mock(async () => ({
+  id: 'market-any',
+  oracleCheck: currentMarketOracleCheck,
+}));
+const settingsFindUniqueMock = mock(async ({ where }: { where: { key: string } }) => {
+  if (where.key === 'trading_mode') return { key: 'trading_mode', value: tradingModeValue ?? 'PAPER' } as any;
+  return null as any;
+});
 const auditCreateMock = mock(async () => ({ id: 'audit-1' }));
 const tradeCandidateCountMock = mock(async () => 1);
 const tradeCandidateUpdateManyMock = mock(async () => ({ count: 1 }));
@@ -57,7 +67,7 @@ const positionUpdateMock = mock(async ({ where, data }: { where: { id: string },
 mock.module('@/lib/db', () => ({
   db: {
     outcome: { findFirst: outcomeFindFirstMock, findMany: outcomeFindManyMock, create: outcomeCreateMock },
-    market: { update: marketUpdateMock, findMany: marketFindManyMock, count: marketCountMock },
+    market: { update: marketUpdateMock, findMany: marketFindManyMock, count: marketCountMock, findUnique: marketFindUniqueMock },
     auditLog: { create: auditCreateMock },
     tradeCandidate: {
       count: tradeCandidateCountMock,
@@ -67,6 +77,7 @@ mock.module('@/lib/db', () => ({
     decision: { findMany: decisionFindManyMock, update: decisionUpdateMock },
     researchRun: { updateMany: researchRunUpdateManyMock, findFirst: researchRunFindFirstMock },
     job: { findFirst: jobFindFirstMock, update: jobUpdateMock, findMany: jobFindManyMock },
+    settings: { findUnique: settingsFindUniqueMock },
     paperBet: {
       findMany: paperBetFindManyMock,
       findUnique: paperBetFindUniqueMock,
@@ -118,6 +129,9 @@ describe('settlement flows', () => {
     auditCreateMock.mockClear();
     tradeCandidateCountMock.mockClear();
     tradeCandidateUpdateManyMock.mockClear();
+    currentMarketOracleCheck = null;
+    tradingModeValue = 'PAPER';
+
     decisionFindManyMock.mockClear();
     decisionUpdateMock.mockClear();
     jobFindFirstMock.mockClear();
@@ -262,6 +276,41 @@ describe('settlement flows', () => {
     expect(findManyCalls[0]?.[0]?.where?.OR).toContainEqual({ duplicateStatus: { not: 'INVALID_KALSHI_COMBO' } });
     expect(findManyCalls[1]?.[0]?.where?.AND?.[0]?.OR).toContainEqual({ duplicateStatus: null });
     expect(findManyCalls[1]?.[0]?.where?.AND?.[0]?.OR).toContainEqual({ duplicateStatus: { not: 'INVALID_KALSHI_COMBO' } });
+  });
+
+  it('queued PAPER_EXECUTE quarantines when oracle risk is BLOCK in LIVE mode', async () => {
+    currentMarketOracleCheck = { riskLevel: 'BLOCK', manualReviewStatus: 'PENDING' };
+    tradingModeValue = 'LIVE';
+    queuedJob = {
+      id: 'job-quarantine',
+      type: 'PAPER_EXECUTE',
+      payload: JSON.stringify({
+        marketId: 'market-any',
+        decisionId: 'decision-1',
+        judgeProbability: 0.62,
+        judgeConfidence: 0.55,
+        judgeUncertainty: 0.28,
+        aPlusGatePassed: true,
+      }),
+      retryCount: 0,
+      maxRetries: 3,
+      maxRuntimeSec: 300,
+    };
+
+    const worker = await import('../worker');
+    const result = await worker.processNextQueuedJobOnce();
+
+    expect(result?.status).toBe('COMPLETED');
+    const completedCall = ((jobUpdateMock as any).mock.calls.at(-1)?.[0] as any)?.data;
+    const completedResult = JSON.parse(String(completedCall?.result));
+    expect(completedResult.status).toBe('ANOMALY_QUARANTINED');
+    expect(tradeCandidateUpdateManyMock).toHaveBeenCalledWith(expect.objectContaining({
+      where: { marketId: 'market-any' },
+      data: expect.objectContaining({
+        stage: 'WATCHING',
+        skipReason: 'ANOMALY_QUARANTINE_TRIGGERED',
+      }),
+    }));
   });
 
   it('queued SETTLE with existing outcome reconciles directly', async () => {

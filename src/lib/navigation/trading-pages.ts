@@ -24,6 +24,7 @@ export type PageView =
   | 'paperBets'
   | 'backtests'
   | 'optimizer'
+  | 'liveActions'
   | 'settings'
   | 'logs'
   | 'qdrantWizard'
@@ -56,6 +57,7 @@ export const TRADING_PAGES: TradingPageDefinition[] = [
   { id: 'backtests', label: 'Backtests', slug: 'backtests' },
   { id: 'optimizer', label: 'Optimizer', slug: 'optimizer' },
   { id: 'live', label: 'Live Status', slug: 'live-status' },
+  { id: 'liveActions', label: 'Live Actions', slug: 'live-actions' },
   { id: 'health', label: 'System Health', slug: 'system-health' },
   { id: 'settings', label: 'Settings', slug: 'settings' },
   { id: 'vectorDb', label: 'Vector DB', slug: 'vector-db' },

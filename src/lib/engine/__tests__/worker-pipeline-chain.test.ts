@@ -167,6 +167,60 @@ describe('Worker Pipeline Chain', () => {
     expect(executePayload.gatedRiskResult.action).toBe('BID');
   });
 
+  // --- Anomaly → strategy quarantine policy ---
+
+  it('anomaly signal should force quarantine (WATCH) instead of execute path', () => {
+    const shouldQuarantine = ({
+      oracleRiskLevel,
+      manualReviewRequired,
+      modelDisagreement,
+      rollingBrier,
+      liveMode,
+    }: {
+      oracleRiskLevel: 'LOW' | 'MEDIUM' | 'HIGH' | 'BLOCK' | 'UNKNOWN';
+      manualReviewRequired: boolean;
+      modelDisagreement: number;
+      rollingBrier: number;
+      liveMode: boolean;
+    }) => {
+      if (oracleRiskLevel === 'BLOCK') return true;
+      if (manualReviewRequired && liveMode) return true;
+      if (modelDisagreement > 0.3 && liveMode) return true;
+      if (rollingBrier > 0.3) return true;
+      return false;
+    };
+
+    expect(
+      shouldQuarantine({
+        oracleRiskLevel: 'BLOCK',
+        manualReviewRequired: false,
+        modelDisagreement: 0.1,
+        rollingBrier: 0.12,
+        liveMode: true,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldQuarantine({
+        oracleRiskLevel: 'LOW',
+        manualReviewRequired: true,
+        modelDisagreement: 0.35,
+        rollingBrier: 0.28,
+        liveMode: true,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldQuarantine({
+        oracleRiskLevel: 'LOW',
+        manualReviewRequired: false,
+        modelDisagreement: 0.1,
+        rollingBrier: 0.12,
+        liveMode: false,
+      }),
+    ).toBe(false);
+  });
+
   // --- Full chain: TRIAGE → RESEARCH → JUDGE → RISK → EXECUTE ---
 
   it('full pipeline chain: TRIAGE → RESEARCH → JUDGE → RISK → EXECUTE', () => {

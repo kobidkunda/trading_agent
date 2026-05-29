@@ -161,6 +161,28 @@ export interface WorkerFlowOptions {
   failOnJobError?: boolean;
 }
 
+function shouldQuarantineExecution(params: {
+  liveMode: boolean;
+  oracleRiskLevel?: string | null;
+  manualReviewStatus?: string | null;
+  modelDisagreement?: number | null;
+  rollingBrier?: number | null;
+}): boolean {
+  const oracleRisk = (params.oracleRiskLevel ?? '').toUpperCase();
+  if (oracleRisk === 'BLOCK') return true;
+
+  const manualReviewRequired =
+    params.manualReviewStatus === 'PENDING' ||
+    params.manualReviewStatus === 'REQUIRED';
+  if (manualReviewRequired && params.liveMode) return true;
+
+  if ((params.modelDisagreement ?? 0) > 0.3 && params.liveMode) return true;
+
+  if ((params.rollingBrier ?? 0) > 0.3) return true;
+
+  return false;
+}
+
 function extractMarketId(payload: string | null): string | null {
   if (!payload) return null;
   try {
@@ -1164,6 +1186,18 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
       let judgeUnc = typeof data.judgeUncertainty === 'number' ? data.judgeUncertainty : 0.3;
       const aPlusGatePassed = typeof data.aPlusGatePassed === 'boolean' ? data.aPlusGatePassed : false;
 
+      const market = await db.market.findUnique({
+        where: { id: marketId },
+        select: {
+          oracleCheck: {
+            select: {
+              riskLevel: true,
+              manualReviewStatus: true,
+            },
+          },
+        },
+      });
+
       // Reconstruct gatedRiskResult from job payload (passed through RISK_CHECK chain)
       const decision = await lookupDecisionForMarket(marketId).catch(() => null);
 
@@ -1175,6 +1209,46 @@ async function processJob(jobType: string, payload: string | null, jobId?: strin
         judgeProb = data.judgeProbability != null ? judgeProb : decision.judgeProbability;
         judgeConf = data.judgeConfidence != null ? judgeConf : decision.judgeConfidence;
         judgeUnc = data.judgeUncertainty != null ? judgeUnc : decision.judgeUncertainty;
+      }
+
+      const tradingModeSetting = await db.settings.findUnique({ where: { key: 'trading_mode' } }).catch(() => null);
+      const liveMode = String(tradingModeSetting?.value ?? '').toUpperCase() === 'LIVE';
+
+      const shouldQuarantine = shouldQuarantineExecution({
+        liveMode,
+        oracleRiskLevel: market?.oracleCheck?.riskLevel,
+        manualReviewStatus: market?.oracleCheck?.manualReviewStatus,
+        modelDisagreement: null,
+        rollingBrier: null,
+      });
+
+      if (shouldQuarantine) {
+        await db.tradeCandidate.updateMany({
+          where: { marketId },
+          data: {
+            stage: 'WATCHING',
+            processingLock: null,
+            lockExpiresAt: null,
+            skipReason: 'ANOMALY_QUARANTINE_TRIGGERED',
+            lastError: null,
+          },
+        });
+
+        if (jobId) {
+          await logStageTransition(marketId, {
+            from: 'DECIDED',
+            to: 'WATCHING',
+            timestamp: new Date().toISOString(),
+            reason: 'Anomaly quarantine triggered before execute stage',
+            jobId,
+          }).catch(() => {});
+        }
+
+        return {
+          status: 'ANOMALY_QUARANTINED',
+          marketId,
+          decisionId,
+        };
       }
 
       const hasGatedData = data.gatedEdge != null || data.gatedAdjustedSize != null || data.gatedMaxSize != null;
