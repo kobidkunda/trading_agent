@@ -82,9 +82,9 @@ git pull --ff-only
 LOCK_HASH_FILE=".deploy.lock.hash"
 LOCK_HASH_NOW=""
 if [[ -f package-lock.json ]]; then
-  LOCK_HASH_NOW=$(sha256sum package-lock.json | awk '{print $1}')
+  LOCK_HASH_NOW=$(sha256sum package-lock.json | cut -d ' ' -f1)
 elif [[ -f bun.lockb ]]; then
-  LOCK_HASH_NOW=$(sha256sum bun.lockb | awk '{print $1}')
+  LOCK_HASH_NOW=$(sha256sum bun.lockb | cut -d ' ' -f1)
 fi
 
 LOCK_HASH_PREV=""
