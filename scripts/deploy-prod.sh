@@ -71,27 +71,28 @@ fi
 
 run_step "Push current branch" git push
 
-REMOTE_SCRIPT=$(cat <<EOF
+read -r -d '' REMOTE_SCRIPT <<'EOF' || true
 set -Eeuo pipefail
+
 cd "$PROD_APP_DIR"
 
-echo "[remote] branch: \\$(git rev-parse --abbrev-ref HEAD)"
+echo "[remote] branch: $(git rev-parse --abbrev-ref HEAD)"
 git pull --ff-only
 
 LOCK_HASH_FILE=".deploy.lock.hash"
 LOCK_HASH_NOW=""
 if [[ -f package-lock.json ]]; then
-  LOCK_HASH_NOW=\\$(sha256sum package-lock.json | awk '{print \\$1}')
+  LOCK_HASH_NOW=$(sha256sum package-lock.json | awk '{print $1}')
 elif [[ -f bun.lockb ]]; then
-  LOCK_HASH_NOW=\\$(sha256sum bun.lockb | awk '{print \\$1}')
+  LOCK_HASH_NOW=$(sha256sum bun.lockb | awk '{print $1}')
 fi
 
 LOCK_HASH_PREV=""
-if [[ -f "\\$LOCK_HASH_FILE" ]]; then
-  LOCK_HASH_PREV=\\$(cat "\\$LOCK_HASH_FILE")
+if [[ -f "$LOCK_HASH_FILE" ]]; then
+  LOCK_HASH_PREV=$(cat "$LOCK_HASH_FILE")
 fi
 
-if [[ -n "\\$LOCK_HASH_NOW" && "\\$LOCK_HASH_NOW" != "\\$LOCK_HASH_PREV" ]]; then
+if [[ -n "$LOCK_HASH_NOW" && "$LOCK_HASH_NOW" != "$LOCK_HASH_PREV" ]]; then
   echo "[remote] lockfile changed -> install deps"
   if command -v bun >/dev/null 2>&1; then
     bun install --frozen-lockfile || bun install
@@ -101,7 +102,7 @@ if [[ -n "\\$LOCK_HASH_NOW" && "\\$LOCK_HASH_NOW" != "\\$LOCK_HASH_PREV" ]]; the
     echo "[remote][ERROR] neither bun nor npm found"
     exit 127
   fi
-  echo "\\$LOCK_HASH_NOW" > "\\$LOCK_HASH_FILE"
+  echo "$LOCK_HASH_NOW" > "$LOCK_HASH_FILE"
 else
   echo "[remote] lockfile unchanged -> skip install"
 fi
@@ -118,8 +119,7 @@ else
   exit 127
 fi
 EOF
-)
 
-run_step "Deploy on production host" run_remote "$REMOTE_SCRIPT"
+run_step "Deploy on production host" run_remote "PROD_APP_DIR='$PROD_APP_DIR' PROD_PM2_APP='$PROD_PM2_APP' bash -lc '$REMOTE_SCRIPT'"
 
 log "Deploy complete"
