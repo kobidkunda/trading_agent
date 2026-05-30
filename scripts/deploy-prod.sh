@@ -120,6 +120,7 @@ else
 fi
 EOF
 
-run_step "Deploy on production host" run_remote "PROD_APP_DIR='$PROD_APP_DIR' PROD_PM2_APP='$PROD_PM2_APP' bash -lc '$REMOTE_SCRIPT'"
+REMOTE_SCRIPT_B64=$(printf '%s' "$REMOTE_SCRIPT" | base64 | tr -d '\n')
+run_step "Deploy on production host" run_remote "PROD_APP_DIR='$PROD_APP_DIR' PROD_PM2_APP='$PROD_PM2_APP' REMOTE_SCRIPT_B64='$REMOTE_SCRIPT_B64' bash -lc 'printf %s \"$REMOTE_SCRIPT_B64\" | base64 -d | bash'"
 
 log "Deploy complete"
